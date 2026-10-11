@@ -60,6 +60,8 @@ type Client struct {
 	suggestedParamsCache  model.TransactionParametersResponse
 	suggestedParamsExpire time.Time
 	suggestedParamsMaxAge time.Duration
+
+	round *basics.Round // see AtRound
 }
 
 // ClientConfig is data to configure a Client
@@ -254,6 +256,9 @@ func (c *Client) getAlgodClient() (algodclient.RestClient, error) {
 	algodClient, err := c.nc.AlgodClient()
 	if err != nil {
 		return algodclient.RestClient{}, err
+	}
+	if c.round != nil {
+		algodClient = algodClient.AtRound(*c.round)
 	}
 	return algodClient, nil
 }

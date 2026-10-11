@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +90,7 @@ func (e HTTPError) Error() string {
 type RestClient struct {
 	serverURL url.URL
 	apiToken  string
+	round     *basics.Round // see AtRound
 }
 
 // MakeRestClient is the factory for constructing a RestClient for a given endpoint
@@ -97,6 +99,27 @@ func MakeRestClient(url url.URL, apiToken string) RestClient {
 		serverURL: url,
 		apiToken:  apiToken,
 	}
+}
+
+// AtRound returns a copy of the client that reads the ledger as of round r
+// on a time travel node (EnableTimeTravel): the account, asset, application,
+// box and supply lookups send ?round=r, and so do box listings unless given a
+// round of their own. Its other requests are unchanged; the versions methods
+// take their range of rounds in VersionsParams. A node without time travel
+// rejects the round, but an algod that predates time travel ignores it and
+// answers at its latest round: check the round of responses that carry one.
+func (client RestClient) AtRound(r basics.Round) RestClient {
+	client.round = &r
+	return client
+}
+
+// pinned returns the client whose server URL carries the round of AtRound in
+// its query, for the requests that honor it.
+func (client RestClient) pinned() RestClient {
+	if client.round != nil {
+		client.serverURL.RawQuery = mergeRawQueries(client.serverURL.RawQuery, "round="+strconv.FormatUint(uint64(*client.round), 10))
+	}
+	return client
 }
 
 // filterASCII filter out the non-ascii printable characters out of the given input string.
@@ -433,7 +456,7 @@ func (client RestClient) Versions() (response common.Version, err error) {
 
 // LedgerSupply gets the supply details for the specified node's Ledger
 func (client RestClient) LedgerSupply() (response model.SupplyResponse, err error) {
-	err = client.get(&response, "/v2/ledger/supply", nil)
+	err = client.pinned().get(&response, "/v2/ledger/supply", nil)
 	return
 }
 
@@ -485,14 +508,14 @@ func (client RestClient) RawPendingTransactionsByAddr(addr string, max uint64) (
 
 // AssetInformation gets the AssetInformationResponse associated with the passed asset index
 func (client RestClient) AssetInformation(index basics.AssetIndex) (response model.Asset, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/assets/%d", index), nil)
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/assets/%d", index), nil)
 	return
 }
 
 // ApplicationInformation gets the ApplicationInformationResponse associated
 // with the passed application index
 func (client RestClient) ApplicationInformation(index basics.AppIndex) (response model.Application, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/applications/%d", index), nil)
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/applications/%d", index), nil)
 	return
 }
 
@@ -507,15 +530,19 @@ type applicationBoxesParams struct {
 
 // ApplicationBoxes gets the BoxesResponse associated with the passed application ID
 func (client RestClient) ApplicationBoxes(appID basics.AppIndex, maxBoxNum uint64) (response model.BoxesResponse, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/applications/%d/boxes", appID), applicationBoxesParams{Max: maxBoxNum})
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/applications/%d/boxes", appID), applicationBoxesParams{Max: maxBoxNum})
 	return
 }
 
-// ApplicationBoxesPage gets a page of boxes for the given application ID with pagination.
+// ApplicationBoxesPage gets a page of boxes for the given application ID with
+// pagination, at round, or if round is 0 at the client's AtRound round, if any.
 func (client RestClient) ApplicationBoxesPage(appID basics.AppIndex, limit uint64, next string, prefix string, values bool, round basics.Round) (response model.BoxesResponse, err error) {
 	var include string
 	if values {
 		include = "values"
+	}
+	if round == 0 {
+		client = client.pinned()
 	}
 	err = client.get(&response, fmt.Sprintf("/v2/applications/%d/boxes", appID), applicationBoxesParams{
 		Limit:   limit,
@@ -533,7 +560,7 @@ type applicationBoxByNameParams struct {
 
 // GetApplicationBoxByName gets the BoxResponse associated with the passed application ID and box name
 func (client RestClient) GetApplicationBoxByName(appID basics.AppIndex, name string) (response model.BoxResponse, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/applications/%d/box", appID), applicationBoxByNameParams{name})
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/applications/%d/box", appID), applicationBoxByNameParams{name})
 	return
 }
 
@@ -545,7 +572,7 @@ func (client RestClient) AccountInformation(address string, includeCreatables bo
 	} else {
 		infoParams = accountInformationParams{Exclude: "all", Format: "json"}
 	}
-	err = client.get(&response, fmt.Sprintf("/v2/accounts/%s", address), infoParams)
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/accounts/%s", address), infoParams)
 	return
 }
 
@@ -560,7 +587,7 @@ func (blob *Blob) SetBytes(b []byte) {
 // RawAccountInformation gets the raw AccountData associated with the passed address
 func (client RestClient) RawAccountInformation(address string) (response []byte, err error) {
 	var blob Blob
-	err = client.getRaw(&blob, fmt.Sprintf("/v2/accounts/%s", address), rawFormat{Format: "msgpack"})
+	err = client.pinned().getRaw(&blob, fmt.Sprintf("/v2/accounts/%s", address), rawFormat{Format: "msgpack"})
 	response = blob
 	return
 }
@@ -591,14 +618,14 @@ func (client RestClient) RawPendingTransactionInformation(transactionID string) 
 
 // AccountApplicationInformation gets account information about a given app.
 func (client RestClient) AccountApplicationInformation(accountAddress string, applicationID basics.AppIndex) (response model.AccountApplicationResponse, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/accounts/%s/applications/%d", accountAddress, applicationID), nil)
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/accounts/%s/applications/%d", accountAddress, applicationID), nil)
 	return
 }
 
 // RawAccountApplicationInformation gets account information about a given app.
 func (client RestClient) RawAccountApplicationInformation(accountAddress string, applicationID basics.AppIndex) (response []byte, err error) {
 	var blob Blob
-	err = client.getRaw(&blob, fmt.Sprintf("/v2/accounts/%s/applications/%d", accountAddress, applicationID), rawFormat{Format: "msgpack"})
+	err = client.pinned().getRaw(&blob, fmt.Sprintf("/v2/accounts/%s/applications/%d", accountAddress, applicationID), rawFormat{Format: "msgpack"})
 	response = blob
 	return
 }
@@ -609,26 +636,26 @@ func (client RestClient) AccountApplicationsInformation(accountAddress string, n
 	if includeParams {
 		include = "params"
 	}
-	err = client.get(&response, fmt.Sprintf("/v2/accounts/%s/applications", accountAddress), accountApplicationsParams{next, limit, include})
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/accounts/%s/applications", accountAddress), accountApplicationsParams{next, limit, include})
 	return
 }
 
 // AccountAssetInformation gets account information about a given app.
 func (client RestClient) AccountAssetInformation(accountAddress string, assetID basics.AssetIndex) (response model.AccountAssetResponse, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/accounts/%s/assets/%d", accountAddress, assetID), nil)
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/accounts/%s/assets/%d", accountAddress, assetID), nil)
 	return
 }
 
 // AccountAssetsInformation gets account information about a particular account's assets, subject to pagination.
 func (client RestClient) AccountAssetsInformation(accountAddress string, next string, limit uint64) (response model.AccountAssetsInformationResponse, err error) {
-	err = client.get(&response, fmt.Sprintf("/v2/accounts/%s/assets", accountAddress), accountAssetsParams{next, limit})
+	err = client.pinned().get(&response, fmt.Sprintf("/v2/accounts/%s/assets", accountAddress), accountAssetsParams{next, limit})
 	return
 }
 
 // RawAccountAssetsInformation gets account information about a particular account's assets, subject to pagination.
 func (client RestClient) RawAccountAssetsInformation(accountAddress string, next string, limit uint64) (response []byte, err error) {
 	var blob Blob
-	err = client.getRaw(&blob, fmt.Sprintf("/v2/accounts/%s/assets", accountAddress), accountAssetsParams{next, limit})
+	err = client.pinned().getRaw(&blob, fmt.Sprintf("/v2/accounts/%s/assets", accountAddress), accountAssetsParams{next, limit})
 	response = blob
 	return
 }
