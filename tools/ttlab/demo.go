@@ -169,10 +169,12 @@ done: int 1`)
 	st, _ := c.Status()
 	fmt.Printf("built rounds %d..%d (latest %d)\n", first, st.LastRound, st.LastRound)
 
+	failed := 0
 	check := func(what string, ok bool) {
 		mark := "ok  "
 		if !ok {
 			mark = "FAIL"
+			failed++
 		}
 		fmt.Printf("  [%s] %s\n", mark, what)
 	}
@@ -310,6 +312,9 @@ done: int 1`)
 	}
 	check(fmt.Sprintf("GET /v2/accounts/<creator>/versions -> %d versions, %d with created-apps", len(vs), appRounds),
 		len(vs) == int(hi-lo+1) && appRounds == len(changed(func(l live) any { return l.n })))
+	if failed > 0 {
+		return fmt.Errorf("%d checks failed", failed)
+	}
 	return nil
 }
 

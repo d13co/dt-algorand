@@ -221,6 +221,8 @@ Sync from genesis: the history adds ~0.15–0.27 ms per round of write work in t
 
 ## Reproducing
 
+[tools/ttlab/README.md](../../tools/ttlab/README.md) describes the input data, each command's options and its output.
+
 ```sh
 cd tools/ttlab   # separate module: DuckDB stays out of algod's go.mod
 # deltas: GET /v2/deltas/{round}?format=msgpack -> <dir>/<round>.msgp, blocks likewise

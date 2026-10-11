@@ -35,7 +35,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ttlab stats|ingest|engines [flags]")
+		fmt.Fprintln(os.Stderr, "usage: ttlab stats|ingest|engines|catchpoint|demo [flags]")
 		os.Exit(2)
 	}
 	var err error
