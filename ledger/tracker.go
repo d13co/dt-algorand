@@ -705,10 +705,13 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 		return errMissingAccountUpdateTracker
 	}
 
+	// a time travel ledger keeps replaying while its flushes commit, see below
+	overlapFlushes := tr.cfg.EnableTimeTravel
 	accLedgerEval := accountUpdatesLedgerEvaluator{
-		au:   tr.accts,
-		ao:   tr.acctsOnline,
-		tail: tr.tail,
+		au:           tr.accts,
+		ao:           tr.acctsOnline,
+		tail:         tr.tail,
+		synchronized: overlapFlushes,
 	}
 
 	if lastBalancesRound < lastestBlockRound {
@@ -793,6 +796,10 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 		}
 	}()
 
+	// a flush still committing when the replay fails finishes before the
+	// synchronous mode is restored
+	defer tr.waitAccountsWriting()
+
 	maxAcctLookback := tr.cfg.MaxAcctLookback
 	// a time travel ledger flushes rounds that change little less often, see timeTravelReplayMaxFlushRounds
 	maxFlushRounds := basics.Round(initializeCachesRoundFlushInterval)
@@ -800,6 +807,25 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 		maxFlushRounds = max(maxFlushRounds, timeTravelReplayMaxFlushRounds)
 	}
 	changes := 0
+
+	// flushed checks the flush of the rounds up to rnd, once written: the au.dbRound after
+	// writing should be ~320 behind rnd (before shorter delta project)
+	flushed := func(rnd basics.Round) error {
+		tr.mu.RLock()
+		roundsBehind := rnd - tr.dbRound
+		tr.mu.RUnlock()
+
+		// are we farther behind than we need to be? Consider: catchpoint interval, flush interval and max acct lookback.
+		if roundsBehind > basics.Round(maxAcctLookback) && roundsBehind > maxFlushRounds+basics.Round(catchpointInterval) {
+			// we're unable to persist changes. This is unexpected, but there is no point in keep trying batching additional changes since any further changes
+			// would just accumulate in memory.
+			tr.log.Errorf("trackerRegistry.replay was unable to fill up the account caches accounts round = %d, block round = %d. See above error for more details.", rnd-roundsBehind, rnd)
+			return fmt.Errorf("trackerRegistry.replay failed to initialize the account data caches")
+		}
+		return nil
+	}
+	// flushing is set while the flush of the rounds up to lastFlushedRound commits
+	flushing := false
 
 	for blk := range blocksStream {
 		delta, err = l.trackerEvalVerified(blk, &accLedgerEval)
@@ -824,6 +850,17 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 		flushIntervalExceed = flushIntervalExceed || (tr.cfg.EnableTimeTravel && changes > timeTravelReplayFlushMaxChanges)
 		loadCompleted := (lastestBlockRound == blk.Round() && lastBalancesRound+basics.Round(maxAcctLookback) < lastestBlockRound)
 		if flushIntervalExceed || loadCompleted {
+			// A time travel replay keeps evaluating while a flush commits, as AddBlock
+			// does, rather than stopping for each commit (its lookups are synchronized
+			// for that), so it waits for the previous flush here.
+			if flushing {
+				tr.waitAccountsWriting()
+				if err = flushed(lastFlushedRound); err != nil {
+					close(blockEvalFailed)
+					return
+				}
+			}
+
 			// adjust the last flush time, so that we would not hold off the flushing due to "working too fast"
 			tr.lastFlushTime = time.Now().Add(-balancesFlushInterval)
 
@@ -838,31 +875,22 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 				}
 			}
 
-			var roundsBehind basics.Round
-
 			// flush the account data. committedUpTo, as Ledger.notifyCommit calls it, also lets
 			// trackers drop what they keep per round (txTail's leases and txids), which would
 			// otherwise grow with every replayed round.
 			tr.committedUpTo(blk.Round())
-			// wait for the writing to complete.
-			tr.waitAccountsWriting()
-
-			tr.mu.RLock()
-			// The au.dbRound after writing should be ~320 behind the block round (before shorter delta project)
-			roundsBehind = blk.Round() - tr.dbRound
-			tr.mu.RUnlock()
-
-			// are we farther behind than we need to be? Consider: catchpoint interval, flush interval and max acct lookback.
-			if roundsBehind > basics.Round(maxAcctLookback) && roundsBehind > maxFlushRounds+basics.Round(catchpointInterval) {
-				// we're unable to persist changes. This is unexpected, but there is no point in keep trying batching additional changes since any further changes
-				// would just accumulate in memory.
-				close(blockEvalFailed)
-				tr.log.Errorf("trackerRegistry.replay was unable to fill up the account caches accounts round = %d, block round = %d. See above error for more details.", blk.Round()-roundsBehind, blk.Round())
-				err = fmt.Errorf("trackerRegistry.replay failed to initialize the account data caches")
-				return
+			flushing = true
+			if !overlapFlushes || loadCompleted {
+				// wait for the writing to complete.
+				tr.waitAccountsWriting()
+				flushing = false
+				if err = flushed(blk.Round()); err != nil {
+					close(blockEvalFailed)
+					return
+				}
 			}
 
-			// and once we flushed it to disk, update the lastFlushedRound
+			// and once we flushed it to disk (or started to), update the lastFlushedRound
 			lastFlushedRound = blk.Round()
 			changes = 0
 		}
@@ -904,9 +932,11 @@ func (tr *trackerRegistry) getDbRound() basics.Round {
 // without taking any locks. Note that it's not only the locks performance that is gained : by having the loadFrom disk
 // not requiring any external locks, we can safely take a trackers lock on the ledger during reloadLedger, which ensures
 // that even during catchpoint catchup mode switch, we're still correctly protected by a mutex.
+// A time travel replay, which keeps evaluating while its flushes commit, still takes the accountUpdates lock (synchronized).
 type accountUpdatesLedgerEvaluator struct {
 	// au is the associated accountUpdates structure which invoking the trackerEvalVerified function, passing this structure as input.
-	// the accountUpdatesLedgerEvaluator would access the underlying accountUpdates function directly, bypassing the balances mutex lock.
+	// the accountUpdatesLedgerEvaluator would access the underlying accountUpdates function directly, bypassing the balances mutex lock
+	// unless synchronized.
 	au *accountUpdates
 	// ao is onlineAccounts for voters access
 	ao *onlineAccounts
@@ -915,6 +945,10 @@ type accountUpdatesLedgerEvaluator struct {
 	// prevHeader is the previous header to the current one. The usage of this is only in the context of initializeCaches where we iteratively
 	// building the ledgercore.StateDelta, which requires a peek on the "previous" header information.
 	prevHeader bookkeeping.BlockHeader
+	// synchronized makes the accountUpdates lookups take its lock and wait out a
+	// commit between its DB transaction and postCommit, for replays that keep
+	// evaluating while a flush commits.
+	synchronized bool
 }
 
 func (aul *accountUpdatesLedgerEvaluator) FlushCaches() {}
@@ -954,6 +988,9 @@ func (aul *accountUpdatesLedgerEvaluator) BlockHdr(r basics.Round) (bookkeeping.
 
 // LatestTotals returns the totals of all accounts for the most recent round, as well as the round number
 func (aul *accountUpdatesLedgerEvaluator) LatestTotals() (basics.Round, ledgercore.AccountTotals, error) {
+	if aul.synchronized {
+		return aul.au.LatestTotals()
+	}
 	return aul.au.latestTotalsImpl()
 }
 
@@ -965,7 +1002,7 @@ func (aul *accountUpdatesLedgerEvaluator) CheckDup(config.ConsensusParams, basic
 
 // LookupWithoutRewards returns the account balance for a given address at a given round, without the reward
 func (aul *accountUpdatesLedgerEvaluator) LookupWithoutRewards(rnd basics.Round, addr basics.Address) (ledgercore.AccountData, basics.Round, error) {
-	data, validThrough, _, _, err := aul.au.lookupWithoutRewards(rnd, addr, false /*don't sync*/)
+	data, validThrough, _, _, err := aul.au.lookupWithoutRewards(rnd, addr, aul.synchronized)
 	if err != nil {
 		return ledgercore.AccountData{}, 0, err
 	}
@@ -987,20 +1024,20 @@ func (aul *accountUpdatesLedgerEvaluator) OnlineCirculation(rnd basics.Round, vo
 }
 
 func (aul *accountUpdatesLedgerEvaluator) LookupApplication(rnd basics.Round, addr basics.Address, aidx basics.AppIndex) (ledgercore.AppResource, error) {
-	r, _, err := aul.au.lookupResource(rnd, addr, basics.CreatableIndex(aidx), basics.AppCreatable, false /* don't sync */)
+	r, _, err := aul.au.lookupResource(rnd, addr, basics.CreatableIndex(aidx), basics.AppCreatable, aul.synchronized)
 	return ledgercore.AppResource{AppParams: r.AppParams, AppLocalState: r.AppLocalState}, err
 }
 
 func (aul *accountUpdatesLedgerEvaluator) LookupAsset(rnd basics.Round, addr basics.Address, aidx basics.AssetIndex) (ledgercore.AssetResource, error) {
-	r, _, err := aul.au.lookupResource(rnd, addr, basics.CreatableIndex(aidx), basics.AssetCreatable, false /* don't sync */)
+	r, _, err := aul.au.lookupResource(rnd, addr, basics.CreatableIndex(aidx), basics.AssetCreatable, aul.synchronized)
 	return ledgercore.AssetResource{AssetParams: r.AssetParams, AssetHolding: r.AssetHolding}, err
 }
 
 func (aul *accountUpdatesLedgerEvaluator) LookupKv(rnd basics.Round, key string) ([]byte, error) {
-	return aul.au.lookupKv(rnd, key, false /* don't sync */)
+	return aul.au.lookupKv(rnd, key, aul.synchronized)
 }
 
 // GetCreatorForRound returns the asset/app creator for a given asset/app index at a given round
 func (aul *accountUpdatesLedgerEvaluator) GetCreatorForRound(rnd basics.Round, cidx basics.CreatableIndex, ctype basics.CreatableType) (creator basics.Address, ok bool, err error) {
-	return aul.au.getCreatorForRound(rnd, cidx, ctype, false /* don't sync */)
+	return aul.au.getCreatorForRound(rnd, cidx, ctype, aul.synchronized)
 }

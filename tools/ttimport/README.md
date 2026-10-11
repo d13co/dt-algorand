@@ -59,7 +59,7 @@ A time travel node must be built from genesis, since the history comes from ever
    - the share of the interval spent reading blocks, writing the account DB, and writing the history;
    - resident memory, split into the Go runtime's (with the heap's live bytes) and the rest, which is mostly the history's block cache and memtables and SQLite's page caches.
 
-   Blocks are read on a goroutine a few blocks ahead, so a block-read share near 100% means the replay is waiting on the archive's disk. On an HDD archive this gets much worse once memory runs short. Early mainnet rounds replayed at ~5–7k rounds/s on HDDs.
+   Blocks are read on a goroutine a few blocks ahead, so a block-read share near 100% means the replay is waiting on the archive's disk. Commits run while the replay continues, and each writes the history alongside its account DB transaction, which waits for that write before committing. So the write shares overlap, the account-write share includes the history write, and an account-write share near 100% means the replay is waiting on commits. On an HDD archive this gets much worse once memory runs short. Early mainnet rounds replayed at ~5–7k rounds/s on HDDs.
 
 3. If the import is interrupted, rerun the same command. Ctrl-C kills the run (it cannot stop cleanly), and a rerun resumes from the account DB's last commit. A replay commits at least every 10,000 rounds, so at most that many are replayed again. Until a run completes, the data directory's block database is behind its account DB, and algod refuses to start:
 

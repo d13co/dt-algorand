@@ -247,7 +247,8 @@ const progressInterval = 10 * time.Second
 // called: the replayed round and its date, rounds/s and txns/s over the interval,
 // the share of the interval spent reading blocks (on a goroutine reading a few
 // blocks ahead, so near 100% means the replay waits for blocks) and in the account
-// DB and history writes of commits (which stop the replay), resident memory, and
+// DB transaction and history writes of commits (which run alongside the replay and
+// each other, so near 100% means the replay waits for commits), resident memory, and
 // the rate since start. Resident memory is split into the Go runtime's (with the
 // heap's live bytes) and the rest, mostly C allocations: the time travel store's
 // block cache and memtables, and SQLite's page caches. With memprofile set, it

@@ -48,12 +48,18 @@ import (
 // historyTracker feeds the time travel store with the object versions and
 // header of every round. The ledger serves lookups for rounds older than the
 // trackers' window from it. The store lives as long as the ledger, so readers
-// need no tracker lock. Rounds are written in prepareCommit, before (and
-// outside) the tracker DB transaction, so the store always reaches at least
-// the tracker DB round; replays after a crash are skipped by the store.
+// need no tracker lock. Rounds are written alongside the tracker DB
+// transaction: prepareCommit starts the write and commitRound, inside the
+// transaction, waits for it, so the store always reaches at least the tracker
+// DB round; replays after a crash are skipped by the store.
 type historyTracker struct {
 	store *timetravel.Store
 	path  string
+
+	// write is the history write of the commit in progress. Only
+	// trackerRegistry.commitRound touches it, from prepareCommit to postCommit,
+	// and returns with the write done.
+	write *historyWrite
 
 	mu      deadlock.Mutex
 	pending []historyRound
@@ -86,11 +92,13 @@ type historyRound struct {
 // than timeTravelReplayFlushMaxChanges changes: memory grows with changes, both
 // what the trackers hold and the commit's compacted deltas. Mainnet's rounds of
 // March 2021 make ~1,950 changes each; flushed every 1,001 rounds, they needed
-// 3.5 GB of live heap. Variables for tests.
+// 3.5 GB of live heap. The replay keeps going while a flush commits, so the
+// trackers can hold two flushes' rounds: the cap is half the 250,000 changes
+// one flush at a time was sized for. Variables for tests.
 var (
 	timeTravelReplayMaxFlushRounds  = basics.Round(10_000)
 	timeTravelReplayFlushChanges    = 100_000
-	timeTravelReplayFlushMaxChanges = 250_000
+	timeTravelReplayFlushMaxChanges = 125_000
 )
 
 // replayChanges counts what a round keeps in the trackers' memory until it is
@@ -250,24 +258,67 @@ func (ht *historyTracker) prepareCommit(dcc *deferredCommitContext) error {
 	if n == 0 {
 		return nil
 	}
-	defer ledgerTimeTravelWriteMicros.AddMicrosecondsSince(time.Now(), nil)
-	for _, r := range rounds {
-		if err := ht.store.AddRound(uint64(r.rnd), r.changes, r.hdr, r.expired); err != nil {
-			return err
+	// newBlock only appends to pending and postCommit replaces it once the write
+	// is done, so rounds stays as it is
+	w := &historyWrite{done: make(chan struct{})}
+	ht.write = w
+	go func() {
+		defer close(w.done)
+		defer ledgerTimeTravelWriteMicros.AddMicrosecondsSince(time.Now(), nil)
+		for _, r := range rounds {
+			if w.err = ht.store.AddRound(uint64(r.rnd), r.changes, r.hdr, r.expired); w.err != nil {
+				return
+			}
 		}
-	}
-	return ht.store.Sync()
-}
-
-// ledgerTimeTravelWriteMicros is the time commits spend writing the history,
-// outside the account DB transaction that ledger_commitround_micros times.
-var ledgerTimeTravelWriteMicros = metrics.NewCounter("ledger_timetravel_write_micros", "µs spent writing rounds to the time travel store")
-
-func (ht *historyTracker) commitRound(context.Context, trackerdb.TransactionScope, *deferredCommitContext) error {
+		w.err = ht.store.Sync()
+	}()
 	return nil
 }
 
+// historyWrite is a commit's write of its rounds to the time travel store.
+type historyWrite struct {
+	done chan struct{}
+	err  error // set before done is closed
+}
+
+// waitWrite waits for the commit's history write, if prepareCommit started one,
+// and returns its error.
+func (ht *historyTracker) waitWrite() error {
+	if ht.write == nil {
+		return nil
+	}
+	<-ht.write.done
+	return ht.write.err
+}
+
+// ledgerTimeTravelWriteMicros is the time commits spend writing the history,
+// alongside the account DB transaction that ledger_commitround_micros times.
+var ledgerTimeTravelWriteMicros = metrics.NewCounter("ledger_timetravel_write_micros", "µs spent writing rounds to the time travel store")
+
+// commitRound waits for the history write, so that the account DB transaction
+// commits only once its rounds are synced to the store. A retried transaction
+// waits for the same, finished write.
+func (ht *historyTracker) commitRound(context.Context, trackerdb.TransactionScope, *deferredCommitContext) error {
+	return ht.waitWrite()
+}
+
+// The error handlers wait for the history write too, so that none outlives its
+// commit and overlaps the next one's.
+var _ trackerCommitLifetimeHandlers = &historyTracker{}
+
+func (ht *historyTracker) handlePrepareCommitError(*deferredCommitContext)               { ht.finishWrite() }
+func (ht *historyTracker) handleCommitError(*deferredCommitContext)                      { ht.finishWrite() }
+func (ht *historyTracker) handleUnorderedCommit(*deferredCommitContext)                  {}
+func (ht *historyTracker) clearCommitRoundRetry(context.Context, *deferredCommitContext) {}
+func (ht *historyTracker) postCommitUnlocked(context.Context, *deferredCommitContext)    {}
+
+func (ht *historyTracker) finishWrite() {
+	_ = ht.waitWrite() // the commit failed, possibly with this error
+	ht.write = nil
+}
+
 func (ht *historyTracker) postCommit(ctx context.Context, dcc *deferredCommitContext) {
+	ht.write = nil // commitRound waited for it
 	ht.mu.Lock()
 	n := 0
 	for n < len(ht.pending) && ht.pending[n].rnd <= dcc.newBase() {

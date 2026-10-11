@@ -18,6 +18,7 @@ package ledger
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -641,11 +642,13 @@ func TestTimeTravelReplayFlushes(t *testing.T) {
 	}(timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges, timeTravelReplayFlushMaxChanges)
 	timeTravelReplayMaxFlushRounds = 2000
 	// little change: flushes after rounds 2001, 4002 and the last; much: every
-	// 1001 rounds and the last; more than maxChanges (6 a round): every 401 rounds and the last
+	// 1001 rounds and the last; more than maxChanges (6 a round): every 401 rounds
+	// and the last, or every 11 rounds, so that commits overlap the replay
+	// throughout
 	for _, tc := range []struct {
 		changes, maxChanges int
 		commits             uint64
-	}{{math.MaxInt, math.MaxInt, 3}, {-1, math.MaxInt, 5}, {-1, 2400, 13}} {
+	}{{math.MaxInt, math.MaxInt, 3}, {-1, math.MaxInt, 5}, {-1, 2400, 13}, {-1, 60, 455}} {
 		// without its account DB and history, the ledger replays every block
 		require.DirExists(t, prefix+".timetravel")
 		require.NoError(t, os.RemoveAll(prefix+".timetravel"))
@@ -660,6 +663,45 @@ func TestTimeTravelReplayFlushes(t *testing.T) {
 		require.Equal(t, want, digests(l))
 		l.Close()
 	}
+}
+
+// TestHistoryTrackerWriteErrors checks that the history write prepareCommit
+// starts fails commitRound, also when called again as a retried transaction
+// does, and that the error handler leaves no write behind and the rounds for
+// the next commit.
+func TestHistoryTrackerWriteErrors(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	dirs := DirsAndPrefix{DBFilePrefix: "ledger"}
+	dirs.TimeTravelGenesisDir = t.TempDir()
+	ht, err := openHistoryTracker(dirs, config.GetDefaultLocal(), logging.TestingLog(t))
+	require.NoError(t, err)
+	defer ht.store.Close()
+	hdr := func(r basics.Round) []byte { return protocol.Encode(&bookkeeping.BlockHeader{Round: r}) }
+
+	// round 3 does not follow the stored round 1
+	require.NoError(t, ht.store.AddRound(1, nil, hdr(1), nil))
+	ht.pending = []historyRound{{rnd: 3, hdr: hdr(3)}}
+	dcc := &deferredCommitContext{deferredCommitRange: deferredCommitRange{oldBase: 2, offset: 1}}
+	require.NoError(t, ht.prepareCommit(dcc))
+	for range 2 {
+		require.ErrorContains(t, ht.commitRound(context.Background(), nil, dcc), "does not follow stored round 1")
+	}
+	ht.handleCommitError(dcc)
+	require.Nil(t, ht.write)
+	require.Len(t, ht.pending, 1)
+
+	// once round 2 is stored, the next commit writes round 3
+	require.NoError(t, ht.store.AddRound(2, nil, hdr(2), nil))
+	require.NoError(t, ht.prepareCommit(dcc))
+	require.NoError(t, ht.commitRound(context.Background(), nil, dcc))
+	ht.postCommit(context.Background(), dcc)
+	require.Nil(t, ht.write)
+	require.Empty(t, ht.pending)
+	last, ok := ht.store.Last()
+	require.True(t, ok)
+	require.EqualValues(t, 3, last)
 }
 
 // TestHistViewModel checks the merged reads (store plus in-memory rounds,
