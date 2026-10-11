@@ -2035,6 +2035,390 @@
         }
       }
     },
+    "/v2/accounts/{address}/versions": {
+      "get": {
+        "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the versions of an account.",
+        "operationId": "AccountVersions",
+        "parameters": [
+          {
+            "$ref": "#/parameters/address"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["all", "none", "created-apps-params", "created-assets-params"]
+            },
+            "collectionFormat": "csv",
+            "description": "Exclude objects, as for GET /v2/accounts/{address}. Use `all` to list the versions of the base record only. Use `created-apps-params` or `created-assets-params` to list the creation and destruction of created applications or assets but not the changes of their parameters. Multiple values can be comma-separated. `all` and `none` cannot be combined with other values. Defaults to `none`.",
+            "name": "exclude",
+            "in": "query"
+          },
+          {
+            "$ref": "#/parameters/min-round"
+          },
+          {
+            "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-order"
+          },
+          {
+            "$ref": "#/parameters/limit"
+          },
+          {
+            "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/versions-include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/AccountVersionsResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
+    "/v2/accounts/{address}/assets/{asset-id}/versions": {
+      "get": {
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/assets/{asset-id} returns: the account's holding of the asset and, if the account created it, the asset's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the versions of an account's asset holding.",
+        "operationId": "AccountAssetVersions",
+        "parameters": [
+          {
+            "$ref": "#/parameters/address"
+          },
+          {
+            "$ref": "#/parameters/asset-id"
+          },
+          {
+            "$ref": "#/parameters/min-round"
+          },
+          {
+            "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-order"
+          },
+          {
+            "$ref": "#/parameters/limit"
+          },
+          {
+            "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/versions-include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/AccountVersionsResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
+    "/v2/accounts/{address}/applications/{application-id}/versions": {
+      "get": {
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the versions of an account's application local state.",
+        "operationId": "AccountApplicationVersions",
+        "parameters": [
+          {
+            "$ref": "#/parameters/address"
+          },
+          {
+            "$ref": "#/parameters/application-id"
+          },
+          {
+            "$ref": "#/parameters/min-round"
+          },
+          {
+            "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-order"
+          },
+          {
+            "$ref": "#/parameters/limit"
+          },
+          {
+            "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/versions-include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/AccountVersionsResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
+    "/v2/assets/{asset-id}/versions": {
+      "get": {
+        "description": "Lists the versions of an asset's parameters: its creation, reconfigurations and destruction. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the versions of an asset.",
+        "operationId": "AssetVersions",
+        "parameters": [
+          {
+            "$ref": "#/parameters/asset-id"
+          },
+          {
+            "$ref": "#/parameters/min-round"
+          },
+          {
+            "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-order"
+          },
+          {
+            "$ref": "#/parameters/limit"
+          },
+          {
+            "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/versions-include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/AssetVersionsResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
+    "/v2/applications/{application-id}/versions": {
+      "get": {
+        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the versions of an application.",
+        "operationId": "ApplicationVersions",
+        "parameters": [
+          {
+            "$ref": "#/parameters/application-id"
+          },
+          {
+            "$ref": "#/parameters/min-round"
+          },
+          {
+            "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-order"
+          },
+          {
+            "$ref": "#/parameters/limit"
+          },
+          {
+            "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/versions-include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/ApplicationVersionsResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
+    "/v2/applications/{application-id}/box/versions": {
+      "get": {
+        "description": "Lists the versions of a box: its creation, writes and deletion. Box names must be in the goal app call arg encoding form 'encoding:value'. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the versions of an application's box.",
+        "operationId": "ApplicationBoxVersions",
+        "parameters": [
+          {
+            "$ref": "#/parameters/application-id"
+          },
+          {
+            "type": "string",
+            "description": "A box name, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'.",
+            "name": "name",
+            "in": "query",
+            "required": true
+          },
+          {
+            "$ref": "#/parameters/min-round"
+          },
+          {
+            "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-order"
+          },
+          {
+            "$ref": "#/parameters/limit"
+          },
+          {
+            "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/versions-include"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/BoxVersionsResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
     "/v2/ledger/sync": {
       "delete": {
         "description": "Unset the ledger sync round.",
@@ -2465,6 +2849,226 @@
     }
   },
   "definitions": {
+    "AccountVersion": {
+      "description": "The objects of an account that changed in a round. Lists that did not change are omitted.",
+      "type": "object",
+      "required": ["round", "timestamp"],
+      "properties": {
+        "round": {
+          "description": "The round of the version.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "timestamp": {
+          "description": "The timestamp of the version's block, in seconds since the epoch.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "base": {
+          "description": "Present if the account's base record changed.",
+          "$ref": "#/definitions/AccountBaseVersion"
+        },
+        "assets": {
+          "description": "The asset holdings that changed.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AssetHoldingVersion"
+          }
+        },
+        "apps-local-state": {
+          "description": "The application local states that changed.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ApplicationLocalStateVersion"
+          }
+        },
+        "created-assets": {
+          "description": "The created assets whose parameters changed, or, with `exclude=created-assets-params`, that were created or destroyed.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CreatedAssetVersion"
+          }
+        },
+        "created-apps": {
+          "description": "The created applications whose parameters changed, or, with `exclude=created-apps-params`, that were created or deleted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CreatedApplicationVersion"
+          }
+        }
+      }
+    },
+    "AccountBaseVersion": {
+      "description": "A version of an account's base record.",
+      "type": "object",
+      "required": ["deleted"],
+      "properties": {
+        "deleted": {
+          "description": "Whether the account was closed.",
+          "type": "boolean"
+        },
+        "account": {
+          "description": "With `include=values`, the account as of the version's round, without its assets and applications, as GET /v2/accounts/{address}?exclude=all&round={round} returns it.",
+          "$ref": "#/definitions/Account"
+        }
+      }
+    },
+    "AssetHoldingVersion": {
+      "description": "A version of an asset holding.",
+      "type": "object",
+      "required": ["asset-id", "deleted"],
+      "properties": {
+        "asset-id": {
+          "description": "The asset.",
+          "type": "integer",
+          "x-go-type": "basics.AssetIndex"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the holding (opt out).",
+          "type": "boolean"
+        },
+        "asset-holding": {
+          "description": "With `include=values`, the new holding.",
+          "$ref": "#/definitions/AssetHolding"
+        }
+      }
+    },
+    "ApplicationLocalStateVersion": {
+      "description": "A version of an application local state.",
+      "type": "object",
+      "required": ["app-id", "deleted"],
+      "properties": {
+        "app-id": {
+          "description": "The application.",
+          "type": "integer",
+          "x-go-type": "basics.AppIndex"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the local state (close out or clear).",
+          "type": "boolean"
+        },
+        "app-local-state": {
+          "description": "With `include=values`, the new local state.",
+          "$ref": "#/definitions/ApplicationLocalState"
+        }
+      }
+    },
+    "CreatedAssetVersion": {
+      "description": "A version of the parameters of an asset the account created.",
+      "type": "object",
+      "required": ["asset-id", "deleted"],
+      "properties": {
+        "asset-id": {
+          "description": "The asset.",
+          "type": "integer",
+          "x-go-type": "basics.AssetIndex"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the asset.",
+          "type": "boolean"
+        },
+        "asset": {
+          "description": "With `include=values`, the new asset parameters.",
+          "$ref": "#/definitions/Asset"
+        }
+      }
+    },
+    "CreatedApplicationVersion": {
+      "description": "A version of the parameters of an application the account created.",
+      "type": "object",
+      "required": ["app-id", "deleted"],
+      "properties": {
+        "app-id": {
+          "description": "The application.",
+          "type": "integer",
+          "x-go-type": "basics.AppIndex"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the application.",
+          "type": "boolean"
+        },
+        "application": {
+          "description": "With `include=values`, the new application parameters.",
+          "$ref": "#/definitions/Application"
+        }
+      }
+    },
+    "AssetVersion": {
+      "description": "A version of an asset's parameters.",
+      "type": "object",
+      "required": ["round", "timestamp", "deleted"],
+      "properties": {
+        "round": {
+          "description": "The round of the version.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "timestamp": {
+          "description": "The timestamp of the version's block, in seconds since the epoch.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the asset.",
+          "type": "boolean"
+        },
+        "asset": {
+          "description": "With `include=values`, the new asset parameters.",
+          "$ref": "#/definitions/Asset"
+        }
+      }
+    },
+    "ApplicationVersion": {
+      "description": "A version of an application's parameters.",
+      "type": "object",
+      "required": ["round", "timestamp", "deleted"],
+      "properties": {
+        "round": {
+          "description": "The round of the version.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "timestamp": {
+          "description": "The timestamp of the version's block, in seconds since the epoch.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the application.",
+          "type": "boolean"
+        },
+        "application": {
+          "description": "With `include=values`, the new application parameters.",
+          "$ref": "#/definitions/Application"
+        }
+      }
+    },
+    "BoxVersion": {
+      "description": "A version of a box.",
+      "type": "object",
+      "required": ["round", "timestamp", "deleted"],
+      "properties": {
+        "round": {
+          "description": "The round of the version.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "timestamp": {
+          "description": "The timestamp of the version's block, in seconds since the epoch.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "deleted": {
+          "description": "Whether the version is the deletion of the box.",
+          "type": "boolean"
+        },
+        "value": {
+          "description": "With `include=values`, the new box value, base64 encoded.",
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
     "GenesisAllocation": {
       "title": "Allocations for Genesis File",
       "type": "object",
@@ -4086,6 +4690,40 @@
     }
   },
   "parameters": {
+    "min-round": {
+      "type": "integer",
+      "x-go-type": "basics.Round",
+      "minimum": 0,
+      "description": "Include versions at this round or later. Defaults to 0.",
+      "name": "min-round",
+      "in": "query"
+    },
+    "max-round": {
+      "type": "integer",
+      "x-go-type": "basics.Round",
+      "minimum": 0,
+      "description": "Include versions at this round or earlier. Defaults to the latest round.",
+      "name": "max-round",
+      "in": "query"
+    },
+    "versions-order": {
+      "type": "string",
+      "enum": ["asc", "desc"],
+      "description": "List versions oldest first (`asc`, the default) or newest first (`desc`).",
+      "name": "order",
+      "in": "query"
+    },
+    "versions-include": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["values"]
+      },
+      "collectionFormat": "csv",
+      "description": "Include additional items in the response. Use `values` to include the new value of each changed object.",
+      "name": "include",
+      "in": "query"
+    },
     "catchpoint": {
       "type": "string",
       "format": "catchpoint",
@@ -4194,6 +4832,102 @@
     }
   },
   "responses": {
+    "AccountVersionsResponse": {
+      "description": "Versions of an account's objects.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "versions"],
+        "properties": {
+          "round": {
+            "description": "The last round of the range: `max-round`, or the latest round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "next-token": {
+            "description": "Present if more versions remain: provide it as the next parameter to get them.",
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/AccountVersion"
+            }
+          }
+        }
+      }
+    },
+    "AssetVersionsResponse": {
+      "description": "Versions of an asset.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "versions"],
+        "properties": {
+          "round": {
+            "description": "The last round of the range: `max-round`, or the latest round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "next-token": {
+            "description": "Present if more versions remain: provide it as the next parameter to get them.",
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/AssetVersion"
+            }
+          }
+        }
+      }
+    },
+    "ApplicationVersionsResponse": {
+      "description": "Versions of an application.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "versions"],
+        "properties": {
+          "round": {
+            "description": "The last round of the range: `max-round`, or the latest round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "next-token": {
+            "description": "Present if more versions remain: provide it as the next parameter to get them.",
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/ApplicationVersion"
+            }
+          }
+        }
+      }
+    },
+    "BoxVersionsResponse": {
+      "description": "Versions of a box.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "versions"],
+        "properties": {
+          "round": {
+            "description": "The last round of the range: `max-round`, or the latest round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "next-token": {
+            "description": "Present if more versions remain: provide it as the next parameter to get them.",
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/BoxVersion"
+            }
+          }
+        }
+      }
+    },
     "GetPeersResponse": {
       "description": "Response containing the network peers of the node",
       "schema": {

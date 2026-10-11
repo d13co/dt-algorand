@@ -560,6 +560,16 @@ func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Addres
 		return internalError(ctx, err, fmt.Sprintf("could not retrieve consensus information for last round (%d)", lastRound), v2.Log)
 	}
 
+	account, err := baseAccount(addr, record, lastRound, &consensus, amountWithoutPendingRewards)
+	if err != nil {
+		return internalError(ctx, err, errInternalFailure, v2.Log)
+	}
+	response := model.AccountResponse(account)
+	return ctx.JSON(http.StatusOK, response)
+}
+
+// baseAccount is an account's base record (no assets or apps) as of round lastRound.
+func baseAccount(addr basics.Address, record ledgercore.AccountData, lastRound basics.Round, consensus *config.ConsensusParams, amountWithoutPendingRewards basics.MicroAlgos) (model.Account, error) {
 	var apiParticipation *model.AccountParticipation
 	if !record.VoteID.IsEmpty() {
 		apiParticipation = &model.AccountParticipation{
@@ -577,10 +587,10 @@ func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Addres
 
 	pendingRewards, overflowed := basics.OSubA(record.MicroAlgos, amountWithoutPendingRewards)
 	if overflowed {
-		return internalError(ctx, errors.New("overflow on pending reward calculation"), errInternalFailure, v2.Log)
+		return model.Account{}, errors.New("overflow on pending reward calculation")
 	}
 
-	account := model.Account{
+	return model.Account{
 		SigType:                     nil,
 		Round:                       lastRound,
 		Address:                     addr.String(),
@@ -604,12 +614,10 @@ func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Addres
 		AppsTotalExtraPages: omitEmpty(uint64(record.TotalExtraAppPages)),
 		TotalBoxes:          omitEmpty(record.TotalBoxes),
 		TotalBoxBytes:       omitEmpty(record.TotalBoxBytes),
-		MinBalance:          record.MinBalance(&consensus).Raw,
+		MinBalance:          record.MinBalance(consensus).Raw,
 		LastProposed:        omitEmpty(record.LastProposed),
 		LastHeartbeat:       omitEmpty(record.LastHeartbeat),
-	}
-	response := model.AccountResponse(account)
-	return ctx.JSON(http.StatusOK, response)
+	}, nil
 }
 
 // AccountAssetInformation gets account information about a given asset.

@@ -64,6 +64,12 @@ const (
 	TxTypeStpf   TxType = "stpf"
 )
 
+// Defines values for VersionsOrder.
+const (
+	VersionsOrderAsc  VersionsOrder = "asc"
+	VersionsOrderDesc VersionsOrder = "desc"
+)
+
 // Defines values for AccountInformationParamsExclude.
 const (
 	AccountInformationParamsExcludeAll                 AccountInformationParamsExclude = "all"
@@ -89,10 +95,32 @@ const (
 	AccountApplicationInformationParamsFormatMsgpack AccountApplicationInformationParamsFormat = "msgpack"
 )
 
+// Defines values for AccountApplicationVersionsParamsOrder.
+const (
+	AccountApplicationVersionsParamsOrderAsc  AccountApplicationVersionsParamsOrder = "asc"
+	AccountApplicationVersionsParamsOrderDesc AccountApplicationVersionsParamsOrder = "desc"
+)
+
+// Defines values for AccountApplicationVersionsParamsInclude.
+const (
+	AccountApplicationVersionsParamsIncludeValues AccountApplicationVersionsParamsInclude = "values"
+)
+
 // Defines values for AccountAssetInformationParamsFormat.
 const (
 	AccountAssetInformationParamsFormatJson    AccountAssetInformationParamsFormat = "json"
 	AccountAssetInformationParamsFormatMsgpack AccountAssetInformationParamsFormat = "msgpack"
+)
+
+// Defines values for AccountAssetVersionsParamsOrder.
+const (
+	AccountAssetVersionsParamsOrderAsc  AccountAssetVersionsParamsOrder = "asc"
+	AccountAssetVersionsParamsOrderDesc AccountAssetVersionsParamsOrder = "desc"
+)
+
+// Defines values for AccountAssetVersionsParamsInclude.
+const (
+	AccountAssetVersionsParamsIncludeValues AccountAssetVersionsParamsInclude = "values"
 )
 
 // Defines values for GetPendingTransactionsByAddressParamsFormat.
@@ -101,9 +129,61 @@ const (
 	GetPendingTransactionsByAddressParamsFormatMsgpack GetPendingTransactionsByAddressParamsFormat = "msgpack"
 )
 
+// Defines values for AccountVersionsParamsExclude.
+const (
+	AccountVersionsParamsExcludeAll                 AccountVersionsParamsExclude = "all"
+	AccountVersionsParamsExcludeCreatedAppsParams   AccountVersionsParamsExclude = "created-apps-params"
+	AccountVersionsParamsExcludeCreatedAssetsParams AccountVersionsParamsExclude = "created-assets-params"
+	AccountVersionsParamsExcludeNone                AccountVersionsParamsExclude = "none"
+)
+
+// Defines values for AccountVersionsParamsOrder.
+const (
+	AccountVersionsParamsOrderAsc  AccountVersionsParamsOrder = "asc"
+	AccountVersionsParamsOrderDesc AccountVersionsParamsOrder = "desc"
+)
+
+// Defines values for AccountVersionsParamsInclude.
+const (
+	AccountVersionsParamsIncludeValues AccountVersionsParamsInclude = "values"
+)
+
+// Defines values for ApplicationBoxVersionsParamsOrder.
+const (
+	ApplicationBoxVersionsParamsOrderAsc  ApplicationBoxVersionsParamsOrder = "asc"
+	ApplicationBoxVersionsParamsOrderDesc ApplicationBoxVersionsParamsOrder = "desc"
+)
+
+// Defines values for ApplicationBoxVersionsParamsInclude.
+const (
+	ApplicationBoxVersionsParamsIncludeValues ApplicationBoxVersionsParamsInclude = "values"
+)
+
 // Defines values for GetApplicationBoxesParamsInclude.
 const (
 	GetApplicationBoxesParamsIncludeValues GetApplicationBoxesParamsInclude = "values"
+)
+
+// Defines values for ApplicationVersionsParamsOrder.
+const (
+	ApplicationVersionsParamsOrderAsc  ApplicationVersionsParamsOrder = "asc"
+	ApplicationVersionsParamsOrderDesc ApplicationVersionsParamsOrder = "desc"
+)
+
+// Defines values for ApplicationVersionsParamsInclude.
+const (
+	ApplicationVersionsParamsIncludeValues ApplicationVersionsParamsInclude = "values"
+)
+
+// Defines values for AssetVersionsParamsOrder.
+const (
+	AssetVersionsParamsOrderAsc  AssetVersionsParamsOrder = "asc"
+	AssetVersionsParamsOrderDesc AssetVersionsParamsOrder = "desc"
+)
+
+// Defines values for AssetVersionsParamsInclude.
+const (
+	AssetVersionsParamsIncludeValues AssetVersionsParamsInclude = "values"
 )
 
 // Defines values for GetBlockParamsFormat.
@@ -304,6 +384,18 @@ type AccountAssetHolding struct {
 	AssetParams *AssetParams `json:"asset-params,omitempty"`
 }
 
+// AccountBaseVersion A version of an account's base record.
+type AccountBaseVersion struct {
+	// Account Account information at a given round.
+	//
+	// Definition:
+	// data/basics/userBalance.go : AccountData
+	Account *Account `json:"account,omitempty"`
+
+	// Deleted Whether the account was closed.
+	Deleted bool `json:"deleted"`
+}
+
 // AccountParticipation AccountParticipation describes the parameters used by this account in consensus protocol.
 type AccountParticipation struct {
 	// SelectionParticipationKey \[sel\] Selection public key (if any) currently registered for this round.
@@ -331,6 +423,30 @@ type AccountStateDelta struct {
 
 	// Delta Application state delta.
 	Delta StateDelta `json:"delta"`
+}
+
+// AccountVersion The objects of an account that changed in a round. Lists that did not change are omitted.
+type AccountVersion struct {
+	// AppsLocalState The application local states that changed.
+	AppsLocalState *[]ApplicationLocalStateVersion `json:"apps-local-state,omitempty"`
+
+	// Assets The asset holdings that changed.
+	Assets *[]AssetHoldingVersion `json:"assets,omitempty"`
+
+	// Base A version of an account's base record.
+	Base *AccountBaseVersion `json:"base,omitempty"`
+
+	// CreatedApps The created applications whose parameters changed, or, with `exclude=created-apps-params`, that were created or deleted.
+	CreatedApps *[]CreatedApplicationVersion `json:"created-apps,omitempty"`
+
+	// CreatedAssets The created assets whose parameters changed, or, with `exclude=created-assets-params`, that were created or destroyed.
+	CreatedAssets *[]CreatedAssetVersion `json:"created-assets,omitempty"`
+
+	// Round The round of the version.
+	Round basics.Round `json:"round"`
+
+	// Timestamp The timestamp of the version's block, in seconds since the epoch.
+	Timestamp int64 `json:"timestamp"`
 }
 
 // AppCallLogs The logged messages from an app call along with the app ID and outer transaction ID. Logs appear in the same order that they were emitted.
@@ -399,6 +515,18 @@ type ApplicationLocalState struct {
 	Schema ApplicationStateSchema `json:"schema"`
 }
 
+// ApplicationLocalStateVersion A version of an application local state.
+type ApplicationLocalStateVersion struct {
+	// AppId The application.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// AppLocalState Stores local state associated with an application.
+	AppLocalState *ApplicationLocalState `json:"app-local-state,omitempty"`
+
+	// Deleted Whether the version is the deletion of the local state (close out or clear).
+	Deleted bool `json:"deleted"`
+}
+
 // ApplicationParams Stores the global information associated with an application.
 type ApplicationParams struct {
 	// ApprovalProgram \[approv\] approval program.
@@ -462,6 +590,21 @@ type ApplicationStateSchema struct {
 	NumUint uint64 `json:"num-uint"`
 }
 
+// ApplicationVersion A version of an application's parameters.
+type ApplicationVersion struct {
+	// Application Application index and its parameters
+	Application *Application `json:"application,omitempty"`
+
+	// Deleted Whether the version is the deletion of the application.
+	Deleted bool `json:"deleted"`
+
+	// Round The round of the version.
+	Round basics.Round `json:"round"`
+
+	// Timestamp The timestamp of the version's block, in seconds since the epoch.
+	Timestamp int64 `json:"timestamp"`
+}
+
 // Asset Specifies both the unique identifier and the parameters for an asset
 type Asset struct {
 	// Index unique asset identifier
@@ -498,6 +641,21 @@ type AssetHoldingReference struct {
 
 	// Asset Asset ID of the holding.
 	Asset basics.AssetIndex `json:"asset"`
+}
+
+// AssetHoldingVersion A version of an asset holding.
+type AssetHoldingVersion struct {
+	// AssetHolding Describes an asset held by an account.
+	//
+	// Definition:
+	// data/basics/userBalance.go : AssetHolding
+	AssetHolding *AssetHolding `json:"asset-holding,omitempty"`
+
+	// AssetId The asset.
+	AssetId basics.AssetIndex `json:"asset-id"`
+
+	// Deleted Whether the version is the deletion of the holding (opt out).
+	Deleted bool `json:"deleted"`
 }
 
 // AssetParams AssetParams specifies the parameters for an asset.
@@ -553,6 +711,21 @@ type AssetParams struct {
 	UrlB64 *[]byte `json:"url-b64,omitempty"`
 }
 
+// AssetVersion A version of an asset's parameters.
+type AssetVersion struct {
+	// Asset Specifies both the unique identifier and the parameters for an asset
+	Asset *Asset `json:"asset,omitempty"`
+
+	// Deleted Whether the version is the deletion of the asset.
+	Deleted bool `json:"deleted"`
+
+	// Round The round of the version.
+	Round basics.Round `json:"round"`
+
+	// Timestamp The timestamp of the version's block, in seconds since the epoch.
+	Timestamp int64 `json:"timestamp"`
+}
+
 // AvmKeyValue Represents an AVM key-value pair in an application store.
 type AvmKeyValue struct {
 	Key []byte `json:"key"`
@@ -603,6 +776,21 @@ type BoxReference struct {
 	Name []byte `json:"name"`
 }
 
+// BoxVersion A version of a box.
+type BoxVersion struct {
+	// Deleted Whether the version is the deletion of the box.
+	Deleted bool `json:"deleted"`
+
+	// Round The round of the version.
+	Round basics.Round `json:"round"`
+
+	// Timestamp The timestamp of the version's block, in seconds since the epoch.
+	Timestamp int64 `json:"timestamp"`
+
+	// Value With `include=values`, the new box value, base64 encoded.
+	Value *[]byte `json:"value,omitempty"`
+}
+
 // BuildVersion defines model for BuildVersion.
 type BuildVersion struct {
 	Branch      string `json:"branch"`
@@ -611,6 +799,30 @@ type BuildVersion struct {
 	CommitHash  string `json:"commit_hash"`
 	Major       int    `json:"major"`
 	Minor       int    `json:"minor"`
+}
+
+// CreatedApplicationVersion A version of the parameters of an application the account created.
+type CreatedApplicationVersion struct {
+	// AppId The application.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// Application Application index and its parameters
+	Application *Application `json:"application,omitempty"`
+
+	// Deleted Whether the version is the deletion of the application.
+	Deleted bool `json:"deleted"`
+}
+
+// CreatedAssetVersion A version of the parameters of an asset the account created.
+type CreatedAssetVersion struct {
+	// Asset Specifies both the unique identifier and the parameters for an asset
+	Asset *Asset `json:"asset,omitempty"`
+
+	// AssetId The asset.
+	AssetId basics.AssetIndex `json:"asset-id"`
+
+	// Deleted Whether the version is the deletion of the asset.
+	Deleted bool `json:"deleted"`
 }
 
 // DebugSettingsProf algod mutex and blocking profiling state.
@@ -1109,6 +1321,12 @@ type Limit = uint64
 // Max defines model for max.
 type Max = uint64
 
+// MaxRound defines model for max-round.
+type MaxRound = basics.Round
+
+// MinRound defines model for min-round.
+type MinRound = basics.Round
+
 // Next defines model for next.
 type Next = string
 
@@ -1123,6 +1341,12 @@ type TxID = string
 
 // TxType defines model for tx-type.
 type TxType string
+
+// VersionsInclude defines model for versions-include.
+type VersionsInclude = []string
+
+// VersionsOrder defines model for versions-order.
+type VersionsOrder string
 
 // AccountApplicationResponse defines model for AccountApplicationResponse.
 type AccountApplicationResponse struct {
@@ -1184,11 +1408,41 @@ type AccountAssetsInformationResponse struct {
 // data/basics/userBalance.go : AccountData
 type AccountResponse = Account
 
+// AccountVersionsResponse defines model for AccountVersionsResponse.
+type AccountVersionsResponse struct {
+	// NextToken Present if more versions remain: provide it as the next parameter to get them.
+	NextToken *string `json:"next-token,omitempty"`
+
+	// Round The last round of the range: `max-round`, or the latest round.
+	Round    basics.Round     `json:"round"`
+	Versions []AccountVersion `json:"versions"`
+}
+
 // ApplicationResponse Application index and its parameters
 type ApplicationResponse = Application
 
+// ApplicationVersionsResponse defines model for ApplicationVersionsResponse.
+type ApplicationVersionsResponse struct {
+	// NextToken Present if more versions remain: provide it as the next parameter to get them.
+	NextToken *string `json:"next-token,omitempty"`
+
+	// Round The last round of the range: `max-round`, or the latest round.
+	Round    basics.Round         `json:"round"`
+	Versions []ApplicationVersion `json:"versions"`
+}
+
 // AssetResponse Specifies both the unique identifier and the parameters for an asset
 type AssetResponse = Asset
+
+// AssetVersionsResponse defines model for AssetVersionsResponse.
+type AssetVersionsResponse struct {
+	// NextToken Present if more versions remain: provide it as the next parameter to get them.
+	NextToken *string `json:"next-token,omitempty"`
+
+	// Round The last round of the range: `max-round`, or the latest round.
+	Round    basics.Round   `json:"round"`
+	Versions []AssetVersion `json:"versions"`
+}
 
 // BlockHashResponse defines model for BlockHashResponse.
 type BlockHashResponse struct {
@@ -1218,6 +1472,16 @@ type BlockTxidsResponse struct {
 
 // BoxResponse Box name and its content.
 type BoxResponse = Box
+
+// BoxVersionsResponse defines model for BoxVersionsResponse.
+type BoxVersionsResponse struct {
+	// NextToken Present if more versions remain: provide it as the next parameter to get them.
+	NextToken *string `json:"next-token,omitempty"`
+
+	// Round The last round of the range: `max-round`, or the latest round.
+	Round    basics.Round `json:"round"`
+	Versions []BoxVersion `json:"versions"`
+}
 
 // BoxesResponse defines model for BoxesResponse.
 type BoxesResponse struct {
@@ -1512,6 +1776,33 @@ type AccountApplicationInformationParams struct {
 // AccountApplicationInformationParamsFormat defines parameters for AccountApplicationInformation.
 type AccountApplicationInformationParamsFormat string
 
+// AccountApplicationVersionsParams defines parameters for AccountApplicationVersions.
+type AccountApplicationVersionsParams struct {
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *AccountApplicationVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]AccountApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// AccountApplicationVersionsParamsOrder defines parameters for AccountApplicationVersions.
+type AccountApplicationVersionsParamsOrder string
+
+// AccountApplicationVersionsParamsInclude defines parameters for AccountApplicationVersions.
+type AccountApplicationVersionsParamsInclude string
+
 // AccountAssetsInformationParams defines parameters for AccountAssetsInformation.
 type AccountAssetsInformationParams struct {
 	// Limit Maximum number of results to return.
@@ -1530,6 +1821,33 @@ type AccountAssetInformationParams struct {
 // AccountAssetInformationParamsFormat defines parameters for AccountAssetInformation.
 type AccountAssetInformationParamsFormat string
 
+// AccountAssetVersionsParams defines parameters for AccountAssetVersions.
+type AccountAssetVersionsParams struct {
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *AccountAssetVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]AccountAssetVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// AccountAssetVersionsParamsOrder defines parameters for AccountAssetVersions.
+type AccountAssetVersionsParamsOrder string
+
+// AccountAssetVersionsParamsInclude defines parameters for AccountAssetVersions.
+type AccountAssetVersionsParamsInclude string
+
 // GetPendingTransactionsByAddressParams defines parameters for GetPendingTransactionsByAddress.
 type GetPendingTransactionsByAddressParams struct {
 	// Max Truncated number of transactions to display. If max=0, returns all pending txns.
@@ -1542,11 +1860,74 @@ type GetPendingTransactionsByAddressParams struct {
 // GetPendingTransactionsByAddressParamsFormat defines parameters for GetPendingTransactionsByAddress.
 type GetPendingTransactionsByAddressParamsFormat string
 
+// AccountVersionsParams defines parameters for AccountVersions.
+type AccountVersionsParams struct {
+	// Exclude Exclude objects, as for GET /v2/accounts/{address}. Use `all` to list the versions of the base record only. Use `created-apps-params` or `created-assets-params` to list the creation and destruction of created applications or assets but not the changes of their parameters. Multiple values can be comma-separated. `all` and `none` cannot be combined with other values. Defaults to `none`.
+	Exclude *[]AccountVersionsParamsExclude `form:"exclude,omitempty" json:"exclude,omitempty"`
+
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *AccountVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]AccountVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// AccountVersionsParamsExclude defines parameters for AccountVersions.
+type AccountVersionsParamsExclude string
+
+// AccountVersionsParamsOrder defines parameters for AccountVersions.
+type AccountVersionsParamsOrder string
+
+// AccountVersionsParamsInclude defines parameters for AccountVersions.
+type AccountVersionsParamsInclude string
+
 // GetApplicationBoxByNameParams defines parameters for GetApplicationBoxByName.
 type GetApplicationBoxByNameParams struct {
 	// Name A box name, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'.
 	Name string `form:"name" json:"name"`
 }
+
+// ApplicationBoxVersionsParams defines parameters for ApplicationBoxVersions.
+type ApplicationBoxVersionsParams struct {
+	// Name A box name, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'.
+	Name string `form:"name" json:"name"`
+
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *ApplicationBoxVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]ApplicationBoxVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// ApplicationBoxVersionsParamsOrder defines parameters for ApplicationBoxVersions.
+type ApplicationBoxVersionsParamsOrder string
+
+// ApplicationBoxVersionsParamsInclude defines parameters for ApplicationBoxVersions.
+type ApplicationBoxVersionsParamsInclude string
 
 // GetApplicationBoxesParams defines parameters for GetApplicationBoxes.
 type GetApplicationBoxesParams struct {
@@ -1571,6 +1952,60 @@ type GetApplicationBoxesParams struct {
 
 // GetApplicationBoxesParamsInclude defines parameters for GetApplicationBoxes.
 type GetApplicationBoxesParamsInclude string
+
+// ApplicationVersionsParams defines parameters for ApplicationVersions.
+type ApplicationVersionsParams struct {
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *ApplicationVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]ApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// ApplicationVersionsParamsOrder defines parameters for ApplicationVersions.
+type ApplicationVersionsParamsOrder string
+
+// ApplicationVersionsParamsInclude defines parameters for ApplicationVersions.
+type ApplicationVersionsParamsInclude string
+
+// AssetVersionsParams defines parameters for AssetVersions.
+type AssetVersionsParams struct {
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *AssetVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]AssetVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// AssetVersionsParamsOrder defines parameters for AssetVersions.
+type AssetVersionsParamsOrder string
+
+// AssetVersionsParamsInclude defines parameters for AssetVersions.
+type AssetVersionsParamsInclude string
 
 // GetBlockParams defines parameters for GetBlock.
 type GetBlockParams struct {

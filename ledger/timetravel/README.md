@@ -30,6 +30,17 @@ Read endpoints take `?round=R` and answer as of the end of round R (the `round` 
 
 Not served for pruned rounds (the price of `Archival: false`): full blocks (`/v2/blocks/{R}` without `header-only`), `/v2/blocks/{R}/txids`, `/logs`, `/transactions/{txid}/proof`. `goal clerk simulate --round R` works unchanged.
 
+Object histories (`timetravel` tag in the API spec, registered only with `EnableTimeTravel`): `GET .../versions` lists the rounds at which an object's stored value changed, paginated, with the new values on `include=values`. A write of an identical value is not a version; a deletion is (`deleted: true`). Pending rewards are not versions: each version's account is the account at that round, as `?round=` returns it. See [VERSIONS.md](VERSIONS.md) for the design.
+
+| endpoint | versions of |
+|---|---|
+| `GET /v2/accounts/{addr}/versions` | everything `/v2/accounts/{addr}` returns: base record, holdings, local states, created assets' and apps' params (`exclude=all`, `created-apps-params`, `created-assets-params` narrow it as they do there). Each version lists only the objects that changed in that round, so `?round=min-round` plus the versions gives the account at any round of the range |
+| `GET /v2/accounts/{addr}/assets/{id}/versions`, `/applications/{id}/versions` | the holding or local state, plus the params if the account created the asset or app |
+| `GET /v2/assets/{id}/versions`, `GET /v2/applications/{id}/versions` | the params (global state included) |
+| `GET /v2/applications/{id}/box/versions?name=` | the box |
+
+They take `min-round`, `max-round` (inclusive, default 0 and the latest round), `order=asc|desc`, `limit` (default 100, at most 10,000, or 1,000 with values) and `next` (the previous page's `next-token`, present if and only if more versions remain); pages with values also end once their stored values pass 1 MB (the JSON is larger: base64, decoded state). History never changes, so pages stay consistent while blocks arrive. A leaf object's versions are one range scan (its versions are adjacent in the store); an account merges one scan per object it has ever had, capped by `MaxAPIResourcesPerAccount`, counting every resource the account ever had, deleted ones included (400 beyond it).
+
 `GET /v2/deltas/{R}` works for any round whose block is still stored (every round with `Archival: true`, the last ~1000 otherwise): rounds older than the trackers' in-memory deltas are re-evaluated (see [Node integration](#node-integration)).
 
 `Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. The cost is the archival block DB (~3.5 TB) plus the history (~53 GB; the ~12 GB of history headers duplicate the block DB and go unused).
@@ -88,7 +99,6 @@ Since a read is one seek whatever the age of the version, the store never re-wri
 ### TODO
 
 - Research ways to make catchpoints (fast catchup) work, instead of requiring a sync from genesis. Candidates: start the history at the catchpoint round and serve only later rounds; ship history snapshots (Pebble checkpoints or SST files) alongside catchpoints; serve rounds after the catchpoint right away while a background job backfills the older rounds forward from genesis (replaying archival peers' blocks, or importing deltas from a node that serves them; going backwards from the catchpoint is not possible, since deltas carry no previous values).
-- Resource endpoints to expose the rounds at which they changes, something like `/v2/accounts/ABC?versions` returning paginated full objects
 
 ## Evaluation
 

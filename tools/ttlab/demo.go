@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/algorand/go-algorand/config"
@@ -140,6 +141,7 @@ done: int 1`)
 
 	type live struct {
 		n, bal float64
+		raw    float64 // the balance without pending rewards: changes only with the account record
 		box    string
 	}
 	history := map[uint64]live{}
@@ -162,7 +164,7 @@ done: int 1`)
 		if first == 0 {
 			first = rnd
 		}
-		history[rnd] = live{n: globalUint(appInfo), box: fmt.Sprint(box["value"]), bal: acct["amount"].(float64)}
+		history[rnd] = live{n: globalUint(appInfo), box: fmt.Sprint(box["value"]), bal: acct["amount"].(float64), raw: acct["amount-without-pending-rewards"].(float64)}
 	}
 	st, _ := c.Status()
 	fmt.Printf("built rounds %d..%d (latest %d)\n", first, st.LastRound, st.LastRound)
@@ -227,6 +229,87 @@ done: int 1`)
 		check(fmt.Sprintf("POST /v2/transactions/simulate {round:%d, allow-unnamed-resources} -> %d logs=%v", r, resp.StatusCode, logs),
 			resp.StatusCode == http.StatusOK && fmt.Sprint(logs) == fmt.Sprint(wantLogs))
 	}
+
+	// versions: the rounds at which the live values changed, paged
+	lo, hi := first+1, first+40
+	changed := func(f func(live) any) (rounds []uint64) {
+		for r := lo; r <= hi; r++ {
+			if f(history[r]) != f(history[r-1]) {
+				rounds = append(rounds, r)
+			}
+		}
+		return rounds
+	}
+	pages := func(path string) (versions []map[string]any, n int) {
+		for next := ""; ; n++ {
+			code, resp := get(path + next)
+			if code != http.StatusOK {
+				return nil, n
+			}
+			for _, v := range asSlice(resp["versions"]) {
+				versions = append(versions, v.(map[string]any))
+			}
+			tok, ok := resp["next-token"].(string)
+			if !ok {
+				return versions, n + 1
+			}
+			next = "&next=" + tok
+		}
+	}
+	roundsOf := func(vs []map[string]any) (out []uint64) {
+		for _, v := range vs {
+			out = append(out, uint64(v["round"].(float64)))
+		}
+		return out
+	}
+	span := fmt.Sprintf("min-round=%d&max-round=%d", lo, hi)
+	fmt.Printf("versions in rounds %d..%d\n", lo, hi)
+
+	want := changed(func(l live) any { return l.n })
+	vs, n := pages(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=7&include=values", app, span))
+	valuesOK := len(vs) == len(want)
+	for _, v := range vs {
+		valuesOK = valuesOK && globalUint(v["application"].(map[string]any)) == history[uint64(v["round"].(float64))].n
+	}
+	check(fmt.Sprintf("GET /v2/applications/%d/versions?include=values, %d pages -> rounds %v", app, n, roundsOf(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+	desc, n := pages(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=3&order=desc", app, span))
+	reversed := roundsOf(desc)
+	slices.Reverse(reversed)
+	check(fmt.Sprintf("GET /v2/applications/%d/versions?order=desc, %d pages -> the same rounds, newest first", app, n),
+		fmt.Sprint(reversed) == fmt.Sprint(want))
+
+	want = changed(func(l live) any { return l.box })
+	vs, _ = pages(fmt.Sprintf("/v2/applications/%d/box/versions?name=str:b&%s&include=values", app, span))
+	valuesOK = len(vs) == len(want)
+	for _, v := range vs {
+		valuesOK = valuesOK && fmt.Sprint(v["value"]) == history[uint64(v["round"].(float64))].box
+	}
+	check(fmt.Sprintf("GET /v2/applications/%d/box/versions?name=str:b&include=values -> %d versions", app, len(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+
+	// pending rewards move amount every round; versions follow the record
+	want = changed(func(l live) any { return l.raw })
+	vs, _ = pages(fmt.Sprintf("/v2/accounts/%s/versions?exclude=all&%s&include=values&limit=5", p, span))
+	valuesOK = len(vs) == len(want)
+	for _, v := range vs {
+		base, _ := v["base"].(map[string]any)
+		acct, _ := base["account"].(map[string]any)
+		valuesOK = valuesOK && acct["amount"] == history[uint64(v["round"].(float64))].bal
+	}
+	check(fmt.Sprintf("GET /v2/accounts/<P>/versions?exclude=all&include=values -> %d versions", len(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+
+	// the creator pays a fee every round, and its app changes on every call
+	vs, _ = pages(fmt.Sprintf("/v2/accounts/%s/versions?%s", a, span))
+	appRounds := 0
+	for _, v := range vs {
+		if len(asSlice(v["created-apps"])) == 1 {
+			appRounds++
+		}
+	}
+	check(fmt.Sprintf("GET /v2/accounts/<creator>/versions -> %d versions, %d with created-apps", len(vs), appRounds),
+		len(vs) == int(hi-lo+1) && appRounds == len(changed(func(l live) any { return l.n })))
 	return nil
 }
 

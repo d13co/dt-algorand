@@ -42,6 +42,7 @@
 package timetravel
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -514,6 +515,35 @@ func (s *Store) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) 
 	defer s.closeMu.RUnlock()
 	// Objects exist at rnd only if they have a checkpoint record <= c or a
 	// patch record in (c, rnd]; walk the distinct objects of both keyspaces.
+	var err error
+	derr := s.distinct(prefix, after, func(obj []byte) bool {
+		var v []byte
+		var ok bool
+		if v, ok, err = s.get(obj, rnd); err != nil {
+			return false
+		}
+		return !ok || fn(obj, v)
+	})
+	if err != nil {
+		return err
+	}
+	return derr
+}
+
+// Objects calls fn, in key order, for every object whose key starts with
+// prefix and that has a record at any round, including objects deleted
+// since. It stops when fn returns false.
+func (s *Store) Objects(prefix []byte, fn func(obj []byte) bool) error {
+	if err := s.acquire(); err != nil {
+		return err
+	}
+	defer s.closeMu.RUnlock()
+	return s.distinct(prefix, nil, fn)
+}
+
+// distinct calls fn for the distinct objects of both versioned keyspaces
+// whose key starts with prefix and is greater than after.
+func (s *Store) distinct(prefix, after []byte, fn func(obj []byte) bool) error {
 	cIt, err := s.objects(pfxCheckpoint, prefix, after)
 	if err != nil {
 		return err
@@ -538,11 +568,7 @@ func (s *Store) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) 
 			cIt.next()
 			pIt.next()
 		}
-		v, ok, err := s.get(obj, rnd)
-		if err != nil {
-			return err
-		}
-		if ok && !fn(obj, v) {
+		if !fn(obj) {
 			return nil
 		}
 	}
@@ -550,6 +576,163 @@ func (s *Store) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) 
 		return cIt.err
 	}
 	return pIt.err
+}
+
+// Versions calls fn, in round order (newest first if desc), for every
+// version of obj with round in [lo, hi]: each round at which its value
+// changed, with the new value (ok false: deleted). Records that repeat the
+// previous value are not versions: no-op writes, and with N > 1 the
+// checkpoint copies of objects that changed earlier in the interval. fn owns
+// val. Versions stops when fn returns false.
+func (s *Store) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+	if err := s.acquire(); err != nil {
+		return err
+	}
+	defer s.closeMu.RUnlock()
+	if lo > hi {
+		return nil
+	}
+	if s.n == 1 {
+		return s.fullVersions(obj, lo, hi, desc, fn)
+	}
+	return s.patchedVersions(obj, lo, hi, desc, fn)
+}
+
+func sameState(a []byte, aok bool, b []byte, bok bool) bool {
+	return aok == bok && (!aok || bytes.Equal(a, b))
+}
+
+// fullVersions is Versions for N = 1, where every record is a full value or
+// a tombstone in the checkpoint keyspace: one iterator, plus the record
+// before the range to compare the first one with.
+func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxCheckpoint, obj, 0), UpperBound: verKey(pfxCheckpoint, obj, hi+1)})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	record := func() (rnd uint64, v []byte, ok bool, err error) {
+		k := it.Key()
+		v, ok, err = applyRecord(nil, false, it.Value())
+		return binary.BigEndian.Uint64(k[len(k)-8:]), append([]byte(nil), v...), ok, err
+	}
+	if !desc {
+		var prev []byte
+		var prevOK bool
+		valid := it.SeekLT(verKey(pfxCheckpoint, obj, lo))
+		if valid {
+			if _, prev, prevOK, err = record(); err != nil {
+				return err
+			}
+			valid = it.Next()
+		} else {
+			valid = it.SeekGE(verKey(pfxCheckpoint, obj, lo))
+		}
+		for ; valid; valid = it.Next() {
+			rnd, v, ok, err := record()
+			if err != nil {
+				return err
+			}
+			if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok) {
+				return nil
+			}
+			prev, prevOK = v, ok
+		}
+		return it.Error()
+	}
+	// Newest first: a record is a version if it differs from the next older
+	// one, which may lie before lo.
+	var cand []byte
+	var candRnd uint64
+	var candOK, have bool
+	for valid := it.Last(); ; valid = it.Prev() {
+		if !valid {
+			if err := it.Error(); err != nil {
+				return err
+			}
+			if have && candOK { // the first record ever is a version unless it is a tombstone
+				fn(candRnd, cand, true)
+			}
+			return nil
+		}
+		rnd, v, ok, err := record()
+		if err != nil {
+			return err
+		}
+		if have && !sameState(v, ok, cand, candOK) && !fn(candRnd, cand, candOK) {
+			return nil
+		}
+		if rnd < lo {
+			return nil
+		}
+		cand, candRnd, candOK, have = v, rnd, ok, true
+	}
+}
+
+// patchedVersions is Versions for N > 1: the rounds that have a record in
+// either keyspace are the candidates, and each one is compared with the
+// value just before it.
+func (s *Store) patchedVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+	var its [2]*pebble.Iterator
+	var valid [2]bool
+	for i, pfx := range []byte{pfxCheckpoint, pfxPatch} {
+		it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfx, obj, lo), UpperBound: verKey(pfx, obj, hi+1)})
+		if err != nil {
+			return err
+		}
+		defer it.Close()
+		its[i] = it
+		if desc {
+			valid[i] = it.Last()
+		} else {
+			valid[i] = it.First()
+		}
+	}
+	round := func(i int) uint64 {
+		k := its[i].Key()
+		return binary.BigEndian.Uint64(k[len(k)-8:])
+	}
+	var prev []byte
+	var prevOK bool
+	if !desc && lo > 0 {
+		var err error
+		if prev, prevOK, err = s.get(obj, lo-1); err != nil {
+			return err
+		}
+	}
+	// checkpoint and patch rounds never coincide: checkpoints are multiples of N
+	for valid[0] || valid[1] {
+		i := 0
+		if !valid[0] || (valid[1] && (round(1) < round(0)) != desc) {
+			i = 1
+		}
+		rnd := round(i)
+		if desc {
+			valid[i] = its[i].Prev()
+		} else {
+			valid[i] = its[i].Next()
+		}
+		v, ok, err := s.get(obj, rnd)
+		if err != nil {
+			return err
+		}
+		if desc {
+			prev, prevOK = nil, false
+			if rnd > 0 {
+				if prev, prevOK, err = s.get(obj, rnd-1); err != nil {
+					return err
+				}
+			}
+		}
+		if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok) {
+			return nil
+		}
+		prev, prevOK = v, ok
+	}
+	if err := its[0].Error(); err != nil {
+		return err
+	}
+	return its[1].Error()
 }
 
 // objIter yields the distinct objects of one versioned keyspace.

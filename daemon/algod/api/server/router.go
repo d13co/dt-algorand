@@ -37,6 +37,7 @@ import (
 	nppublic "github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/nonparticipating/public"
 	pprivate "github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/participating/private"
 	ppublic "github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/participating/public"
+	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/timetravel"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/node"
 	"github.com/algorand/go-algorand/util/tokens"
@@ -151,6 +152,10 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 
 	if node.Config().EnableExperimentalAPI {
 		experimental.RegisterHandlers(e, &v2Handler, publicMiddleware...)
+	}
+
+	if node.Config().EnableTimeTravel {
+		timetravel.RegisterHandlers(e, &v2Handler, publicMiddleware...)
 	}
 
 	return e

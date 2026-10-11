@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 	"testing"
 
@@ -84,12 +85,22 @@ func TestStoreModel(t *testing.T) {
 				objs = append(objs, KvKey(fmt.Sprintf("bx:\x00\x01%c", 'a'+i%5)+string(make([]byte, i%3))))
 			}
 			state := map[string][]byte{}
+			written := map[string]bool{}
 			var history []map[string][]byte
 			const rounds = 40
 			for r := uint64(0); r < rounds; r++ {
 				var chs []Change
 				for _, obj := range objs {
 					if rng.Intn(3) != 0 {
+						continue
+					}
+					written[string(obj)] = true
+					if rng.Intn(10) == 0 { // no-op write: the same value, or deleting an absent object
+						if v, ok := state[string(obj)]; ok {
+							chs = append(chs, Change{Key: obj, Value: v})
+						} else {
+							chs = append(chs, Change{Key: obj, Deleted: true})
+						}
 						continue
 					}
 					if _, ok := state[string(obj)]; ok && rng.Intn(5) == 0 {
@@ -169,6 +180,69 @@ func TestStoreModel(t *testing.T) {
 						return len(got) < 1
 					}))
 					require.Equal(t, want[1:2], got)
+				}
+			}
+
+			var wantObjs, gotObjs []string
+			for k := range written {
+				if bytes.HasPrefix([]byte(k), KvPrefix("bx:\x00\x01c")) {
+					wantObjs = append(wantObjs, k)
+				}
+			}
+			sort.Strings(wantObjs)
+			require.NoError(t, s.Objects(KvPrefix("bx:\x00\x01c"), func(obj []byte) bool {
+				gotObjs = append(gotObjs, string(obj))
+				return true
+			}))
+			require.Equal(t, wantObjs, gotObjs)
+
+			// versions: the rounds at which an object's state differs from the round before
+			type version struct {
+				rnd uint64
+				val []byte
+				ok  bool
+			}
+			for _, obj := range objs {
+				var all []version
+				var prev []byte
+				var prevOK bool
+				for r := uint64(0); r < rounds; r++ {
+					v, ok := history[r][string(obj)]
+					if ok != prevOK || (ok && !bytes.Equal(v, prev)) {
+						all = append(all, version{r, v, ok})
+					}
+					prev, prevOK = v, ok
+				}
+				ranges := [][2]uint64{{0, rounds}, {0, 0}, {rounds - 1, rounds - 1}, {5, 4}}
+				for i := 0; i < 20; i++ {
+					lo := uint64(rng.Intn(rounds))
+					ranges = append(ranges, [2]uint64{lo, lo + uint64(rng.Intn(rounds))})
+				}
+				for _, rg := range ranges {
+					for _, desc := range []bool{false, true} {
+						var want, got []version
+						for _, v := range all {
+							if v.rnd >= rg[0] && v.rnd <= rg[1] {
+								want = append(want, v)
+							}
+						}
+						if desc {
+							slices.Reverse(want)
+						}
+						require.NoError(t, s.Versions(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool) bool {
+							got = append(got, version{rnd, val, ok})
+							return true
+						}))
+						require.Equal(t, want, got, "obj %q range %v desc %v", obj, rg, desc)
+						if len(want) > 2 {
+							got = got[:0]
+							require.NoError(t, s.Versions(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool) bool {
+								got = append(got, version{rnd, val, ok})
+								return len(got) < 2
+							}))
+							require.Equal(t, want[:2], got)
+						}
+					}
 				}
 			}
 		})
