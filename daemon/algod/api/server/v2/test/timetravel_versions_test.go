@@ -115,7 +115,7 @@ func TestVersionsParams(t *testing.T) {
 		// next resumes from the token: ascending from it, descending down from it
 		{model.AccountVersionsParams{MinRound: rnd(5), Next: str("20")}, ledger.VersionRange{Min: 20, Max: 1000, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{}, 1000},
 		{model.AccountVersionsParams{MaxRound: rnd(50), Order: order(model.AccountVersionsParamsOrderDesc), Next: str("20")},
-			ledger.VersionRange{Max: 20, Desc: true, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{}, 50},
+			ledger.VersionRange{Max: 20, Desc: true, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{}, 20},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeAll}},
 			ledger.VersionRange{Max: 1000, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{All: true}, 1000},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeCreatedAppsParams, model.AccountVersionsParamsExcludeCreatedAssetsParams}},
@@ -138,6 +138,8 @@ func TestVersionsParams(t *testing.T) {
 		"bad order":            {Order: order("sideways")},
 		"bad include":          {Include: &[]model.AccountVersionsParamsInclude{"params"}},
 		"bad next":             {Next: str("x")},
+		"next after max":       {MaxRound: rnd(50), Next: str("51")},
+		"next before min":      {MinRound: rnd(5), Order: order(model.AccountVersionsParamsOrderDesc), Next: str("4")},
 		"all combined":         {Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeAll, model.AccountVersionsParamsExcludeCreatedAppsParams}},
 		"unknown exclude":      {Exclude: &[]model.AccountVersionsParamsExclude{"holdings"}},
 		"time travel disabled": {},

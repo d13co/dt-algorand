@@ -53,14 +53,14 @@ Not versioned: `/v2/ledger/supply` (totals change nearly every round; `?round=` 
 
 | param | meaning |
 |---|---|
-| `min-round`, `max-round` | inclusive range; defaults 0 and `Latest()`. `max-round > Latest()` or `min-round > max-round`: 400. Names follow the indexer. |
+| `min-round`, `max-round` | inclusive range; defaults 0 and `Latest()`. `max-round > Latest()` or `min-round > max-round`, also once `next` is applied: 400. Names follow the indexer. |
 | `order` | `asc` (default) or `desc`. Both are one iterator direction in Pebble. Entries carry new full values, not diffs, so `desc` needs nothing extra ("last 10 changes of X"). |
 | `limit` | versions (rounds) per page; default 100, max 10,000, or 1,000 with `include=values`. |
 | `next` | the previous page's `next-token`: the round to resume from, opaque to clients. |
 | `include` | `values`: include new values. |
 | `exclude` | account versions only; same values as `/v2/accounts/{address}`: `all` (base record only), `none`, `created-apps-params`, `created-assets-params` (created ids still version on create/destroy, but params changes don't). |
 
-A page ends at `limit` versions, or when the stored (msgpack) values reach the 1 MB budget box pages use (`maxBoxFetchBytes`; the JSON is larger), whichever is first; `next-token` is present iff more remain. A round is never split across pages. The top-level `round` is the effective `max-round`. Responses are JSON only, like the other paginated endpoints (`/v2/accounts/{address}/assets`).
+A page ends at `limit` versions, or when the stored (msgpack) values reach the 1 MB budget box pages use (`maxBoxFetchBytes`; the JSON is larger), whichever is first; `next-token` is present iff more remain. A round is never split across pages. The top-level `round` is the effective `max-round`: on a descending page resumed from `next`, the token's round. Responses are JSON only, like the other paginated endpoints (`/v2/accounts/{address}/assets`).
 
 ## Response shapes
 

@@ -73,29 +73,29 @@ func strs[T ~string](vals *[]T) []string {
 }
 
 // versionsRange checks a versions query and returns the history and the
-// range to read, and the round responses report.
-func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.VersionRange, basics.Round, error) {
+// range to read. Responses report the range's Max as their round.
+func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.VersionRange, error) {
 	l := v2.Node.LedgerForAPI()
 	vl, ok := l.(versionsLedger)
 	if !ok || !v2.Node.Config().EnableTimeTravel {
-		return nil, ledger.VersionRange{}, 0, errors.New("versions require EnableTimeTravel")
+		return nil, ledger.VersionRange{}, errors.New("versions require EnableTimeTravel")
 	}
 	r := ledger.VersionRange{Max: l.Latest(), Limit: DefaultVersions}
 	for _, inc := range q.include {
 		if inc != "values" {
-			return nil, r, 0, fmt.Errorf("invalid include value: %s", inc)
+			return nil, r, fmt.Errorf("invalid include value: %s", inc)
 		}
 		r.Values = true
 	}
 	if q.max != nil {
 		if *q.max > r.Max {
-			return nil, r, 0, errors.New(errRoundGreaterThanTheLatest)
+			return nil, r, errors.New(errRoundGreaterThanTheLatest)
 		}
 		r.Max = *q.max
 	}
 	if q.min != nil {
 		if *q.min > r.Max {
-			return nil, r, 0, fmt.Errorf("min-round %d is after max-round %d", *q.min, r.Max)
+			return nil, r, fmt.Errorf("min-round %d is after max-round %d", *q.min, r.Max)
 		}
 		r.Min = *q.min
 	}
@@ -105,7 +105,7 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 		case "desc":
 			r.Desc = true
 		default:
-			return nil, r, 0, fmt.Errorf("invalid order: %s", *q.order)
+			return nil, r, fmt.Errorf("invalid order: %s", *q.order)
 		}
 	}
 	maxLimit := uint64(MaxVersions)
@@ -114,23 +114,26 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 	}
 	if q.limit != nil {
 		if *q.limit == 0 || *q.limit > maxLimit {
-			return nil, r, 0, fmt.Errorf("limit must be between 1 and %d", maxLimit)
+			return nil, r, fmt.Errorf("limit must be between 1 and %d", maxLimit)
 		}
 		r.Limit = *q.limit
 	}
-	round := r.Max
 	if q.next != nil {
 		n, err := strconv.ParseUint(*q.next, 10, 64)
 		if err != nil {
-			return nil, r, 0, fmt.Errorf("%s: %w", errUnableToParseNext, err)
+			return nil, r, fmt.Errorf("%s: %w", errUnableToParseNext, err)
 		}
 		if r.Desc {
 			r.Max = min(r.Max, basics.Round(n))
 		} else {
 			r.Min = max(r.Min, basics.Round(n))
 		}
+		// tokens the server made are always in range; this one is from another query
+		if r.Min > r.Max {
+			return nil, r, fmt.Errorf("next %s is outside min-round to max-round", *q.next)
+		}
 	}
-	return vl, r, round, nil
+	return vl, r, nil
 }
 
 func nextToken(page ledger.VersionPage) *string {
@@ -155,7 +158,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	vl, r, round, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -164,13 +167,13 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 	if err != nil {
 		return v2.versionsError(ctx, err)
 	}
-	return v2.accountVersionsResponse(ctx, address, round, page)
+	return v2.accountVersionsResponse(ctx, address, r.Max, page)
 }
 
 // AccountAssetVersions lists the versions of an account's asset holding.
 // (GET /v2/accounts/{address}/assets/{asset-id}/versions)
 func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Address, assetID basics.AssetIndex, params model.AccountAssetVersionsParams) error {
-	vl, r, round, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -178,13 +181,13 @@ func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Addres
 	if err != nil {
 		return v2.versionsError(ctx, err)
 	}
-	return v2.accountVersionsResponse(ctx, address, round, page)
+	return v2.accountVersionsResponse(ctx, address, r.Max, page)
 }
 
 // AccountApplicationVersions lists the versions of an account's application local state.
 // (GET /v2/accounts/{address}/applications/{application-id}/versions)
 func (v2 *Handlers) AccountApplicationVersions(ctx echo.Context, address basics.Address, applicationID basics.AppIndex, params model.AccountApplicationVersionsParams) error {
-	vl, r, round, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -192,7 +195,7 @@ func (v2 *Handlers) AccountApplicationVersions(ctx echo.Context, address basics.
 	if err != nil {
 		return v2.versionsError(ctx, err)
 	}
-	return v2.accountVersionsResponse(ctx, address, round, page)
+	return v2.accountVersionsResponse(ctx, address, r.Max, page)
 }
 
 // parseVersionsExclude parses exclude like AccountInformation does.
@@ -290,7 +293,7 @@ func (v2 *Handlers) accountVersionsResponse(ctx echo.Context, addr basics.Addres
 // AssetVersions lists the versions of an asset's params.
 // (GET /v2/assets/{asset-id}/versions)
 func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, params model.AssetVersionsParams) error {
-	vl, r, round, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -312,13 +315,13 @@ func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, p
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.AssetVersionsResponse{Round: round, NextToken: nextToken(page), Versions: out})
+	return ctx.JSON(http.StatusOK, model.AssetVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // ApplicationVersions lists the versions of an application's params.
 // (GET /v2/applications/{application-id}/versions)
 func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationVersionsParams) error {
-	vl, r, round, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -340,7 +343,7 @@ func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.A
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.ApplicationVersionsResponse{Round: round, NextToken: nextToken(page), Versions: out})
+	return ctx.JSON(http.StatusOK, model.ApplicationVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // ApplicationBoxVersions lists the versions of an application's box.
@@ -354,7 +357,7 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	vl, r, round, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -373,5 +376,5 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.BoxVersionsResponse{Round: round, NextToken: nextToken(page), Versions: out})
+	return ctx.JSON(http.StatusOK, model.BoxVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
