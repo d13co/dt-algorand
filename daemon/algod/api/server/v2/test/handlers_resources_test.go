@@ -1324,8 +1324,10 @@ func TestGetApplicationBoxesPagination(t *testing.T) {
 	})
 
 	t.Run("RoundSpecified", func(t *testing.T) {
-		// Specifying a valid round should return results at that round.
-		ctx, rec := newReq(t)
+		// Specifying a valid round should return results at that round. The
+		// query string carries it too, as in a real request.
+		rec := httptest.NewRecorder()
+		ctx := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/?round=10", nil), rec)
 		limit := uint64(3)
 		round := basics.Round(10) // matches mock's latest
 		err := handlers.GetApplicationBoxes(ctx, appID, model.GetApplicationBoxesParams{

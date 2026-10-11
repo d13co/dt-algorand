@@ -1974,10 +1974,7 @@ func applicationBoxesMaxKeys(requestedMax uint64, algodMax uint64) uint64 {
 // GetApplicationBoxes returns the boxes of an application
 // (GET /v2/applications/{application-id}/boxes)
 func (v2 *Handlers) GetApplicationBoxes(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxesParams) error {
-	lgr, err := v2.ledgerFor(ctx)
-	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
-	}
+	lgr := v2.Node.LedgerForAPI()
 	lastRound := lgr.Latest()
 	keyPrefix := apps.MakeBoxKey(uint64(applicationID), "")
 
