@@ -286,8 +286,11 @@ func (l *Ledger) historyAt(rnd basics.Round) *histView {
 	// Read last after taking pending: rounds leave pending only once they are
 	// in the store, so pending holds every round in (last, latest].
 	last, ok := ht.store.Last()
+	if !ok {
+		return nil // loadFromDisk writes round 0 before any round is pending
+	}
 	v.last = basics.Round(last)
-	if n := len(v.pending); (n > 0 && rnd <= v.pending[n-1].rnd) || (ok && rnd <= v.last) {
+	if n := len(v.pending); rnd <= v.last || (n > 0 && rnd <= v.pending[n-1].rnd) {
 		return v
 	}
 	return nil
@@ -549,8 +552,11 @@ func histResource(h *histView, rnd basics.Round, addr basics.Address, cidx basic
 }
 
 // histKvPairs lists the kv pairs with keyPrefix after cursor, up to limit
-// pairs (0: unlimited) or maxBytes (0: unlimited); more reports a truncation.
+// pairs or maxBytes (0: unlimited); more reports a truncation.
 func histKvPairs(h *histView, rnd basics.Round, keyPrefix, cursor string, limit, maxBytes uint64, includeValues bool) (res []ledgercore.KvPairResult, more bool, err error) {
+	if limit == 0 {
+		return nil, false, nil
+	}
 	var after []byte
 	if cursor != "" {
 		after = timetravel.KvKey(cursor)
@@ -561,7 +567,7 @@ func histKvPairs(h *histView, rnd basics.Round, keyPrefix, cursor string, limit,
 		if includeValues {
 			kv.Value = val
 		}
-		if (limit > 0 && uint64(len(res)) == limit) || (maxBytes > 0 && len(res) > 0 && size+kv.ByteSize() > maxBytes) {
+		if uint64(len(res)) == limit || (maxBytes > 0 && len(res) > 0 && size+kv.ByteSize() > maxBytes) {
 			more = true
 			return false
 		}
@@ -572,15 +578,25 @@ func histKvPairs(h *histView, rnd basics.Round, keyPrefix, cursor string, limit,
 	return res, more, err
 }
 
-// scanIDs returns the ids (the trailing 8 key bytes) of the objects under
-// prefix that exist at rnd and are greater than gt, up to limit.
-func scanIDs(h *histView, rnd basics.Round, prefix []byte, gt uint64, limit uint64) ([]uint64, error) {
-	var ids []uint64
-	err := h.Scan(prefix, binary.BigEndian.AppendUint64(append([]byte(nil), prefix...), gt), uint64(rnd), func(obj, _ []byte) bool {
-		ids = append(ids, binary.BigEndian.Uint64(obj[len(obj)-8:]))
-		return uint64(len(ids)) < limit
+// idValue is an object that scanIDs found: its id (the trailing 8 key bytes)
+// and its value.
+type idValue struct {
+	id  uint64
+	val []byte
+}
+
+// scanIDs returns the objects under prefix that exist at rnd and whose ids
+// are greater than gt, in id order, up to limit.
+func scanIDs(h *histView, rnd basics.Round, prefix []byte, gt uint64, limit uint64) ([]idValue, error) {
+	if limit == 0 {
+		return nil, nil
+	}
+	var out []idValue
+	err := h.Scan(prefix, binary.BigEndian.AppendUint64(append([]byte(nil), prefix...), gt), uint64(rnd), func(obj, val []byte) bool {
+		out = append(out, idValue{id: binary.BigEndian.Uint64(obj[len(obj)-8:]), val: val})
+		return uint64(len(out)) < limit
 	})
-	return ids, err
+	return out, err
 }
 
 // LookupAssetsAt is LookupAssets at round rnd.
@@ -589,15 +605,15 @@ func (l *Ledger) LookupAssetsAt(rnd basics.Round, addr basics.Address, assetIDGT
 	if h == nil {
 		return nil, 0, errHistoryUnavailable
 	}
-	ids, err := scanIDs(h, rnd, timetravel.HoldingKey(addr, 0)[:1+len(addr)], uint64(assetIDGT), limit)
+	holdings, err := scanIDs(h, rnd, timetravel.HoldingKey(addr, 0)[:1+len(addr)], uint64(assetIDGT), limit)
 	if err != nil {
 		return nil, 0, err
 	}
-	out := make([]ledgercore.AssetResourceWithIDs, 0, len(ids))
-	for _, id := range ids {
-		r := ledgercore.AssetResourceWithIDs{AssetID: basics.AssetIndex(id)}
+	out := make([]ledgercore.AssetResourceWithIDs, 0, len(holdings))
+	for _, hv := range holdings {
+		r := ledgercore.AssetResourceWithIDs{AssetID: basics.AssetIndex(hv.id)}
 		var hold basics.AssetHolding
-		if _, err := histGet(h, timetravel.HoldingKey(addr, r.AssetID), rnd, &hold); err != nil {
+		if err := protocol.Decode(hv.val, &hold); err != nil {
 			return nil, 0, err
 		}
 		r.AssetHolding = &hold
@@ -632,26 +648,35 @@ func histApplications(h *histView, rnd basics.Round, addr basics.Address, appIDG
 	if err != nil {
 		return nil, 0, err
 	}
+	// An app found only in created has no local state: had local stopped
+	// before its local state, out would fill with local's ids first.
 	out := []ledgercore.AppResourceWithIDs{}
 	for len(local)+len(created) > 0 && uint64(len(out)) < limit {
-		var id uint64
-		switch {
-		case len(created) == 0 || (len(local) > 0 && local[0] < created[0]):
-			id, local = local[0], local[1:]
-		case len(local) == 0 || created[0] < local[0]:
-			id, created = created[0], created[1:]
-		default:
-			id, local, created = local[0], local[1:], created[1:]
+		var lv idValue // the local state
+		inLocal := len(local) > 0 && (len(created) == 0 || local[0].id <= created[0].id)
+		if inLocal {
+			lv, local = local[0], local[1:]
 		}
-		res, err := histResource(h, rnd, addr, basics.CreatableIndex(id), basics.AppCreatable)
+		id := lv.id
+		if len(created) > 0 && (!inLocal || created[0].id == id) {
+			id, created = created[0].id, created[1:]
+		}
+		r := ledgercore.AppResourceWithIDs{AppID: basics.AppIndex(id)}
+		if inLocal {
+			r.AppLocalState = new(basics.AppLocalState)
+			if err := protocol.Decode(lv.val, r.AppLocalState); err != nil {
+				return nil, 0, err
+			}
+		}
+		var p basics.AppParams
+		creator, ok, err := histParams(h, rnd, timetravel.AppParamsKey(r.AppID), &p)
 		if err != nil {
 			return nil, 0, err
 		}
-		r := ledgercore.AppResourceWithIDs{AppID: basics.AppIndex(id), AppResource: ledgercore.AppResource{AppLocalState: res.AppLocalState}}
-		if res.AppParams != nil {
+		if ok && creator == addr {
 			r.Creator = addr
 			if includeParams {
-				r.AppParams = res.AppParams
+				r.AppParams = &p
 			}
 		}
 		out = append(out, r)
@@ -677,25 +702,25 @@ func (l *Ledger) LookupLatestAt(rnd basics.Round, addr basics.Address) (basics.A
 	if err != nil {
 		return out, 0, withoutRewards, err
 	}
-	for _, id := range holdings {
+	for _, hv := range holdings {
 		var hold basics.AssetHolding
-		if _, err := histGet(h, timetravel.HoldingKey(addr, basics.AssetIndex(id)), rnd, &hold); err != nil {
+		if err = protocol.Decode(hv.val, &hold); err != nil {
 			return out, 0, withoutRewards, err
 		}
-		ledgercore.AssignAccountResourceToAccountData(basics.CreatableIndex(id), ledgercore.AccountResource{AssetHolding: &hold}, &out)
+		ledgercore.AssignAccountResourceToAccountData(basics.CreatableIndex(hv.id), ledgercore.AccountResource{AssetHolding: &hold}, &out)
 	}
 	createdAssets, err := scanIDs(h, rnd, timetravel.CreatedPrefix(addr, basics.AssetCreatable), 0, ^uint64(0))
 	if err != nil {
 		return out, 0, withoutRewards, err
 	}
-	for _, id := range createdAssets {
+	for _, cv := range createdAssets {
 		var p basics.AssetParams
-		creator, ok, err := histParams(h, rnd, timetravel.AssetParamsKey(basics.AssetIndex(id)), &p)
+		creator, ok, err := histParams(h, rnd, timetravel.AssetParamsKey(basics.AssetIndex(cv.id)), &p)
 		if err != nil {
 			return out, 0, withoutRewards, err
 		}
 		if ok && creator == addr {
-			ledgercore.AssignAccountResourceToAccountData(basics.CreatableIndex(id), ledgercore.AccountResource{AssetParams: &p}, &out)
+			ledgercore.AssignAccountResourceToAccountData(basics.CreatableIndex(cv.id), ledgercore.AccountResource{AssetParams: &p}, &out)
 		}
 	}
 	apps, _, err := histApplications(h, rnd, addr, 0, ^uint64(0), true)

@@ -690,8 +690,12 @@ func (l *Ledger) LookupKeysByPrefix(round basics.Round, keyPrefix string, maxKey
 
 	keys, err := l.accts.LookupKeysByPrefix(round, keyPrefix, maxKeyNum)
 	if h := l.historyFor(round, err); h != nil {
+		limit := maxKeyNum
+		if limit == 0 {
+			limit = ^uint64(0)
+		}
 		var kvs []ledgercore.KvPairResult
-		kvs, _, err = histKvPairs(h, round, keyPrefix, "", maxKeyNum, 0, false)
+		kvs, _, err = histKvPairs(h, round, keyPrefix, "", limit, 0, false)
 		keys = make([]string, len(kvs))
 		for i := range kvs {
 			keys[i] = kvs[i].Key

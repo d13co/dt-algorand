@@ -439,7 +439,12 @@ func (s *Store) get(obj []byte, rnd uint64) (val []byte, ok bool, err error) {
 	}
 	defer it.Close()
 	for it.First(); it.Valid(); it.Next() {
-		if val, ok, err = applyRecord(val, ok, it.Value()); err != nil {
+		rec := it.Value()
+		if len(rec) > 0 && rec[0] == recFull {
+			// a full record's value is the record, which Next may overwrite
+			rec = append([]byte(nil), rec...)
+		}
+		if val, ok, err = applyRecord(val, ok, rec); err != nil {
 			return nil, false, err
 		}
 	}
@@ -507,7 +512,8 @@ func (s *Store) headerRecord(rnd uint64) ([]byte, bool, error) {
 }
 
 // Scan calls fn, in key order, for every object whose key starts with prefix,
-// is greater than after, and exists at round rnd. It stops when fn returns false.
+// is greater than after, and exists at round rnd. fn owns val. Scan stops
+// when fn returns false.
 func (s *Store) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) bool) error {
 	if err := s.acquire(); err != nil {
 		return err
