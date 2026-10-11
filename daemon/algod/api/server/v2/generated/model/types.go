@@ -1036,7 +1036,7 @@ type SimulateRequest struct {
 	// FixSigners If true, signers for transactions that are missing signatures will be fixed during evaluation.
 	FixSigners *bool `json:"fix-signers,omitempty"`
 
-	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback). If not specified, defaults to the latest available round.
+	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.
 	Round *basics.Round `json:"round,omitempty"`
 
 	// TxnGroups The transaction groups to simulate.
@@ -1305,6 +1305,9 @@ type ApplicationId = basics.AppIndex
 
 // AssetId defines model for asset-id.
 type AssetId = basics.AssetIndex
+
+// AtRound defines model for at-round.
+type AtRound = basics.Round
 
 // Catchpoint defines model for catchpoint.
 type Catchpoint = string
@@ -1744,6 +1747,9 @@ type AccountInformationParams struct {
 
 	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
 	Format *AccountInformationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // AccountInformationParamsExclude defines parameters for AccountInformation.
@@ -1762,6 +1768,9 @@ type AccountApplicationsInformationParams struct {
 
 	// Include Include additional items in the response. Use `params` to include full application parameters (global state, schema, etc.). Multiple values can be comma-separated. Defaults to returning only application IDs and local state.
 	Include *[]AccountApplicationsInformationParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // AccountApplicationsInformationParamsInclude defines parameters for AccountApplicationsInformation.
@@ -1771,6 +1780,9 @@ type AccountApplicationsInformationParamsInclude string
 type AccountApplicationInformationParams struct {
 	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
 	Format *AccountApplicationInformationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // AccountApplicationInformationParamsFormat defines parameters for AccountApplicationInformation.
@@ -1810,12 +1822,18 @@ type AccountAssetsInformationParams struct {
 
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // AccountAssetInformationParams defines parameters for AccountAssetInformation.
 type AccountAssetInformationParams struct {
 	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
 	Format *AccountAssetInformationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // AccountAssetInformationParamsFormat defines parameters for AccountAssetInformation.
@@ -1893,10 +1911,19 @@ type AccountVersionsParamsOrder string
 // AccountVersionsParamsInclude defines parameters for AccountVersions.
 type AccountVersionsParamsInclude string
 
+// GetApplicationByIDParams defines parameters for GetApplicationByID.
+type GetApplicationByIDParams struct {
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
+}
+
 // GetApplicationBoxByNameParams defines parameters for GetApplicationBoxByName.
 type GetApplicationBoxByNameParams struct {
 	// Name A box name, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'.
 	Name string `form:"name" json:"name"`
+
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // ApplicationBoxVersionsParams defines parameters for ApplicationBoxVersions.
@@ -1946,7 +1973,7 @@ type GetApplicationBoxesParams struct {
 	// Include Include additional items in the response. Use `values` to include box values. Multiple values can be comma-separated.
 	Include *[]GetApplicationBoxesParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 
-	// Round Return box data from the given round. The round must be within the node's available range.
+	// Round Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -1979,6 +2006,12 @@ type ApplicationVersionsParamsOrder string
 
 // ApplicationVersionsParamsInclude defines parameters for ApplicationVersions.
 type ApplicationVersionsParamsInclude string
+
+// GetAssetByIDParams defines parameters for GetAssetByID.
+type GetAssetByIDParams struct {
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
+}
 
 // AssetVersionsParams defines parameters for AssetVersions.
 type AssetVersionsParams struct {
@@ -2068,6 +2101,12 @@ type GetTransactionGroupLedgerStateDeltasForRoundParams struct {
 
 // GetTransactionGroupLedgerStateDeltasForRoundParamsFormat defines parameters for GetTransactionGroupLedgerStateDeltasForRound.
 type GetTransactionGroupLedgerStateDeltasForRoundParamsFormat string
+
+// GetSupplyParams defines parameters for GetSupply.
+type GetSupplyParams struct {
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
+}
 
 // ShutdownNode2Params defines parameters for ShutdownNode2.
 type ShutdownNode2Params struct {

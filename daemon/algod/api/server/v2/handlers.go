@@ -453,7 +453,7 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 		if len(excludeValues) == 1 {
 			val := strings.TrimSpace(string(excludeValues[0]))
 			if val == "all" {
-				return v2.basicAccountInformation(ctx, address, handle, contentType)
+				return v2.basicAccountInformation(ctx, address, handle, contentType, params.Round)
 			}
 			if val == "none" || val == "" {
 				// Default behavior - include everything
@@ -477,7 +477,7 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 		}
 	}
 
-	myLedger, err := v2.ledgerFor(ctx)
+	myLedger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -537,8 +537,8 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 }
 
 // basicAccountInformation handles the case when no resources (assets or apps) are requested.
-func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Address, handle codec.Handle, contentType string) error {
-	myLedger, err := v2.ledgerFor(ctx)
+func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Address, handle codec.Handle, contentType string, rnd *basics.Round) error {
+	myLedger, err := v2.ledgerFor(rnd)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -629,7 +629,7 @@ func (v2 *Handlers) AccountAssetInformation(ctx echo.Context, address basics.Add
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
-	ledger, err := v2.ledgerFor(ctx)
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -680,7 +680,7 @@ func (v2 *Handlers) AccountApplicationInformation(ctx echo.Context, address basi
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
-	ledger, err := v2.ledgerFor(ctx)
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -1011,8 +1011,8 @@ func (v2 *Handlers) GetTransactionProof(ctx echo.Context, round basics.Round, tx
 
 // GetSupply gets the current supply reported by the ledger.
 // (GET /v2/ledger/supply)
-func (v2 *Handlers) GetSupply(ctx echo.Context) error {
-	ledger, err := v2.ledgerFor(ctx)
+func (v2 *Handlers) GetSupply(ctx echo.Context, params model.GetSupplyParams) error {
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -1022,13 +1022,13 @@ func (v2 *Handlers) GetSupply(ctx echo.Context) error {
 		return internalError(ctx, err, errInternalFailure, v2.Log)
 	}
 
-	params, err := ledger.ConsensusParams(latest)
+	proto, err := ledger.ConsensusParams(latest)
 	if err != nil {
 		err = fmt.Errorf("GetSupply(): round %d, ConsensusParams failed: %v", latest, err)
 		return internalError(ctx, err, errInternalFailure, v2.Log)
 	}
 
-	brnd := agreement.BalanceRound(latest, params)
+	brnd := agreement.BalanceRound(latest, proto)
 	onlineCirculation, err := ledger.OnlineCirculation(brnd, latest)
 	if errors.Is(err, errOnlineStakeUnavailable) {
 		return notFound(ctx, err, err.Error(), v2.Log)
@@ -1364,7 +1364,7 @@ func (v2 *Handlers) AccountAssetsInformation(ctx echo.Context, address basics.Ad
 		params.Limit = &l
 	}
 
-	ledger, err := v2.ledgerFor(ctx)
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -1462,7 +1462,7 @@ func (v2 *Handlers) AccountApplicationsInformation(ctx echo.Context, address bas
 		params.Limit = &l
 	}
 
-	ledger, err := v2.ledgerFor(ctx)
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -1928,8 +1928,8 @@ func (v2 *Handlers) GetPendingTransactions(ctx echo.Context, params model.GetPen
 
 // GetApplicationByID returns application information by app idx.
 // (GET /v2/applications/{application-id})
-func (v2 *Handlers) GetApplicationByID(ctx echo.Context, applicationID basics.AppIndex) error {
-	ledger, err := v2.ledgerFor(ctx)
+func (v2 *Handlers) GetApplicationByID(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationByIDParams) error {
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -2116,7 +2116,7 @@ func encodeBoxNameAsAppCallBytes(name []byte) string {
 // GetApplicationBoxByName returns the value of an application's box
 // (GET /v2/applications/{application-id}/box)
 func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxByNameParams) error {
-	ledger, err := v2.ledgerFor(ctx)
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -2150,8 +2150,8 @@ func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basi
 
 // GetAssetByID returns application information by app idx.
 // (GET /v2/assets/{asset-id})
-func (v2 *Handlers) GetAssetByID(ctx echo.Context, assetID basics.AssetIndex) error {
-	ledger, err := v2.ledgerFor(ctx)
+func (v2 *Handlers) GetAssetByID(ctx echo.Context, assetID basics.AssetIndex, params model.GetAssetByIDParams) error {
+	ledger, err := v2.ledgerFor(params.Round)
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}

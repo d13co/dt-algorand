@@ -202,6 +202,9 @@
           },
           {
             "$ref": "#/parameters/format"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -249,6 +252,9 @@
           },
           {
             "$ref": "#/parameters/format"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -263,6 +269,12 @@
           },
           "401": {
             "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Account does not hold the asset and did not create it",
             "schema": {
               "$ref": "#/definitions/ErrorResponse"
             }
@@ -296,6 +308,9 @@
           },
           {
             "$ref": "#/parameters/next"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -346,6 +361,9 @@
           },
           {
             "$ref": "#/parameters/include"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -393,6 +411,9 @@
           },
           {
             "$ref": "#/parameters/format"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -407,6 +428,12 @@
           },
           "401": {
             "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Account has not opted in to the application and did not create it",
             "schema": {
               "$ref": "#/definitions/ErrorResponse"
             }
@@ -739,12 +766,35 @@
         "schemes": ["http"],
         "summary": "Get the current supply reported by the ledger.",
         "operationId": "GetSupply",
+        "parameters": [
+          {
+            "$ref": "#/parameters/at-round"
+          }
+        ],
         "responses": {
           "200": {
             "$ref": "#/responses/SupplyResponse"
           },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
           "401": {
             "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Online stake not recorded for the round",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
             "schema": {
               "$ref": "#/definitions/ErrorResponse"
             }
@@ -1808,6 +1858,9 @@
         "parameters": [
           {
             "$ref": "#/parameters/application-id"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -1898,7 +1951,7 @@
             "type": "integer",
             "format": "uint64",
             "x-go-type": "basics.Round",
-            "description": "Return box data from the given round. The round must be within the node's available range.",
+            "description": "Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis.",
             "name": "round",
             "in": "query"
           }
@@ -1950,6 +2003,9 @@
             "name": "name",
             "in": "query",
             "required": true
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -1998,6 +2054,9 @@
         "parameters": [
           {
             "$ref": "#/parameters/asset-id"
+          },
+          {
+            "$ref": "#/parameters/at-round"
           }
         ],
         "responses": {
@@ -3888,7 +3947,7 @@
           }
         },
         "round": {
-          "description": "If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback). If not specified, defaults to the latest available round.",
+          "description": "If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.",
           "type": "integer",
           "x-go-type": "basics.Round"
         },
@@ -4692,6 +4751,7 @@
   "parameters": {
     "min-round": {
       "type": "integer",
+      "format": "uint64",
       "x-go-type": "basics.Round",
       "minimum": 0,
       "description": "Include versions at this round or later. Defaults to 0.",
@@ -4700,10 +4760,20 @@
     },
     "max-round": {
       "type": "integer",
+      "format": "uint64",
       "x-go-type": "basics.Round",
       "minimum": 0,
       "description": "Include versions at this round or earlier. Defaults to the latest round.",
       "name": "max-round",
+      "in": "query"
+    },
+    "at-round": {
+      "type": "integer",
+      "format": "uint64",
+      "x-go-type": "basics.Round",
+      "minimum": 0,
+      "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+      "name": "round",
       "in": "query"
     },
     "versions-order": {

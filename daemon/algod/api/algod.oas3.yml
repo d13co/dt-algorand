@@ -37,6 +37,18 @@
         },
         "x-go-type": "basics.AssetIndex"
       },
+      "at-round": {
+        "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+        "in": "query",
+        "name": "round",
+        "schema": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "x-go-type": "basics.Round"
+      },
       "catchpoint": {
         "description": "A catch point",
         "in": "path",
@@ -103,6 +115,7 @@
         "in": "query",
         "name": "max-round",
         "schema": {
+          "format": "uint64",
           "minimum": 0,
           "type": "integer",
           "x-go-type": "basics.Round"
@@ -114,6 +127,7 @@
         "in": "query",
         "name": "min-round",
         "schema": {
+          "format": "uint64",
           "minimum": 0,
           "type": "integer",
           "x-go-type": "basics.Round"
@@ -2718,7 +2732,7 @@
             "type": "boolean"
           },
           "round": {
-            "description": "If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback). If not specified, defaults to the latest available round.",
+            "description": "If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },
@@ -3500,6 +3514,18 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -3625,6 +3651,18 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -3740,6 +3778,18 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -3820,6 +3870,21 @@
             },
             "description": "Invalid API Token"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Account has not opted in to the application and did not create it"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3881,6 +3946,7 @@
             "in": "query",
             "name": "min-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -3892,6 +3958,7 @@
             "in": "query",
             "name": "max-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -4052,6 +4119,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -4167,6 +4246,18 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -4247,6 +4338,21 @@
             },
             "description": "Invalid API Token"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Account does not hold the asset and did not create it"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4308,6 +4414,7 @@
             "in": "query",
             "name": "min-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -4319,6 +4426,7 @@
             "in": "query",
             "name": "max-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -4654,6 +4762,7 @@
             "in": "query",
             "name": "min-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -4665,6 +4774,7 @@
             "in": "query",
             "name": "max-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -4807,6 +4917,18 @@
               "x-go-type": "basics.AppIndex"
             },
             "x-go-type": "basics.AppIndex"
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -4897,6 +5019,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -4993,6 +5127,7 @@
             "in": "query",
             "name": "min-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -5004,6 +5139,7 @@
             "in": "query",
             "name": "max-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -5200,7 +5336,7 @@
             "style": "form"
           },
           {
-            "description": "Return box data from the given round. The round must be within the node's available range.",
+            "description": "Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -5306,6 +5442,7 @@
             "in": "query",
             "name": "min-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -5317,6 +5454,7 @@
             "in": "query",
             "name": "max-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -5459,6 +5597,18 @@
               "x-go-type": "basics.AssetIndex"
             },
             "x-go-type": "basics.AssetIndex"
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
           }
         ],
         "responses": {
@@ -5546,6 +5696,7 @@
             "in": "query",
             "name": "min-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -5557,6 +5708,7 @@
             "in": "query",
             "name": "max-round",
             "schema": {
+              "format": "uint64",
               "minimum": 0,
               "type": "integer",
               "x-go-type": "basics.Round"
@@ -7072,6 +7224,20 @@
     "/v2/ledger/supply": {
       "get": {
         "operationId": "GetSupply",
+        "parameters": [
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -7112,6 +7278,16 @@
             },
             "description": "Supply represents the current supply of MicroAlgos in the system."
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -7121,6 +7297,26 @@
               }
             },
             "description": "Invalid API Token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Online stake not recorded for the round"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Error"
           },
           "default": {
             "content": {},

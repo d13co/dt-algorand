@@ -18,10 +18,6 @@ package v2
 
 import (
 	"errors"
-	"fmt"
-	"strconv"
-
-	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger"
@@ -73,24 +69,19 @@ func (v roundView) LatestTotals() (basics.Round, ledgercore.AccountTotals, error
 	return v.rnd, t, err
 }
 
-// ledgerFor returns the node's ledger or, when the request has ?round=R, the
-// ledger as of round R.
-func (v2 *Handlers) ledgerFor(ctx echo.Context) (LedgerForAPI, error) {
+// ledgerFor returns the node's ledger or, when the request has ?round=R
+// (the at-round parameter), the ledger as of round R.
+func (v2 *Handlers) ledgerFor(rnd *basics.Round) (LedgerForAPI, error) {
 	l := v2.Node.LedgerForAPI()
-	s := ctx.QueryParam("round")
-	if s == "" {
+	if rnd == nil {
 		return l, nil
 	}
-	r, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid round %q: %w", s, err)
-	}
-	if basics.Round(r) > l.Latest() {
+	if *rnd > l.Latest() {
 		return nil, errors.New(errRoundGreaterThanTheLatest)
 	}
 	h, ok := l.(historicalLedger)
 	if !ok || !v2.Node.Config().EnableTimeTravel {
 		return nil, errors.New("looking up past rounds requires EnableTimeTravel")
 	}
-	return roundView{LedgerForAPI: l, h: h, rnd: basics.Round(r)}, nil
+	return roundView{LedgerForAPI: l, h: h, rnd: *rnd}, nil
 }

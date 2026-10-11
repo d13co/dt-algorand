@@ -18,16 +18,18 @@ This is a non-compliant fork feature: it changes no consensus rule, but the node
 
 ### REST
 
-Read endpoints take `?round=R` and answer as of the end of round R (the `round` fields of the responses say R):
+Read endpoints take `?round=R` (the `at-round` parameter in the API spec) and answer as of the end of round R (responses that report a round say R):
 
 | endpoint | at round R |
 |---|---|
 | `GET /v2/accounts/{addr}` (incl. `exclude=`), `/assets`, `/applications`, `/assets/{id}`, `/applications/{id}` | account, resources, pending rewards at R |
 | `GET /v2/assets/{id}`, `GET /v2/applications/{id}` | params (and global state) at R |
-| `GET /v2/applications/{id}/box?name=`, `/boxes` | box value / box listing at R |
+| `GET /v2/applications/{id}/box?name=`, `/boxes`¹ | box value / box listing at R |
 | `GET /v2/ledger/supply` | totals at R |
 | `GET /v2/blocks/{R}?header-only=true` | header of any round (no `?round=` needed) |
 | `POST /v2/transactions/simulate` with `"round": R` in the request | evaluates the group as if it were in block R+1, projecting every object it touches, including unnamed resources (`allow-unnamed-resources`), from the history |
+
+¹ `/boxes` takes stock algod's own `round` parameter, not `at-round`: a node without time travel serves it for the rounds it still holds in memory (`MaxAcctLookback`) instead of rejecting it, and a time travel node for every round.
 
 Not served for pruned rounds (the price of `Archival: false`): full blocks (`/v2/blocks/{R}` without `header-only`), `/v2/blocks/{R}/hash`, `/txids`, `/logs`, `/transactions/{txid}/proof`, `/lightheader/proof`, and `/v2/stateproofs/{R}`, which read the full blocks after R. `goal clerk simulate --round R` works unchanged.
 

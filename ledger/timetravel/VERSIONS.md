@@ -114,7 +114,6 @@ Not done: the `tools/ttlab versions` measurements (hot app params, accounts with
 
 - `include=state-delta` on app and local-state versions: global/local state changes against the previous version in the `EvalDelta` format clients already decode (action 1/2/3), with a flag when anything else (programs, schema) changed. The server already holds both adjacent values. Plus `key=` to keep only versions where a given global key changed.
 - A per-account change index (`L` addr round → changed constituent keys, written in `AddRound`, backfilled by one pass over the store) if composite pages for accounts with very many resources prove too slow. Costs an extra record per touched account per round.
-- Documenting the existing `round` parameter in the spec, so SDKs see `?round=` too.
 
 ## Non-goals
 
