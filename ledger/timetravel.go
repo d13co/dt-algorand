@@ -26,6 +26,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/algorand/go-deadlock"
 	"github.com/algorand/msgp/msgp"
@@ -40,6 +41,7 @@ import (
 	"github.com/algorand/go-algorand/ledger/timetravel"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
+	"github.com/algorand/go-algorand/util/metrics"
 )
 
 // historyTracker feeds the time travel store with the object versions and
@@ -264,6 +266,7 @@ func (ht *historyTracker) prepareCommit(dcc *deferredCommitContext) error {
 	if n == 0 {
 		return nil
 	}
+	defer ledgerTimeTravelWriteMicros.AddMicrosecondsSince(time.Now(), nil)
 	for _, r := range rounds {
 		if err := ht.store.AddRound(uint64(r.rnd), r.changes, r.hdr, r.expired); err != nil {
 			return err
@@ -271,6 +274,10 @@ func (ht *historyTracker) prepareCommit(dcc *deferredCommitContext) error {
 	}
 	return ht.store.Sync()
 }
+
+// ledgerTimeTravelWriteMicros is the time commits spend writing the history,
+// outside the account DB transaction that ledger_commitround_micros times.
+var ledgerTimeTravelWriteMicros = metrics.NewCounter("ledger_timetravel_write_micros", "µs spent writing rounds to the time travel store")
 
 func (ht *historyTracker) commitRound(context.Context, trackerdb.TransactionScope, *deferredCommitContext) error {
 	return nil

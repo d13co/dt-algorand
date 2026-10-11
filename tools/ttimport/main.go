@@ -33,6 +33,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/pprof"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,6 +50,7 @@ import (
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/stateproof"
 	"github.com/algorand/go-algorand/util/db"
+	"github.com/algorand/go-algorand/util/metrics"
 )
 
 const blockDBFile = config.LedgerFilenamePrefix + ".block.sqlite"
@@ -56,7 +59,7 @@ func main() {
 	blocks := flag.String("blocks", "", "source block database: <archival data dir>/<genesis id>/"+blockDBFile)
 	dataDir := flag.String("d", "", "algod data directory to build: genesis.json, and config.json with EnableTimeTravel")
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the run to this file")
-	verbose := flag.Bool("v", false, "log the ledger's info messages, such as replay progress every 5 seconds")
+	verbose := flag.Bool("v", false, "also log the ledger's info messages")
 	flag.Parse()
 	if *blocks == "" || *dataDir == "" {
 		flag.Usage()
@@ -167,10 +170,13 @@ func run(blocksPath, dataDir string) error {
 	replayDirs := dirs
 	replayDirs.BlockGenesisDir = filepath.Dir(blocksPath)
 	cfg.CatchpointTracking = config.CatchpointTrackingModeUntracked // no catchpoint work during the import
-	fmt.Printf("replaying the source up to round %d (-v shows progress); start algod on %s only after this finishes\n", tip, dataDir)
+	from := accountsRound(filepath.Join(dirs.TrackerGenesisDir, config.LedgerFilenamePrefix+".tracker.sqlite"))
+	fmt.Printf("replaying rounds %d..%d of the source; start algod on %s only after this finishes\n", from+1, tip, dataDir)
 	start := time.Now()
+	stopProgress := reportProgress(src.Handle, from, tip, start)
 	l, err := data.LoadLedger(log, ledger.DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: replayDirs},
 		false, genesis.Proto, bal, genesis.ID(), genesis.Hash(), cfg)
+	stopProgress()
 	if err != nil {
 		return err
 	}
@@ -184,7 +190,7 @@ func run(blocksPath, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	elapsed := time.Since(start).Round(time.Second)
+	elapsed := time.Since(start)
 
 	// Keep what catchpoint catchup fetches (catchup/catchpointService.go), counted back
 	// from the trackers' round, where algod's replay starts, under either round's protocol.
@@ -200,13 +206,115 @@ func run(blocksPath, dataDir string) error {
 	if err != nil {
 		return fmt.Errorf("copying the last blocks into %s: %w", dstPath, err)
 	}
-	fmt.Printf("replayed to round %d in %v\n", latest, elapsed)
+	fmt.Printf("replayed to round %d in %v (%.0f rounds/s)\n", latest, elapsed.Round(time.Second), float64(latest.SubSaturate(from))/elapsed.Seconds())
 	if copied {
 		fmt.Printf("%s now holds rounds %d..%d\n", dstPath, lo, latest)
 	} else {
 		fmt.Printf("%s already reaches round %d; left as is\n", dstPath, latest)
 	}
 	return nil
+}
+
+// The ledger metrics the progress lines read, besides the exported round and
+// transaction counts: time spent reading blocks (ledger/blockqueue.go), in the
+// account DB transaction of commits (ledger/acctupdates.go), and writing the time
+// travel history in commits (ledger/timetravel.go).
+const (
+	blockReadMicros    = "ledger_blockq_getblock_micros"
+	accountWriteMicros = "ledger_commitround_micros"
+	historyWriteMicros = "ledger_timetravel_write_micros"
+)
+
+const progressInterval = 10 * time.Second
+
+// reportProgress prints a line every progressInterval until the returned stop is
+// called: the replayed round and its date, rounds/s and txns/s over the interval,
+// the share of the interval spent reading blocks (on a goroutine reading a few
+// blocks ahead, so near 100% means the replay waits for blocks) and in the account
+// DB and history writes of commits (which stop the replay), resident memory, and
+// the rate since start.
+func reportProgress(src *sql.DB, from, tip basics.Round, start time.Time) (stop func()) {
+	done, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		prev, prevAt := ledgerMetrics(), start
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-ticker.C:
+				cur := ledgerMetrics()
+				rnd, ok := cur[metrics.LedgerRound.Name]
+				if !ok {
+					continue // the replay has not started
+				}
+				prevRnd, ok := prev[metrics.LedgerRound.Name]
+				if !ok {
+					prevRnd = float64(from)
+				}
+				secs := now.Sub(prevAt).Seconds()
+				share := func(name string) float64 { return (cur[name] - prev[name]) / 1e6 / secs * 100 }
+				line := fmt.Sprintf("round %d/%d", int64(rnd), tip)
+				var hdr bookkeeping.BlockHeader
+				var buf []byte
+				if src.QueryRow("SELECT hdrdata FROM blocks WHERE rnd = ?", int64(rnd)).Scan(&buf) == nil && protocol.Decode(buf, &hdr) == nil {
+					line += time.Unix(hdr.TimeStamp, 0).UTC().Format(" (2006-01-02)")
+				}
+				line += fmt.Sprintf(": %.0f rounds/s, %.0f txns/s, block reads %.0f%%, account writes %.0f%%, history writes %.0f%%",
+					(rnd-prevRnd)/secs, (cur[metrics.LedgerTransactionsTotal.Name]-prev[metrics.LedgerTransactionsTotal.Name])/secs,
+					share(blockReadMicros), share(accountWriteMicros), share(historyWriteMicros))
+				if rss, ok := residentBytes(); ok {
+					line += fmt.Sprintf(", RSS %.1f GiB", float64(rss)/(1<<30))
+				}
+				fmt.Printf("%s (overall %.0f rounds/s)\n", line, (rnd-float64(from))/now.Sub(start).Seconds())
+				prev, prevAt = cur, now
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
+}
+
+func ledgerMetrics() map[string]float64 {
+	m := map[string]float64{}
+	metrics.DefaultRegistry().AddMetrics(m)
+	return m
+}
+
+// residentBytes is the process's resident set size, on Linux.
+func residentBytes() (uint64, bool) {
+	statm, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0, false
+	}
+	f := strings.Fields(string(statm))
+	if len(f) < 2 {
+		return 0, false
+	}
+	pages, err := strconv.ParseUint(f[1], 10, 64)
+	return pages * uint64(os.Getpagesize()), err == nil
+}
+
+// accountsRound is the data directory's account DB round before the ledger opens
+// it, where the replay starts; 0 without one. Only the reported rates use it.
+func accountsRound(path string) basics.Round {
+	if _, err := os.Stat(path); err != nil {
+		return 0 // db.MakeAccessor would create it
+	}
+	acc, err := db.MakeAccessor(path, true, false)
+	if err != nil {
+		return 0
+	}
+	defer acc.Close()
+	var rnd basics.Round
+	if acc.Handle.QueryRow("SELECT rnd FROM acctrounds WHERE id = 'acctbase'").Scan(&rnd) != nil {
+		return 0
+	}
+	return rnd
 }
 
 // keepBlocks replaces dst's blocks with src's rounds lo..hi in one transaction,
