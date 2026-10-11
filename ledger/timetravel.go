@@ -75,6 +75,24 @@ type historyRound struct {
 	expired *uint64 // expired online stake, for rounds with ExcludeExpiredCirculation
 }
 
+// A time travel ledger replays whole archives (tools/ttimport), where each
+// flush's fixed costs dominate rounds that change little: onlineAccounts reads
+// every online account to prune their history. Past
+// initializeCachesRoundFlushInterval rounds, its replay therefore flushes only
+// once the rounds since the last flush made more than
+// timeTravelReplayFlushChanges changes (replayChanges) or number
+// timeTravelReplayMaxFlushRounds. Variables for tests.
+var (
+	timeTravelReplayMaxFlushRounds = basics.Round(10_000)
+	timeTravelReplayFlushChanges   = 100_000
+)
+
+// replayChanges counts what a round keeps in the trackers' memory until it is
+// flushed: changed accounts, resources and boxes, and transactions.
+func replayChanges(delta *ledgercore.StateDelta) int {
+	return delta.Accts.Len() + len(delta.Accts.AppResources) + len(delta.Accts.AssetResources) + len(delta.KvMods) + len(delta.Txids)
+}
+
 func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
 	// hand-built DirsAndPrefix may lack the time travel dir: keep the store next to the blocks then
 	path := filepath.Join(cmp.Or(dirs.TimeTravelGenesisDir, dirs.BlockGenesisDir), dirs.DBFilePrefix) + ".timetravel"

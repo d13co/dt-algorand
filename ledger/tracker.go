@@ -793,6 +793,12 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 	}()
 
 	maxAcctLookback := tr.cfg.MaxAcctLookback
+	// a time travel ledger flushes rounds that change little less often, see timeTravelReplayMaxFlushRounds
+	maxFlushRounds := basics.Round(initializeCachesRoundFlushInterval)
+	if tr.cfg.EnableTimeTravel {
+		maxFlushRounds = max(maxFlushRounds, timeTravelReplayMaxFlushRounds)
+	}
+	changes := 0
 
 	for blk := range blocksStream {
 		delta, err = l.trackerEvalVerified(blk, &accLedgerEval)
@@ -802,11 +808,14 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 			return
 		}
 		tr.newBlock(blk, delta)
+		changes += replayChanges(&delta)
 
 		// flush to disk if any of the following applies:
 		// 1. if we have loaded up more than initializeCachesRoundFlushInterval rounds since the last time we flushed the data to disk
+		//    (and, on a time travel ledger, more than maxFlushRounds rounds or timeTravelReplayFlushChanges changes)
 		// 2. if we completed the loading and we loaded up more than 320 rounds.
-		flushIntervalExceed := blk.Round()-lastFlushedRound > initializeCachesRoundFlushInterval
+		sinceFlush := blk.Round() - lastFlushedRound
+		flushIntervalExceed := sinceFlush > initializeCachesRoundFlushInterval && (sinceFlush > maxFlushRounds || changes > timeTravelReplayFlushChanges)
 		loadCompleted := (lastestBlockRound == blk.Round() && lastBalancesRound+basics.Round(maxAcctLookback) < lastestBlockRound)
 		if flushIntervalExceed || loadCompleted {
 			// adjust the last flush time, so that we would not hold off the flushing due to "working too fast"
@@ -838,7 +847,7 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 			tr.mu.RUnlock()
 
 			// are we farther behind than we need to be? Consider: catchpoint interval, flush interval and max acct lookback.
-			if roundsBehind > basics.Round(maxAcctLookback) && roundsBehind > initializeCachesRoundFlushInterval+basics.Round(catchpointInterval) {
+			if roundsBehind > basics.Round(maxAcctLookback) && roundsBehind > maxFlushRounds+basics.Round(catchpointInterval) {
 				// we're unable to persist changes. This is unexpected, but there is no point in keep trying batching additional changes since any further changes
 				// would just accumulate in memory.
 				close(blockEvalFailed)
@@ -849,6 +858,7 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 
 			// and once we flushed it to disk, update the lastFlushedRound
 			lastFlushedRound = blk.Round()
+			changes = 0
 		}
 
 		// if enough time have passed since the last time we wrote a message to the log file then give the user an update about the progess.

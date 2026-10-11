@@ -563,6 +563,66 @@ func TestTimeTravelAccountsAhead(t *testing.T) {
 	require.Equal(t, basics.Round(20), rnd)
 }
 
+// TestTimeTravelReplayFlushes checks that a time travel ledger's replay
+// flushes rounds that change little every timeTravelReplayMaxFlushRounds,
+// busier ones every initializeCachesRoundFlushInterval, and records the same
+// history either way.
+func TestTimeTravelReplayFlushes(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	// not parallel: it sets the flush variables and counts commits
+
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 10)
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	cfg.Archival = true // keep every block for the replays
+	prefix := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.NoError(t, err)
+	const rounds = 5000
+	for range rounds {
+		addEmptyValidatedBlock(t, l, genesisInitState.Accounts)
+	}
+	// commit up to the round a replay ends at
+	l.WaitForCommit(l.Latest())
+	l.trackers.waitAccountsWriting()
+	triggerTrackerFlush(t, l)
+	digests := func(l *Ledger) [][]byte {
+		require.Equal(t, basics.Round(rounds-cfg.MaxAcctLookback), l.LatestTrackerCommitted())
+		var ds [][]byte
+		for r := basics.Round(1); r <= l.LatestTrackerCommitted(); r++ {
+			d, ok, err := l.historyAt(r).Digest(uint64(r))
+			require.NoError(t, err)
+			require.True(t, ok, "round %d", r)
+			ds = append(ds, d)
+		}
+		return ds
+	}
+	want := digests(l)
+	l.Close()
+
+	defer func(r basics.Round, c int) { timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges = r, c }(timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges)
+	timeTravelReplayMaxFlushRounds = 2000
+	// little change: flushes after rounds 2001, 4002 and the last; much: every 1001 rounds and the last
+	for _, tc := range []struct {
+		changes int
+		commits uint64
+	}{{rounds, 3}, {-1, 5}} {
+		// without its account DB and history, the ledger replays every block
+		require.DirExists(t, prefix+".timetravel")
+		require.NoError(t, os.RemoveAll(prefix+".timetravel"))
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			require.NoError(t, os.RemoveAll(prefix+".tracker.sqlite"+suffix))
+		}
+		timeTravelReplayFlushChanges = tc.changes
+		commits := ledgerCommitroundCount.GetUint64Value()
+		l, err = OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+		require.NoError(t, err)
+		require.Equal(t, tc.commits, ledgerCommitroundCount.GetUint64Value()-commits, "changes %d", tc.changes)
+		require.Equal(t, want, digests(l))
+		l.Close()
+	}
+}
+
 // TestHistViewModel checks the merged reads (store plus in-memory rounds,
 // including rounds in both) against a brute-force model.
 func TestHistViewModel(t *testing.T) {
