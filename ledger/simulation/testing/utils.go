@@ -18,6 +18,7 @@ package simulationtesting
 
 import (
 	"math/rand"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -239,16 +240,19 @@ func (env *Environment) Rekey(account, rekeyTo basics.Address) {
 
 // PrepareSimulatorTest creates an environment to test transaction simulations. The caller is
 // responsible for calling Close() on the returned Environment.
-func PrepareSimulatorTest(t *testing.T) Environment {
+func PrepareSimulatorTest(t *testing.T, configure ...func(*config.Local)) Environment {
 	genesisInitState, keys := ledgertesting.GenerateInitState(t, protocol.ConsensusFuture, 200)
 
 	// Prepare ledger
 	const inMem = true
 	cfg := config.GetDefaultLocal()
 	cfg.Archival = true
+	for _, f := range configure {
+		f(&cfg)
+	}
 	log := logging.TestingLog(t)
 	log.SetLevel(logging.Warn)
-	realLedger, err := ledger.OpenLedger(log, t.Name(), inMem, genesisInitState, cfg)
+	realLedger, err := ledger.OpenLedger(log, filepath.Join(t.TempDir(), "ledger"), inMem, genesisInitState, cfg)
 	require.NoError(t, err, "could not open ledger")
 
 	ledger := &data.Ledger{Ledger: realLedger}

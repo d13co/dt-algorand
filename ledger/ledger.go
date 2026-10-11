@@ -19,6 +19,7 @@ package ledger
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -39,6 +40,7 @@ import (
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb/pebbledbdriver"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb/sqlitedriver"
+	"github.com/algorand/go-algorand/ledger/timetravel"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/util/db"
@@ -91,6 +93,9 @@ type Ledger struct {
 
 	trackers  trackerRegistry
 	trackerMu deadlock.RWMutex
+
+	// history is the time travel store tracker, nil unless cfg.EnableTimeTravel.
+	history *historyTracker
 
 	// verifiedTxnCache holds all the verified transactions state
 	verifiedTxnCache verify.VerifiedTransactionCache
@@ -160,6 +165,15 @@ func OpenLedger[T string | DirsAndPrefix](
 			l.Close()
 		}
 	}()
+
+	if cfg.EnableTimeTravel {
+		// a separate error: nothing is open yet for the deferred Close
+		h, herr := openHistoryTracker(dirs, cfg, log)
+		if herr != nil {
+			return nil, herr
+		}
+		l.history = h
+	}
 
 	l.trackerDBs, l.blockDBs, err = openLedgerDB(dirs, dbMem, cfg, log)
 	if err != nil {
@@ -244,6 +258,9 @@ func (l *Ledger) reloadLedger() error {
 		&l.notifier,       // send OnNewBlocks to subscribers
 		&l.metrics,        // provides metrics reporting support
 		&l.spVerification, // provides state proof verification support
+	}
+	if l.history != nil {
+		trackers = append(trackers, l.history) // time travel store
 	}
 
 	l.accts.initialize(l.cfg)
@@ -427,6 +444,9 @@ func (l *Ledger) Close() {
 	// last, we close the underlying database connections.
 	l.blockDBs.Close()
 	l.trackerDBs.Close()
+	if l.history != nil {
+		l.history.store.Close()
+	}
 }
 
 // RegisterBlockListeners registers listeners that will be called when a
@@ -506,7 +526,11 @@ func (l *Ledger) GetLastCatchpointLabel() string {
 func (l *Ledger) GetCreatorForRound(rnd basics.Round, cidx basics.CreatableIndex, ctype basics.CreatableType) (creator basics.Address, ok bool, err error) {
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
-	return l.accts.GetCreatorForRound(rnd, cidx, ctype)
+	creator, ok, err = l.accts.GetCreatorForRound(rnd, cidx, ctype)
+	if h := l.historyFor(rnd, err); h != nil {
+		return histCreator(h, rnd, cidx, ctype)
+	}
+	return creator, ok, err
 }
 
 // GetCreator is like GetCreatorForRound, but for the latest round and race-free
@@ -517,11 +541,16 @@ func (l *Ledger) GetCreator(cidx basics.CreatableIndex, ctype basics.CreatableTy
 	return l.accts.GetCreatorForRound(l.blockQ.latest(), cidx, ctype)
 }
 
-// GetStateDeltaForRound retrieves a ledgercore.StateDelta from the accountUpdates cache for the requested rnd
+// GetStateDeltaForRound retrieves a ledgercore.StateDelta from the accountUpdates cache for the requested rnd.
+// With the time travel history, older rounds whose block is still stored are re-evaluated.
 func (l *Ledger) GetStateDeltaForRound(rnd basics.Round) (ledgercore.StateDelta, error) {
 	l.trackerMu.RLock()
-	defer l.trackerMu.RUnlock()
-	return l.accts.lookupStateDelta(rnd)
+	sd, err := l.accts.lookupStateDelta(rnd)
+	l.trackerMu.RUnlock()
+	if err != nil && rnd > 0 && l.historyAt(rnd) != nil {
+		return l.reevalDelta(rnd)
+	}
+	return sd, err
 }
 
 // GetTracer returns the logic.EvalTracer attached to the ledger--can be nil.
@@ -572,6 +601,10 @@ func (l *Ledger) LookupAccount(round basics.Round, addr basics.Address) (data le
 	defer l.trackerMu.RUnlock()
 
 	data, rnd, rewardsVersion, rewardsLevel, err := l.accts.lookupWithoutRewards(round, addr, true /* take lock */)
+	if h := l.historyFor(round, err); h != nil {
+		data, withoutRewards, err = l.histAccountWithRewards(h, round, addr)
+		return data, round, withoutRewards, err
+	}
 	if err != nil {
 		return ledgercore.AccountData{}, basics.Round(0), basics.MicroAlgos{}, err
 	}
@@ -619,6 +652,9 @@ func (l *Ledger) lookupResource(rnd basics.Round, addr basics.Address, aidx basi
 
 	// Intentionally apply (pending) rewards up to rnd.
 	res, _, err := l.accts.LookupResource(rnd, addr, aidx, ctype)
+	if h := l.historyFor(rnd, err); h != nil {
+		return histResource(h, rnd, addr, aidx, ctype)
+	}
 	if err != nil {
 		return ledgercore.AccountResource{}, err
 	}
@@ -631,7 +667,11 @@ func (l *Ledger) LookupKv(rnd basics.Round, key string) ([]byte, error) {
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
 
-	return l.accts.LookupKv(rnd, key)
+	v, err := l.accts.LookupKv(rnd, key)
+	if h := l.historyFor(rnd, err); h != nil {
+		v, _, err = h.Get(timetravel.KvKey(key), uint64(rnd))
+	}
+	return v, err
 }
 
 // LookupKeysByPrefix searches keys with specific prefix, up to `maxKeyNum`
@@ -640,7 +680,16 @@ func (l *Ledger) LookupKeysByPrefix(round basics.Round, keyPrefix string, maxKey
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
 
-	return l.accts.LookupKeysByPrefix(round, keyPrefix, maxKeyNum)
+	keys, err := l.accts.LookupKeysByPrefix(round, keyPrefix, maxKeyNum)
+	if h := l.historyFor(round, err); h != nil {
+		var kvs []ledgercore.KvPairResult
+		kvs, _, err = histKvPairs(h, round, keyPrefix, "", maxKeyNum, 0, false)
+		keys = make([]string, len(kvs))
+		for i := range kvs {
+			keys[i] = kvs[i].Key
+		}
+	}
+	return keys, err
 }
 
 // LookupKvPairsByPrefix searches for key-value pairs by prefix with cursor-based pagination.
@@ -649,7 +698,12 @@ func (l *Ledger) LookupKvPairsByPrefix(round basics.Round, keyPrefix string, cur
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
 
-	return l.accts.LookupKvPairsByPrefix(round, keyPrefix, cursor, limit, maxBytes, includeValues)
+	res, rnd, more, err := l.accts.LookupKvPairsByPrefix(round, keyPrefix, cursor, limit, maxBytes, includeValues)
+	if h := l.historyFor(round, err); h != nil {
+		res, more, err = histKvPairs(h, round, keyPrefix, cursor, limit, maxBytes, includeValues)
+		rnd = round
+	}
+	return res, rnd, more, err
 }
 
 // LookupAgreement returns account data used by agreement.
@@ -659,6 +713,17 @@ func (l *Ledger) LookupAgreement(rnd basics.Round, addr basics.Address) (basics.
 
 	// Intentionally apply (pending) rewards up to rnd.
 	data, err := l.acctsOnline.lookupOnlineAccountData(rnd, addr)
+	if h := l.historyFor(rnd, err); h != nil {
+		var ad ledgercore.AccountData
+		if ad, err = histAccount(h, rnd, addr); err != nil || ad.Status != basics.Online {
+			return basics.OnlineAccountData{}, err
+		}
+		var hdr bookkeeping.BlockHeader
+		if hdr, err = histHeader(h, rnd); err != nil {
+			return basics.OnlineAccountData{}, err
+		}
+		return ad.OnlineAccountData(config.Consensus[hdr.CurrentProtocol].RewardUnit, hdr.RewardsLevel), nil
+	}
 	return data, err
 }
 
@@ -716,6 +781,10 @@ func (l *Ledger) LookupWithoutRewards(rnd basics.Round, addr basics.Address) (le
 	var result ledgercore.AccountData
 
 	result, validThrough, err := l.accts.LookupWithoutRewards(rnd, addr)
+	if h := l.historyFor(rnd, err); h != nil {
+		result, err = histAccount(h, rnd, addr)
+		return result, rnd, err
+	}
 	if err != nil {
 		return ledgercore.AccountData{}, basics.Round(0), err
 	}
@@ -734,7 +803,11 @@ func (l *Ledger) LatestTotals() (basics.Round, ledgercore.AccountTotals, error) 
 func (l *Ledger) Totals(rnd basics.Round) (ledgercore.AccountTotals, error) {
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
-	return l.accts.Totals(rnd)
+	t, err := l.accts.Totals(rnd)
+	if h := l.historyFor(rnd, err); h != nil {
+		return histTotals(h, rnd)
+	}
+	return t, err
 }
 
 // OnlineCirculation returns the online totals of all accounts at the end of round rnd.
@@ -742,12 +815,25 @@ func (l *Ledger) Totals(rnd basics.Round) (ledgercore.AccountTotals, error) {
 func (l *Ledger) OnlineCirculation(rnd basics.Round, voteRnd basics.Round) (basics.MicroAlgos, error) {
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
-	return l.acctsOnline.onlineCirculation(rnd, voteRnd)
+	c, err := l.acctsOnline.onlineCirculation(rnd, voteRnd)
+	if h := l.historyFor(rnd, err); h != nil {
+		// ponytail: online money at rnd, without subtracting accounts whose keys expired by voteRnd
+		t, err := histTotals(h, rnd)
+		return t.Online.Money, err
+	}
+	return c, err
 }
 
 // CheckDup return whether a transaction is a duplicate one.
 func (l *Ledger) CheckDup(currentProto config.ConsensusParams, current basics.Round, firstValid basics.Round, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
-	return l.txTail.checkDup(currentProto, current, firstValid, lastValid, txid, txl)
+	err := l.txTail.checkDup(currentProto, current, firstValid, lastValid, txid, txl)
+	var missing *errTxTailMissingRound
+	if l.history != nil && errors.As(err, &missing) && current+basics.Round(currentProto.MaxTxnLife) < l.Latest() {
+		// evaluating at a round long before the txtail window (historical
+		// simulate): the history keeps no txids, so duplicates are not detected
+		return nil
+	}
+	return err
 }
 
 // CheckConfirmedTail checks if a transaction txid happens to have LastValid greater than the current round at the time of calling and has been already committed to the ledger.
@@ -794,6 +880,11 @@ func (l *Ledger) BlockHdr(rnd basics.Round) (blk bookkeeping.BlockHeader, err er
 	hdr, ok := l.txTail.blockHeader(rnd)
 	if !ok {
 		hdr, err = l.blockQ.getBlockHdr(rnd)
+	}
+	if errors.As(err, &ledgercore.ErrNoEntry{}) {
+		if h := l.historyAt(rnd); h != nil {
+			return histHeader(h, rnd)
+		}
 	}
 	return hdr, err
 }

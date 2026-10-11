@@ -477,7 +477,10 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 		}
 	}
 
-	myLedger := v2.Node.LedgerForAPI()
+	myLedger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 
 	// count total # of resources, if max limit is set
 	if maxResults := v2.Node.Config().MaxAPIResourcesPerAccount; maxResults != 0 {
@@ -535,7 +538,10 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 
 // basicAccountInformation handles the case when no resources (assets or apps) are requested.
 func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Address, handle codec.Handle, contentType string) error {
-	myLedger := v2.Node.LedgerForAPI()
+	myLedger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	record, lastRound, amountWithoutPendingRewards, err := myLedger.LookupAccount(myLedger.Latest(), addr)
 	if err != nil {
 		return internalError(ctx, err, errFailedLookingUpLedger, v2.Log)
@@ -614,7 +620,10 @@ func (v2 *Handlers) AccountAssetInformation(ctx echo.Context, address basics.Add
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 
 	lastRound := ledger.Latest()
 	record, err := ledger.LookupAsset(lastRound, address, assetID)
@@ -662,7 +671,10 @@ func (v2 *Handlers) AccountApplicationInformation(ctx echo.Context, address basi
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 
 	lastRound := ledger.Latest()
 	record, err := ledger.LookupApplication(lastRound, address, applicationID)
@@ -991,20 +1003,24 @@ func (v2 *Handlers) GetTransactionProof(ctx echo.Context, round basics.Round, tx
 // GetSupply gets the current supply reported by the ledger.
 // (GET /v2/ledger/supply)
 func (v2 *Handlers) GetSupply(ctx echo.Context) error {
-	latest, totals, err := v2.Node.LedgerForAPI().LatestTotals()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
+	latest, totals, err := ledger.LatestTotals()
 	if err != nil {
 		err = fmt.Errorf("GetSupply(): round %d, LatestTotals failed: %v", latest, err)
 		return internalError(ctx, err, errInternalFailure, v2.Log)
 	}
 
-	params, err := v2.Node.LedgerForAPI().ConsensusParams(latest)
+	params, err := ledger.ConsensusParams(latest)
 	if err != nil {
 		err = fmt.Errorf("GetSupply(): round %d, ConsensusParams failed: %v", latest, err)
 		return internalError(ctx, err, errInternalFailure, v2.Log)
 	}
 
 	brnd := agreement.BalanceRound(latest, params)
-	onlineCirculation, err := v2.Node.LedgerForAPI().OnlineCirculation(brnd, latest)
+	onlineCirculation, err := ledger.OnlineCirculation(brnd, latest)
 	if err != nil {
 		err = fmt.Errorf("GetSupply(): round %d, OnlineCirculation failed: %v", latest, err)
 		return internalError(ctx, err, errInternalFailure, v2.Log)
@@ -1336,7 +1352,10 @@ func (v2 *Handlers) AccountAssetsInformation(ctx echo.Context, address basics.Ad
 		params.Limit = &l
 	}
 
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 
 	// Logic
 	// 1. Get the account's asset holdings subject to limits
@@ -1431,7 +1450,10 @@ func (v2 *Handlers) AccountApplicationsInformation(ctx echo.Context, address bas
 		params.Limit = &l
 	}
 
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 
 	// Logic
 	// 1. Get the account's application resources subject to limits
@@ -1645,6 +1667,9 @@ func (v2 *Handlers) GetLedgerStateDelta(ctx echo.Context, round basics.Round, pa
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 	sDelta, err := v2.Node.LedgerForAPI().GetStateDeltaForRound(round)
+	if errors.Is(err, ledger.ErrDeltaReevaluation) {
+		return internalError(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
+	}
 	if err != nil {
 		return notFound(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
 	}
@@ -1892,7 +1917,10 @@ func (v2 *Handlers) GetPendingTransactions(ctx echo.Context, params model.GetPen
 // GetApplicationByID returns application information by app idx.
 // (GET /v2/applications/{application-id})
 func (v2 *Handlers) GetApplicationByID(ctx echo.Context, applicationID basics.AppIndex) error {
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	creator, ok, err := ledger.GetCreator(basics.CreatableIndex(applicationID), basics.AppCreatable)
 	if err != nil {
 		return internalError(ctx, err, errFailedLookingUpLedger, v2.Log)
@@ -1935,7 +1963,10 @@ func applicationBoxesMaxKeys(requestedMax uint64, algodMax uint64) uint64 {
 // GetApplicationBoxes returns the boxes of an application
 // (GET /v2/applications/{application-id}/boxes)
 func (v2 *Handlers) GetApplicationBoxes(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxesParams) error {
-	lgr := v2.Node.LedgerForAPI()
+	lgr, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	lastRound := lgr.Latest()
 	keyPrefix := apps.MakeBoxKey(uint64(applicationID), "")
 
@@ -2076,7 +2107,10 @@ func encodeBoxNameAsAppCallBytes(name []byte) string {
 // GetApplicationBoxByName returns the value of an application's box
 // (GET /v2/applications/{application-id}/box)
 func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxByNameParams) error {
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	lastRound := ledger.Latest()
 
 	encodedBoxName := params.Name
@@ -2108,7 +2142,10 @@ func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basi
 // GetAssetByID returns application information by app idx.
 // (GET /v2/assets/{asset-id})
 func (v2 *Handlers) GetAssetByID(ctx echo.Context, assetID basics.AssetIndex) error {
-	ledger := v2.Node.LedgerForAPI()
+	ledger, err := v2.ledgerFor(ctx)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	creator, ok, err := ledger.GetCreator(basics.CreatableIndex(assetID), basics.AssetCreatable)
 	if err != nil {
 		return internalError(ctx, err, errFailedLookingUpLedger, v2.Log)

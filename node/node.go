@@ -1213,6 +1213,9 @@ func (node *AlgorandFullNode) StartCatchup(catchpoint string) error {
 	if node.config.Archival {
 		return fmt.Errorf("catching up using a catchpoint is not supported on archive nodes")
 	}
+	if node.config.EnableTimeTravel {
+		return fmt.Errorf("catching up using a catchpoint is not supported with EnableTimeTravel: the history must be built from genesis")
+	}
 	if node.catchpointCatchupService != nil {
 		stats := node.catchpointCatchupService.GetStatistics()
 		// No need to return an error

@@ -20,7 +20,7 @@
 package config
 
 var defaultLocal = Local{
-	Version:                                    38,
+	Version:                                    39,
 	AccountUpdatesStatsInterval:                5000000000,
 	AccountsRebuildSynchronousMode:             1,
 	AgreementIncomingBundlesQueueLength:        15,
@@ -85,6 +85,7 @@ var defaultLocal = Local{
 	EnableProfiler:                             false,
 	EnableRequestLogger:                        false,
 	EnableRuntimeMetrics:                       false,
+	EnableTimeTravel:                           false,
 	EnableTopAccountsReporting:                 false,
 	EnableTxBacklogAppRateLimiting:             true,
 	EnableTxBacklogRateLimiting:                true,
@@ -149,6 +150,7 @@ var defaultLocal = Local{
 	TLSCertFile:                                "",
 	TLSKeyFile:                                 "",
 	TelemetryToLog:                             true,
+	TimeTravelCheckpointInterval:               1,
 	TrackerDBDir:                               "",
 	TransactionSyncDataExchangeRate:            0,
 	TransactionSyncSignificantMessageThreshold: 0,
