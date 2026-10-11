@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+
+## cat /usr/share/debhelper/autoscripts/prerm-systemd-restart | sed -e s,#UNITFILES#,dtalgorand.service,
+if [ -d /run/systemd/system ] && [ "$1" = remove ]; then
+	deb-systemd-invoke stop dtalgorand.service 'dtalgorand@*.service' >/dev/null || true
+fi

@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+## cat /usr/share/debhelper/autoscripts/postrm-systemd | sed -e s,#UNITFILES#,dtalgorand.service,
+if [ "$1" = "remove" ]; then
+	if [ -x "/usr/bin/deb-systemd-helper" ]; then
+		deb-systemd-helper mask dtalgorand.service >/dev/null || true
+	fi
+fi
+
+if [ "$1" = "purge" ]; then
+	if [ -x "/usr/bin/deb-systemd-helper" ]; then
+		deb-systemd-helper purge dtalgorand.service >/dev/null || true
+		deb-systemd-helper unmask dtalgorand.service >/dev/null || true
+	fi
+fi
+
+## cat /usr/share/debhelper/autoscripts/postrm-systemd-reload-only | sed -e s,#UNITFILES#,dtalgorand.service,
+if [ -d /run/systemd/system ]; then
+	systemctl --system daemon-reload >/dev/null || true
+fi

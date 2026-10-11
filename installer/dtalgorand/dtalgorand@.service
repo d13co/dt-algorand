@@ -1,0 +1,34 @@
+## For some data directory $ALGORAND_DATA
+##
+## Setup:
+## ALGORAND_DATA=/var/lib/dtalgorand_testnet
+## sudo mkdir -p ${ALGORAND_DATA}
+## sudo cp -p /var/lib/dtalgorand/genesis/testnet/genesis.json ${ALGORAND_DATA}/genesis.json
+## sudo cp -p /var/lib/dtalgorand/system.json ${ALGORAND_DATA}/system.json
+## echo '{ "EnableTimeTravel": true }' | sudo tee ${ALGORAND_DATA}/config.json
+## sudo chown -R dtalgorand:dtalgorand ${ALGORAND_DATA}
+##
+## systemd allows for config overrides in a .conf file under a directory named for the service. e.g.:
+##
+## sudo systemctl edit dtalgorand@$(systemd-escape ${ALGORAND_DATA})
+##
+## sudo systemctl enable dtalgorand@$(systemd-escape ${ALGORAND_DATA})
+## sudo systemctl start dtalgorand@$(systemd-escape ${ALGORAND_DATA})
+
+
+[Unit]
+Description=Algorand time travel daemon for %I
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/dtalgod -d %I
+PIDFile=%I/algod.pid
+User=dtalgorand
+Group=dtalgorand
+Restart=always
+RestartSec=5s
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

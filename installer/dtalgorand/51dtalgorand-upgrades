@@ -1,4 +1,4 @@
-## This file is provided by the ttalgorand package to configure
+## This file is provided by the dtalgorand package to configure
 ## unattended upgrades from apt.d13.co.
 
 Unattended-Upgrade::Origins-Pattern {
