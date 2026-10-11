@@ -219,11 +219,19 @@ func (t *txTail) newBlock(blk bookkeeping.Block, delta ledgercore.StateDelta) {
 	tail.Hdr = blk.BlockHeader
 
 	for txid, txnInc := range delta.Txids {
-		if _, ok := t.lastValid[txnInc.LastValid]; !ok {
-			t.lastValid[txnInc.LastValid] = make(map[transactions.Txid]uint16)
+		// A ledger that added this block live dropped the txids expiring before
+		// lowWaterMark when it committed past them, and checkDup reports those
+		// rounds as missing. A replay adds blocks below lowWaterMark (loadFromDisk
+		// sets it to the latest block) and committedUpTo never goes back below it,
+		// so it would keep them for good: on tools/ttimport's replay of a whole
+		// archive, every replayed txid.
+		if txnInc.LastValid >= t.lowWaterMark {
+			if _, ok := t.lastValid[txnInc.LastValid]; !ok {
+				t.lastValid[txnInc.LastValid] = make(map[transactions.Txid]uint16)
+			}
+			deltaR := uint16(txnInc.LastValid - blk.BlockHeader.Round)
+			t.lastValid[txnInc.LastValid][txid] = deltaR
 		}
-		deltaR := uint16(txnInc.LastValid - blk.BlockHeader.Round)
-		t.lastValid[txnInc.LastValid][txid] = deltaR
 
 		tail.TxnIDs[txnInc.Intra] = txid
 		tail.LastValid[txnInc.Intra] = txnInc.LastValid

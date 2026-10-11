@@ -19,6 +19,8 @@ package ledger
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,11 +30,13 @@ import (
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	storetesting "github.com/algorand/go-algorand/ledger/store/testing"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb/sqlitedriver"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
+	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
@@ -449,4 +453,60 @@ func BenchmarkTxTailBlockHeaderCache(b *testing.B) {
 			require.Less(b, len(tail.blockHeaderData), 1001+10)
 		}
 	}
+}
+
+// TestTxTailReplayKeepsLiveTxids checks that a replay keeps only the txids a
+// ledger that added the blocks keeps: those checkDup can still be asked about.
+func TestTxTailReplayKeepsLiveTxids(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+	genHash := crypto.Digest{1}
+	genBlock, err := bookkeeping.MakeGenesisBlock(protocol.ConsensusCurrentVersion, genBalances, "test", genHash)
+	require.NoError(t, err)
+	initState := ledgercore.InitState{Block: genBlock, Accounts: genBalances.Balances, GenesisHash: genHash}
+	cfg := config.GetDefaultLocal()
+	cfg.Archival = true // keep every block for the replay
+	prefix := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenLedger(logging.TestingLog(t), prefix, false, initState, cfg)
+	require.NoError(t, err)
+	maxTxnLife := int(config.Consensus[protocol.ConsensusCurrentVersion].MaxTxnLife)
+	for i := range maxTxnLife + 500 {
+		eval := nextBlock(t, l)
+		txn(t, l, eval, &txntest.Txn{Type: protocol.PaymentTx, Sender: addrs[0], Receiver: addrs[1], Amount: uint64(i + 1)})
+		endBlock(t, l, eval)
+	}
+	l.WaitForCommit(l.Latest())
+	txids := func() map[transactions.Txid]basics.Round {
+		l.txTail.tailMu.RLock()
+		defer l.txTail.tailMu.RUnlock()
+		m := map[transactions.Txid]basics.Round{}
+		for lv, ids := range l.txTail.lastValid {
+			require.GreaterOrEqual(t, lv, l.txTail.lowWaterMark)
+			for txid := range ids {
+				m[txid] = lv
+			}
+		}
+		return m
+	}
+	// the txids still valid for the next block: those of the last MaxTxnLife+1
+	// rounds (the live ledger may keep one more round until its next commit)
+	live := map[transactions.Txid]basics.Round{}
+	for txid, lv := range txids() {
+		if lv >= l.Latest() {
+			live[txid] = lv
+		}
+	}
+	require.Len(t, live, maxTxnLife+1)
+	l.Close()
+
+	// without its account DB, the ledger replays every block
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		require.NoError(t, os.RemoveAll(prefix+".tracker.sqlite"+suffix))
+	}
+	l, err = OpenLedger(logging.TestingLog(t), prefix, false, initState, cfg)
+	require.NoError(t, err)
+	defer l.Close()
+	require.Equal(t, live, txids())
 }
