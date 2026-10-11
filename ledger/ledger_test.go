@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -3053,6 +3054,59 @@ func TestVotersReloadFromDisk(t *testing.T) {
 	cfg.MaxAcctLookback = proto.StateProofInterval - proto.StateProofVotersLookback - 10
 
 	ledgertesting.WithAndWithoutLRUCache(t, cfg, testVotersReloadFromDisk)
+}
+
+// TestVotersDeferredDuringReplay checks that a long replay loads only the state
+// proof voters still needed when it ends, and that they match the ones loaded
+// while the blocks were added.
+func TestVotersDeferredDuringReplay(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	proto := config.Consensus[protocol.ConsensusCurrentVersion]
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 100)
+	cfg := config.GetDefaultLocal()
+	cfg.Archival = true // keep every block for the replay
+	prefix := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.NoError(t, err)
+
+	// state proofs are confirmed an interval late, so of the 8 intervals' voters
+	// the tracker keeps the last few
+	blk := genesisInitState.Block
+	for blk.Round() < basics.Round(8*proto.StateProofInterval) {
+		blk.BlockHeader.Round++
+		next := max(2, uint64(blk.Round())/proto.StateProofInterval) * proto.StateProofInterval
+		blk.BlockHeader.StateProofTracking = map[protocol.StateProofType]bookkeeping.StateProofTrackingData{
+			protocol.StateProofBasic: {StateProofNextRound: basics.Round(next)},
+		}
+		require.NoError(t, l.AddBlock(blk, agreement.Certificate{}))
+	}
+	l.WaitForCommit(l.Latest())
+	triggerTrackerFlush(t, l)
+	l.acctsOnline.voters.votersMu.RLock()
+	expected := maps.Clone(l.acctsOnline.voters.votersForRoundCache)
+	l.acctsOnline.voters.votersMu.RUnlock()
+	require.NotEmpty(t, expected)
+	require.Less(t, len(expected), 8)
+	for _, v := range expected {
+		require.NoError(t, v.Wait())
+	}
+	l.Close()
+
+	// without its account DB, the ledger replays every block
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		require.NoError(t, os.RemoveAll(prefix+".tracker.sqlite"+suffix))
+	}
+	queries := ledgerAccountsOnlineTopCount.GetUint64Value()
+	l, err = OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.NoError(t, err)
+	defer l.Close()
+	l.acctsOnline.voters.votersMu.RLock()
+	actual := maps.Clone(l.acctsOnline.voters.votersForRoundCache)
+	l.acctsOnline.voters.votersMu.RUnlock()
+	verifyVotersContent(t, expected, actual)
+	// one query per tree still needed, none for the trees dropped during the replay
+	require.Equal(t, uint64(len(expected)), ledgerAccountsOnlineTopCount.GetUint64Value()-queries)
 }
 
 func testVotersReloadFromDiskAfterOneStateProofCommitted(t *testing.T, cfg config.Local) {

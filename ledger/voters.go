@@ -97,6 +97,18 @@ type votersTracker struct {
 	// shutdown the tracker without leaving any running go-routines.
 	loadWaitGroup sync.WaitGroup
 
+	// deferring is set while the tracker registry replays blocks: loadTree then
+	// registers the round's entry (which keeps its accounts history in the
+	// database) and appends its header to deferred instead of loading the tree.
+	// Replayed blocks are not validated, so nothing needs the trees, and most are
+	// dropped once their state proofs are confirmed later in the replay, while
+	// computing each one races the replay's commits: a commit landing while
+	// TopOnlineAccounts reads the database makes it start over. loadDeferred loads
+	// the ones still needed when the replay ends. Only the registry's serialized
+	// newBlock and replay touch these two fields.
+	deferring bool
+	deferred  []bookkeeping.BlockHeader
+
 	// commitListener provides a callback to call on each prepare commit. This callback receives access to the voters
 	// cache.
 	commitListener   ledgercore.VotersCommitListener
@@ -175,6 +187,14 @@ func (vt *votersTracker) loadTree(hdr bookkeeping.BlockHeader) {
 
 	vt.setVoters(r, tr)
 
+	if vt.deferring {
+		vt.deferred = append(vt.deferred, hdr)
+		return
+	}
+	vt.startLoad(tr, hdr)
+}
+
+func (vt *votersTracker) startLoad(tr *ledgercore.VotersForRound, hdr bookkeeping.BlockHeader) {
 	vt.loadWaitGroup.Add(1)
 	go func() {
 		defer vt.loadWaitGroup.Done()
@@ -185,6 +205,23 @@ func (vt *votersTracker) loadTree(hdr bookkeeping.BlockHeader) {
 			tr.BroadcastError(err)
 		}
 	}()
+}
+
+// deferLoads makes loadTree defer loading until loadDeferred.
+func (vt *votersTracker) deferLoads() {
+	vt.deferring = true
+}
+
+// loadDeferred stops deferring and loads the deferred trees whose entries are
+// still in the cache.
+func (vt *votersTracker) loadDeferred() {
+	vt.deferring = false
+	for _, hdr := range vt.deferred {
+		if tr, ok := vt.getVoters(hdr.Round); ok {
+			vt.startLoad(tr, hdr)
+		}
+	}
+	vt.deferred = nil
 }
 
 // close waits until all the internal spawned go-routines are done before returning, allowing clean
