@@ -355,6 +355,9 @@ func (node *AlgorandFollowerNode) OnNewBlock(block bookkeeping.Block, _ ledgerco
 func (node *AlgorandFollowerNode) StartCatchup(catchpoint string) error {
 	node.mu.Lock()
 	defer node.mu.Unlock()
+	if node.config.EnableTimeTravel {
+		return fmt.Errorf("catching up using a catchpoint is not supported with EnableTimeTravel: the history must be built from genesis")
+	}
 	if node.catchpointCatchupService != nil {
 		stats := node.catchpointCatchupService.GetStatistics()
 		// No need to return an error

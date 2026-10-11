@@ -598,7 +598,7 @@ type Local struct {
 	EnableFollowMode bool `version[27]:"false"`
 
 	// EnableTimeTravel keeps the history of every ledger object (accounts, asset holdings and params, app local states
-	// and params, boxes, totals) and every block header in a time travel store next to the block database, so that
+	// and params, boxes, totals) and every block header in a time travel store (see TimeTravelDBDir), so that
 	// lookups, the account/asset/application/box REST endpoints (?round=) and simulation (request "round") work at any
 	// past round. This is a non-standard fork feature. The node must sync from genesis (fast catchup is refused).
 	// Combine with Archival=false to drop old block bodies and certificates, which the history does not need.
@@ -608,6 +608,12 @@ type Local struct {
 	// 1 stores every object version in full and relies on block compression; larger values store the versions between
 	// checkpoints as patches against the checkpoint. It is fixed when the store is created.
 	TimeTravelCheckpointInterval uint64 `version[39]:"1"`
+
+	// TimeTravelDBDir is an optional directory to store the time travel store (EnableTimeTravel).
+	// For isolation, the node will create a subdirectory in this location, named by the genesis-id of the network.
+	// If not specified, the node will use the BlockDBDir. Queries at past rounds read it at random: point it at a fast
+	// disk to keep their latency down. To move an existing store, stop the node and move its ledger.timetravel directory.
+	TimeTravelDBDir string `version[39]:""`
 
 	// EnableTxnEvalTracer turns on features in the BlockEvaluator which collect data on transactions, exposing them via algod APIs.
 	// It will store txn deltas created during block evaluation, potentially consuming much larger amounts of memory,
@@ -860,6 +866,7 @@ type ResolvedGenesisDirs struct {
 	CatchpointGenesisDir string
 	StateproofGenesisDir string
 	CrashGenesisDir      string
+	TimeTravelGenesisDir string
 }
 
 // String returns the Genesis Directory values as a string
@@ -873,6 +880,7 @@ func (rgd ResolvedGenesisDirs) String() string {
 	ret += fmt.Sprintf("CatchpointGenesisDir: %s\n", rgd.CatchpointGenesisDir)
 	ret += fmt.Sprintf("StateproofGenesisDir: %s\n", rgd.StateproofGenesisDir)
 	ret += fmt.Sprintf("CrashGenesisDir: %s\n", rgd.CrashGenesisDir)
+	ret += fmt.Sprintf("TimeTravelGenesisDir: %s\n", rgd.TimeTravelGenesisDir)
 	return ret
 }
 
@@ -962,6 +970,15 @@ func (cfg *Local) EnsureAndResolveGenesisDirs(rootDir, genesisID string, logger 
 		}
 	} else {
 		resolved.CatchpointGenesisDir = resolved.ColdGenesisDir
+	}
+	// if TimeTravelDBDir is not set, use BlockDBDir
+	if cfg.TimeTravelDBDir != "" {
+		resolved.TimeTravelGenesisDir, err = ensureAbsGenesisDir(cfg.TimeTravelDBDir, genesisID)
+		if err != nil {
+			return ResolvedGenesisDirs{}, err
+		}
+	} else {
+		resolved.TimeTravelGenesisDir = resolved.BlockGenesisDir
 	}
 	// if StateproofDir is not set, use HotDataDir
 	if cfg.StateproofDir != "" {

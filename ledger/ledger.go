@@ -140,6 +140,7 @@ func OpenLedger[T string | DirsAndPrefix](
 		dirs.ColdGenesisDir = s
 		dirs.BlockGenesisDir = s
 		dirs.CatchpointGenesisDir = s
+		dirs.TimeTravelGenesisDir = s
 	} else if ds, ok := any(dbPathPrefix).(DirsAndPrefix); ok {
 		// if a DirsAndPrefix has been supplied, use it.
 		dirs = ds

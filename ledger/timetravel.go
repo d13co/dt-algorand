@@ -18,6 +18,7 @@ package ledger
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -48,6 +49,7 @@ import (
 // the tracker DB round; replays after a crash are skipped by the store.
 type historyTracker struct {
 	store *timetravel.Store
+	path  string
 
 	mu      deadlock.Mutex
 	pending []historyRound
@@ -65,12 +67,13 @@ type historyRound struct {
 }
 
 func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
-	s, err := timetravel.Open(filepath.Join(dirs.BlockGenesisDir, dirs.DBFilePrefix)+".timetravel",
-		timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}})
+	// hand-built DirsAndPrefix may lack the time travel dir: keep the store next to the blocks then
+	path := filepath.Join(cmp.Or(dirs.TimeTravelGenesisDir, dirs.BlockGenesisDir), dirs.DBFilePrefix) + ".timetravel"
+	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}})
 	if err != nil {
-		return nil, fmt.Errorf("opening time travel store: %w", err)
+		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
 	}
-	return &historyTracker{store: s, reeval: make(chan struct{}, 2)}, nil
+	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2)}, nil
 }
 
 // pebbleLog demotes the engine's informational messages to debug.
@@ -86,12 +89,12 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 	last, ok := ht.store.Last()
 	if ok {
 		if basics.Round(last) < dbRound {
-			return fmt.Errorf("time travel history ends at round %d but the ledger is at round %d", last, dbRound)
+			return fmt.Errorf("time travel store %s ends at round %d but the ledger is at round %d", ht.path, last, dbRound)
 		}
 		return nil
 	}
 	if dbRound != 0 {
-		return fmt.Errorf("time travel history is empty but the ledger is at round %d: the node must sync from genesis (no fast catchup)", dbRound)
+		return fmt.Errorf("time travel store %s is empty but the ledger is at round %d: if the store was moved, remove this empty one and point TimeTravelDBDir at it; otherwise the node must sync from genesis (no fast catchup)", ht.path, dbRound)
 	}
 	hdr, err := l.BlockHdr(0)
 	if err != nil {

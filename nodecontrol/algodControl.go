@@ -374,6 +374,12 @@ func (nc NodeController) Clone(targetDir string, copyLedger bool) (err error) {
 				return fmt.Errorf("unable to copy '%s' to '%s' : %v", src, dest, err)
 			}
 		}
+		// a time travel node's history store, when it lives in the genesis folder
+		if src := filepath.Join(genesisFolder, "ledger.timetravel"); util.IsDir(src) {
+			if err = util.CopyFolder(src, filepath.Join(targetGenesisFolder, "ledger.timetravel")); err != nil {
+				return fmt.Errorf("unable to copy '%s' : %v", src, err)
+			}
+		}
 	}
 
 	return

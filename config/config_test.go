@@ -878,6 +878,7 @@ func TestEnsureAndResolveGenesisDirs(t *testing.T) {
 	cfg.CrashDBDir = filepath.Join(testDirectory, "custom_crash")
 	cfg.StateproofDir = filepath.Join(testDirectory, "/RELATIVEPATHS/../RELATIVE/../custom_stateproof")
 	cfg.CatchpointDir = filepath.Join(testDirectory, "custom_catchpoint")
+	cfg.TimeTravelDBDir = filepath.Join(testDirectory, "BAD/../custom_timetravel")
 
 	paths, err := cfg.EnsureAndResolveGenesisDirs(testDirectory, "myGenesisID", tLogger{t: t})
 	require.NoError(t, err)
@@ -893,6 +894,8 @@ func TestEnsureAndResolveGenesisDirs(t *testing.T) {
 	require.DirExists(t, paths.StateproofGenesisDir)
 	require.Equal(t, testDirectory+"/custom_catchpoint/myGenesisID", paths.CatchpointGenesisDir)
 	require.DirExists(t, paths.CatchpointGenesisDir)
+	require.Equal(t, testDirectory+"/custom_timetravel/myGenesisID", paths.TimeTravelGenesisDir)
+	require.DirExists(t, paths.TimeTravelGenesisDir)
 }
 
 // TestEnsureAndResolveGenesisDirs_hierarchy confirms that when only some directories are specified, other directories defer to them
@@ -914,6 +917,7 @@ func TestEnsureAndResolveGenesisDirs_hierarchy(t *testing.T) {
 	require.DirExists(t, paths.StateproofGenesisDir)
 	require.Equal(t, testDirectory+"/myGenesisID", paths.CatchpointGenesisDir)
 	require.DirExists(t, paths.CatchpointGenesisDir)
+	require.Equal(t, testDirectory+"/myGenesisID", paths.TimeTravelGenesisDir)
 
 	cfg = GetDefaultLocal()
 	testDirectory = t.TempDir()
@@ -934,6 +938,14 @@ func TestEnsureAndResolveGenesisDirs_hierarchy(t *testing.T) {
 	require.DirExists(t, paths.StateproofGenesisDir)
 	require.Equal(t, cold+"/myGenesisID", paths.CatchpointGenesisDir)
 	require.DirExists(t, paths.CatchpointGenesisDir)
+	require.Equal(t, cold+"/myGenesisID", paths.TimeTravelGenesisDir)
+
+	// with only BlockDBDir set, the time travel store follows it
+	cfg = GetDefaultLocal()
+	cfg.BlockDBDir = filepath.Join(t.TempDir(), "blocks")
+	paths, err = cfg.EnsureAndResolveGenesisDirs(t.TempDir(), "myGenesisID", tLogger{t: t})
+	require.NoError(t, err)
+	require.Equal(t, cfg.BlockDBDir+"/myGenesisID", paths.TimeTravelGenesisDir)
 }
 
 func TestEnsureAndResolveGenesisDirs_migrate(t *testing.T) {

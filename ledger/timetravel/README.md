@@ -11,7 +11,7 @@ This is a non-compliant fork feature: it changes no consensus rule, but the node
 ```
 
 - The node must sync from genesis: the history is built from every block's state delta. Fast catchup (`goal node catchup`) is refused, and a ledger whose tracker DB is past genesis with an empty history fails to open.
-- The store lives next to the block DB, so it follows `BlockDBDir` (else `ColdDataDir`, else the data directory): `<dir>/<genesis id>/ledger.timetravel/` (Pebble).
+- The store (Pebble) lives in `<dir>/<genesis id>/ledger.timetravel/`, where `<dir>` is `TimeTravelDBDir`, else `BlockDBDir`, else `ColdDataDir`, else the data directory. Queries at past rounds read it at random, so point `TimeTravelDBDir` at a fast disk to keep their latency down. To move an existing store, stop the node, move the `ledger.timetravel` directory, and set `TimeTravelDBDir`. `goal node clone` copies it when it lives in the data directory.
 - `tools/ttimport` builds the ledger and its history from an existing archival node's block database instead of the network: `go run ./tools/ttimport -blocks <archival data dir>/<genesis id>/ledger.block.sqlite -d <new data dir>` (the new data directory needs `genesis.json` and a `config.json` with `EnableTimeTravel`). It applies the blocks like catchup, without fetching them or verifying certificates, and resumes where the destination stands. On fnet's first 33k rounds it ran at 3,050 rounds/s against 248 rounds/s for a network sync (12×), and produced a byte-identical history. Start algod on the directory afterwards to continue from the network.
 - `TimeTravelCheckpointInterval` (N) is fixed when the store is created. 1 (the default) is the recommended setting; see [Patches and N](#patches-and-n).
 

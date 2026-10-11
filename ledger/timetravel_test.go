@@ -275,6 +275,52 @@ func TestTimeTravelOpenFailure(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestTimeTravelDBDir checks where the store goes, and the error when the
+// config points somewhere the store is not.
+func TestTimeTravelDBDir(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 10)
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	cfg.BlockDBDir = t.TempDir()
+	root := t.TempDir()
+	open := func() (*Ledger, error) {
+		dirs, err := cfg.EnsureAndResolveGenesisDirs(root, "gid", logging.TestingLog(t))
+		require.NoError(t, err)
+		return OpenLedger(logging.TestingLog(t), DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: dirs}, false, genesisInitState, cfg)
+	}
+	inBlocks := filepath.Join(cfg.BlockDBDir, "gid", "ledger.timetravel")
+
+	// by default the store follows BlockDBDir
+	l, err := open()
+	require.NoError(t, err)
+	for range 20 {
+		addEmptyValidatedBlock(t, l, genesisInitState.Accounts)
+	}
+	commitRoundLookback(0, l)
+	l.Close()
+	require.DirExists(t, inBlocks)
+	l, err = open()
+	require.NoError(t, err)
+	l.Close()
+
+	// pointing TimeTravelDBDir elsewhere without moving the store fails, naming the path
+	cfg.TimeTravelDBDir = t.TempDir()
+	moved := filepath.Join(cfg.TimeTravelDBDir, "gid", "ledger.timetravel")
+	_, err = open()
+	require.ErrorContains(t, err, moved+" is empty")
+	require.ErrorContains(t, err, "if the store was moved")
+
+	// moving it there works
+	require.NoError(t, os.RemoveAll(moved))
+	require.NoError(t, os.Rename(inBlocks, moved))
+	l, err = open()
+	require.NoError(t, err)
+	l.Close()
+}
+
 // TestHistViewModel checks the merged reads (store plus in-memory rounds,
 // including rounds in both) against a brute-force model.
 func TestHistViewModel(t *testing.T) {
