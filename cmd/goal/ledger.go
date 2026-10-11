@@ -62,7 +62,7 @@ var supplyCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, _ []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		response, err := ensureAlgodClient(dataDir).LedgerSupply()
+		response, err := withRound(cmd, ensureAlgodClient(dataDir)).LedgerSupply()
 		if err != nil {
 			reportErrorf(errorRequestFail, err)
 		}

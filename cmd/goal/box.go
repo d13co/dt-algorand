@@ -67,6 +67,7 @@ var appBoxInfoCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		_, client := getDataDirAndClient()
+		client = withRound(cmd, client)
 
 		// Ensure box name is specified
 		if boxName == "" {

@@ -562,7 +562,7 @@ var assetDetailsCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureAlgodClient(dataDir)
+		client := withRound(cmd, ensureAlgodClient(dataDir))
 
 		token := next
 		fmt.Printf("Account: %s\n", accountAddress)
@@ -594,7 +594,7 @@ var applicationDetailsCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureAlgodClient(dataDir)
+		client := withRound(cmd, ensureAlgodClient(dataDir))
 
 		token := next
 		fmt.Printf("Account: %s\n", accountAddress)
@@ -626,7 +626,7 @@ var infoCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureAlgodClient(dataDir)
+		client := withRound(cmd, ensureAlgodClient(dataDir))
 		response, err := client.AccountInformation(accountAddress, true)
 		if err != nil {
 			reportErrorf(errorRequestFail, err)
@@ -915,7 +915,7 @@ var balanceCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureAlgodClient(dataDir)
+		client := withRound(cmd, ensureAlgodClient(dataDir))
 		response, err := client.AccountInformation(accountAddress, false)
 		if err != nil {
 			reportErrorf(errorRequestFail, err)
@@ -932,7 +932,7 @@ var dumpCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureAlgodClient(dataDir)
+		client := withRound(cmd, ensureAlgodClient(dataDir))
 		rawAddress, err := basics.UnmarshalChecksumAddress(accountAddress)
 		if err != nil {
 			reportErrorf(errorParseAddr, err)
@@ -960,7 +960,7 @@ var rewardsCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureAlgodClient(dataDir)
+		client := withRound(cmd, ensureAlgodClient(dataDir))
 		response, err := client.AccountInformation(accountAddress, false)
 		if err != nil {
 			reportErrorf(errorRequestFail, err)

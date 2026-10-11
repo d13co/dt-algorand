@@ -997,6 +997,7 @@ var readStateAppCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, _ []string) {
 		_, client := getDataDirAndClient()
+		client = withRound(cmd, client)
 
 		// Ensure exactly one of --local or --global is specified
 		if fetchLocal == fetchGlobal {
@@ -1077,6 +1078,7 @@ var infoAppCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, _ []string) {
 		_, client := getDataDirAndClient()
+		client = withRound(cmd, client)
 
 		meta, err := client.ApplicationInformation(appIdx)
 		if err != nil {

@@ -759,7 +759,7 @@ var infoAssetCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, _ []string) {
 		dataDir := datadir.EnsureSingleDataDir()
-		client := ensureFullClient(dataDir)
+		client := withRound(cmd, ensureFullClient(dataDir))
 		accountList := makeAccountsList(dataDir)
 		creator := accountList.getAddressByName(assetCreator)
 

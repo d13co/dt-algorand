@@ -145,3 +145,26 @@ goal app box list --app-id ${APPID}
 # get the box details for a given box
 goal app box info --app-id ${APPID} --name "str:an_ABI_box"
 ```
+
+## Past Rounds and Versions (time travel)
+
+### Q: My node runs with `EnableTimeTravel`. How do I see an account, app or box as it was at an earlier round, or how it changed?
+
+### A:
+The read commands take `--round`, and `versions` subcommands list the rounds at which an object changed, with the fields that changed:
+
+```sh
+# the box and the app as of round 1000
+goal app box info --app-id ${APPID} --name "str:greatBox" --round 1000
+goal app info --app-id ${APPID} --round 1000
+
+# every change of the box, of the app's params and global state, and of an account
+goal app box versions --app-id ${APPID} --name "str:greatBox"
+goal app versions --app-id ${APPID} --min-round 1000 --all
+goal account versions --address ${ACCOUNT} --exclude all
+
+# the raw pages, as JSON
+goal asset versions --assetid ${ASSETID} --json
+```
+
+`--round 0` is the genesis round, except for `goal app box list`, where `--round 0` means the latest round. A node without time travel rejects `--round`. To explore the history of a stopped node offline, including the raw records, see `tools/ttdump`.
