@@ -79,6 +79,9 @@ tools/block-generator/block-generator
 # cross repo types tool binary
 tools/x-repo-types/x-repo-types
 
+# time travel lab tool binary
+tools/ttlab/ttlab
+
 # python virtual environment
 .venv
 
