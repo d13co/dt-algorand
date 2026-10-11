@@ -506,6 +506,9 @@ func (tr *trackerRegistry) isBehindCommittingDeltas(latest basics.Round) bool {
 }
 
 func (tr *trackerRegistry) close() {
+	if tr.log == nil {
+		return // never initialized: OpenLedger failed before reloadLedger got that far
+	}
 	tr.log.Debugf("trackerRegistry is closing")
 	if tr.ctxCancel != nil {
 		tr.ctxCancel()

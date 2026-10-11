@@ -76,6 +76,24 @@ func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger
 	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2)}, nil
 }
 
+// checkAccountsNotAhead refuses an account DB ahead of the block DB, which
+// trackerDBInitialize would reset: a resync from genesis, weeks on mainnet.
+// tools/ttimport leaves the data directory that way until a run completes.
+func (l *Ledger) checkAccountsNotAhead() error {
+	ar, err := l.trackerDBs.MakeAccountsReader()
+	if err != nil {
+		return err
+	}
+	rnd, err := ar.AccountsRound()
+	if err != nil {
+		return nil //nolint:nilerr // a new account DB has no round until its migrations run
+	}
+	if latest := l.Latest(); rnd > latest {
+		return fmt.Errorf("the account DB is at round %d but the block DB ends at round %d: rerun tools/ttimport if it was interrupted, or delete the account DB to resync from genesis", rnd, latest)
+	}
+	return nil
+}
+
 // pebbleLog demotes the engine's informational messages to debug.
 type pebbleLog struct{ logging.Logger }
 

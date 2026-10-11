@@ -242,6 +242,13 @@ func (l *Ledger) reloadLedger() error {
 		return err
 	}
 
+	if l.history != nil {
+		err = l.checkAccountsNotAhead()
+		if err != nil {
+			return err
+		}
+	}
+
 	// init tracker db
 	trackerDBInitParams, err := trackerDBInitialize(l, l.catchpoint.catchpointEnabled(), l.catchpoint.dbDirectory)
 	if err != nil {

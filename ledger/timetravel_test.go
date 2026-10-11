@@ -41,6 +41,7 @@ import (
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
+	"github.com/algorand/go-algorand/util/db"
 )
 
 // counterApp counts its calls in global "n" and stores arg 0 in box "b".
@@ -319,6 +320,41 @@ func TestTimeTravelDBDir(t *testing.T) {
 	l, err = open()
 	require.NoError(t, err)
 	l.Close()
+}
+
+// TestTimeTravelAccountsAhead checks that a time travel ledger refuses to open
+// when its account DB is ahead of its block DB, instead of resetting the accounts.
+func TestTimeTravelAccountsAhead(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 10)
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	prefix := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.NoError(t, err)
+	for range 20 {
+		addEmptyValidatedBlock(t, l, genesisInitState.Accounts)
+	}
+	commitRoundLookback(0, l)
+	require.Equal(t, basics.Round(20), l.LatestTrackerCommitted())
+	l.Close()
+
+	blocks, err := db.MakeAccessor(prefix+".block.sqlite", false, false)
+	require.NoError(t, err)
+	_, err = blocks.Handle.Exec("DELETE FROM blocks WHERE rnd > 10")
+	require.NoError(t, err)
+	blocks.Close()
+
+	_, err = OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.ErrorContains(t, err, "the account DB is at round 20 but the block DB ends at round 10")
+	accounts, err := db.MakeAccessor(prefix+".tracker.sqlite", false, false)
+	require.NoError(t, err)
+	defer accounts.Close()
+	var rnd basics.Round
+	require.NoError(t, accounts.Handle.QueryRow("SELECT rnd FROM acctrounds WHERE id = 'acctbase'").Scan(&rnd))
+	require.Equal(t, basics.Round(20), rnd)
 }
 
 // TestHistViewModel checks the merged reads (store plus in-memory rounds,
