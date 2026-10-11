@@ -28,6 +28,7 @@ import (
 	"slices"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3107,6 +3108,92 @@ func TestVotersDeferredDuringReplay(t *testing.T) {
 	verifyVotersContent(t, expected, actual)
 	// one query per tree still needed, none for the trees dropped during the replay
 	require.Equal(t, uint64(len(expected)), ledgerAccountsOnlineTopCount.GetUint64Value()-queries)
+}
+
+// votersWaiter waits for the state proof voters of the rounds a commit
+// covers, as the state proof worker's provers do.
+type votersWaiter struct{ waited int }
+
+func (w *votersWaiter) OnPrepareVoterCommit(oldBase, newBase basics.Round, voters ledgercore.LedgerForSPBuilder) {
+	for r := oldBase + 1; r <= newBase; r++ {
+		if tr, err := voters.VotersForStateProof(r); err == nil && tr != nil {
+			w.waited++
+		}
+	}
+}
+
+// TestVotersReplayWithCommitListener checks that a replay with a voters commit
+// listener registered does not defer the voters, which its commits wait for.
+func TestVotersReplayWithCommitListener(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	proto := config.Consensus[protocol.ConsensusCurrentVersion]
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 100)
+	cfg := config.GetDefaultLocal()
+	cfg.Archival = true // keep every block for the replay
+	l, err := OpenLedger(logging.TestingLog(t), filepath.Join(t.TempDir(), "ledger"), false, genesisInitState, cfg)
+	require.NoError(t, err)
+	defer l.Close()
+
+	// no commits while the blocks are added, so that the reload replays them
+	l.trackers.ctxCancel()
+	l.trackers.ctxCancel = nil
+	<-l.trackers.commitSyncerClosed
+	l.trackers.commitSyncerClosed = nil
+	blk := genesisInitState.Block
+	for blk.Round() < basics.Round(3*proto.StateProofInterval) {
+		blk.BlockHeader.Round++
+		next := max(2, uint64(blk.Round())/proto.StateProofInterval) * proto.StateProofInterval
+		blk.BlockHeader.StateProofTracking = map[protocol.StateProofType]bookkeeping.StateProofTrackingData{
+			protocol.StateProofBasic: {StateProofNextRound: basics.Round(next)},
+		}
+		require.NoError(t, l.AddBlock(blk, agreement.Certificate{}))
+	}
+	l.WaitForCommit(l.Latest())
+	l.blockQ.stop() // its last notifyCommit is done: no commit is scheduled after the drain
+	select {
+	case <-l.trackers.deferredCommits:
+		l.trackers.accountsWriting.Done()
+	default:
+	}
+	require.Zero(t, l.LatestTrackerCommitted())
+
+	var w votersWaiter
+	l.RegisterVotersCommitListener(&w)
+	done := make(chan error, 1)
+	go func() { done <- l.reloadLedger() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Minute):
+		require.FailNow(t, "the replay's commit waits for deferred voters")
+	}
+	require.NotZero(t, l.LatestTrackerCommitted())
+	require.NotZero(t, w.waited)
+
+	// registering a listener ends a deferral: the deferred tree loads
+	vt := &l.acctsOnline.voters
+	l.UnregisterVotersCommitListener()
+	require.True(t, vt.deferLoads())
+	vt.votersMu.Lock()
+	r := slices.Max(slices.Collect(maps.Keys(vt.votersForRoundCache)))
+	delete(vt.votersForRoundCache, r)
+	vt.votersMu.Unlock()
+	hdr, err := l.BlockHdr(r)
+	require.NoError(t, err)
+	vt.loadTree(hdr)
+	tr, ok := vt.getVoters(r)
+	require.True(t, ok)
+	l.RegisterVotersCommitListener(&w)
+	loaded := make(chan error, 1)
+	go func() { loaded <- tr.Wait() }()
+	select {
+	case err := <-loaded:
+		require.NoError(t, err)
+	case <-time.After(time.Minute):
+		require.FailNow(t, "the deferred tree did not load")
+	}
+	require.False(t, vt.deferLoads(), "no deferral with a listener registered")
 }
 
 func testVotersReloadFromDiskAfterOneStateProofCommitted(t *testing.T, cfg config.Local) {

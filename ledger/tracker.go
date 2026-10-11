@@ -752,8 +752,9 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 	}()
 
 	// state proof voters are only loaded for the rounds still needed once the replay ends
-	tr.acctsOnline.voters.deferLoads()
-	defer tr.acctsOnline.voters.loadDeferred()
+	if tr.acctsOnline.voters.deferLoads() {
+		defer tr.acctsOnline.voters.loadDeferred()
+	}
 
 	blocksStream := make(chan bookkeeping.Block, initializeCachesReadaheadBlocksStream)
 	blockEvalFailed := make(chan struct{}, 1)

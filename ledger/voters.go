@@ -104,8 +104,7 @@ type votersTracker struct {
 	// dropped once their state proofs are confirmed later in the replay, while
 	// computing each one races the replay's commits: a commit landing while
 	// TopOnlineAccounts reads the database makes it start over. loadDeferred loads
-	// the ones still needed when the replay ends. Only the registry's serialized
-	// newBlock and replay touch these two fields.
+	// the ones still needed when the replay ends. votersMu guards both fields.
 	deferring bool
 	deferred  []bookkeeping.BlockHeader
 
@@ -187,11 +186,21 @@ func (vt *votersTracker) loadTree(hdr bookkeeping.BlockHeader) {
 
 	vt.setVoters(r, tr)
 
-	if vt.deferring {
-		vt.deferred = append(vt.deferred, hdr)
+	if vt.deferLoad(hdr) {
 		return
 	}
 	vt.startLoad(tr, hdr)
+}
+
+// deferLoad adds hdr to the deferred loads and reports true while loads are
+// deferred.
+func (vt *votersTracker) deferLoad(hdr bookkeeping.BlockHeader) bool {
+	vt.votersMu.Lock()
+	defer vt.votersMu.Unlock()
+	if vt.deferring {
+		vt.deferred = append(vt.deferred, hdr)
+	}
+	return vt.deferring
 }
 
 func (vt *votersTracker) startLoad(tr *ledgercore.VotersForRound, hdr bookkeeping.BlockHeader) {
@@ -207,21 +216,36 @@ func (vt *votersTracker) startLoad(tr *ledgercore.VotersForRound, hdr bookkeepin
 	}()
 }
 
-// deferLoads makes loadTree defer loading until loadDeferred.
-func (vt *votersTracker) deferLoads() {
+// deferLoads makes loadTree defer loading until loadDeferred, and reports
+// whether it did. A commit listener waits for the trees of the rounds a commit
+// covers, which would hang the replay's commits, so deferLoads does not defer
+// with one registered, and registering one ends the deferral. None is during
+// the replays of OpenLedger, before the state proof worker starts, or of
+// CompleteCatchup, as the node stops the worker for catchup.
+func (vt *votersTracker) deferLoads() bool {
+	vt.commitListenerMu.RLock()
+	defer vt.commitListenerMu.RUnlock()
+	if vt.commitListener != nil {
+		return false
+	}
+	vt.votersMu.Lock()
+	defer vt.votersMu.Unlock()
 	vt.deferring = true
+	return true
 }
 
 // loadDeferred stops deferring and loads the deferred trees whose entries are
 // still in the cache.
 func (vt *votersTracker) loadDeferred() {
-	vt.deferring = false
-	for _, hdr := range vt.deferred {
+	vt.votersMu.Lock()
+	deferred := vt.deferred
+	vt.deferring, vt.deferred = false, nil
+	vt.votersMu.Unlock()
+	for _, hdr := range deferred {
 		if tr, ok := vt.getVoters(hdr.Round); ok {
 			vt.startLoad(tr, hdr)
 		}
 	}
-	vt.deferred = nil
 }
 
 // close waits until all the internal spawned go-routines are done before returning, allowing clean
@@ -376,6 +400,7 @@ func (vt *votersTracker) registerPrepareCommitListener(commitListener ledgercore
 		vt.l.trackerLog().Error("votersTracker.registerPrepareCommitListener: overriding existing listener.")
 	}
 	vt.commitListener = commitListener
+	vt.loadDeferred() // the listener waits for the trees, see deferLoads
 }
 
 func (vt *votersTracker) unregisterPrepareCommitListener() {
