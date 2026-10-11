@@ -51,8 +51,18 @@ func Open(dbFilename string, dbMem bool, log logging.Logger) (store trackerdb.St
 	return MakeStore(pair), nil
 }
 
+// readIdleConns is how many idle connections the read handle keeps. The eval
+// prefetcher looks up accounts on up to 8 goroutines at once
+// (ledger/eval/prefetcher), besides the evaluator's own lookups. With
+// database/sql's default of 2, the pool closes the connections those return
+// beyond 2 and opens new ones for the next lookups, each loading the schema,
+// running the PRAGMAs and preparing the statements again: two thirds of
+// ttimport's CPU replaying mainnet at round 10.7M on 48 cores.
+const readIdleConns = 16
+
 // MakeStore crates a tracker SQL db from sql db handle.
 func MakeStore(pair db.Pair) trackerdb.Store {
+	pair.Rdb.Handle.SetMaxIdleConns(readIdleConns)
 	return &trackerSQLStore{pair, &sqlReader{pair.Rdb.Handle}, &sqlWriter{pair.Wdb.Handle}, &sqlCatchpoint{pair.Wdb.Handle}}
 }
 
