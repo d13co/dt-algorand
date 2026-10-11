@@ -14,16 +14,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with go-algorand.  If not, see <https://www.gnu.org/licenses/>.
 
-// ttimport builds a time travel node's ledger from an existing block database
-// (an archival node's ledger.block.sqlite) instead of the network. Blocks are
-// applied the way catchup applies them, minus the fetching and the
-// certificate and signature checks, which the source node already did. It
-// resumes where the destination ledger stands; start algod on the data
-// directory afterwards to keep syncing from the network.
+// ttimport builds a time travel node's ledger from an existing archival
+// node's block database (ledger.block.sqlite) instead of the network. The
+// ledger opens the archive in place as its block database and replays it the
+// way algod replays after a restart, without certificate or signature checks,
+// resuming from where the data directory's trackers stand. Nothing is written
+// to the archive. Afterwards the data directory's own block database gets the
+// last blocks algod needs to start; start algod on the directory to keep
+// syncing from the network.
 package main
 
 import (
-	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,22 +38,25 @@ import (
 
 	"github.com/algorand/go-deadlock"
 
-	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/store/blockdb"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
+	"github.com/algorand/go-algorand/stateproof"
 	"github.com/algorand/go-algorand/util/db"
 )
 
+const blockDBFile = config.LedgerFilenamePrefix + ".block.sqlite"
+
 func main() {
-	blocks := flag.String("blocks", "", "source block database: <archival data dir>/<genesis id>/ledger.block.sqlite")
+	blocks := flag.String("blocks", "", "source block database: <archival data dir>/<genesis id>/"+blockDBFile)
 	dataDir := flag.String("d", "", "algod data directory to build: genesis.json, and config.json with EnableTimeTravel")
-	to := flag.Uint64("to", 0, "last round to import (default: the source's last round)")
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the run to this file")
+	verbose := flag.Bool("v", false, "log the ledger's info messages, such as replay progress every 5 seconds")
 	flag.Parse()
 	if *blocks == "" || *dataDir == "" {
 		flag.Usage()
@@ -59,6 +64,10 @@ func main() {
 	}
 	// lock tracking records a stack trace per Lock, ~25% of the import's CPU
 	deadlock.Opts.Disable = true
+	logging.Base().SetLevel(logging.Warn)
+	if *verbose {
+		logging.Base().SetLevel(logging.Info)
+	}
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err == nil {
@@ -69,10 +78,16 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	// Ctrl-C stops after the current block and closes the ledger; a second one kills.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	context.AfterFunc(ctx, stop)
-	err := run(ctx, *blocks, *dataDir, basics.Round(*to))
+	// The replay can't stop early, so Ctrl-C kills it (keeping the profile); a rerun
+	// resumes from the trackers' last commit.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		pprof.StopCPUProfile()
+		os.Exit(1)
+	}()
+	err := run(*blocks, *dataDir)
 	pprof.StopCPUProfile()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ttimport:", err)
@@ -80,7 +95,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, blocksPath, dataDir string, to basics.Round) error {
+func run(blocksPath, dataDir string) error {
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(dataDir, config.GenesisJSONFile))
 	if err != nil {
 		return err
@@ -92,91 +107,162 @@ func run(ctx context.Context, blocksPath, dataDir string, to basics.Round) error
 	if !cfg.EnableTimeTravel {
 		return errors.New("the data directory's config.json must set EnableTimeTravel")
 	}
+	if cfg.Archival {
+		return errors.New("the data directory's config.json must not set Archival: the node keeps only the last blocks")
+	}
+	// The ledger opens <dir>/ledger.block.sqlite, and (like db.MakeAccessor) creates it if missing.
+	if filepath.Base(blocksPath) != blockDBFile {
+		return fmt.Errorf("the source must be named %s", blockDBFile)
+	}
+	if _, err = os.Stat(blocksPath); err != nil {
+		return err
+	}
+	src, err := db.MakeAccessor(blocksPath, true, false)
+	if err != nil {
+		return fmt.Errorf("%s: %w", blocksPath, err)
+	}
+	defer src.Close()
+	// Check the network before a replay that can take days. An empty source fails
+	// here too; the ledger would write a genesis block into it.
+	var tip basics.Round
+	var tipHdr []byte
+	err = src.Handle.QueryRow("SELECT rnd, hdrdata FROM blocks ORDER BY rnd DESC LIMIT 1").Scan(&tip, &tipHdr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%s has no blocks", blocksPath)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", blocksPath, err)
+	}
+	var hdr bookkeeping.BlockHeader
+	if err = protocol.Decode(tipHdr, &hdr); err != nil {
+		return fmt.Errorf("%s round %d: %w", blocksPath, tip, err)
+	}
+	if hdr.GenesisHash != genesis.Hash() {
+		return fmt.Errorf("%s belongs to another network (genesis hash %v)", blocksPath, hdr.GenesisHash)
+	}
+
 	log := logging.Base()
-	log.SetLevel(logging.Warn)
 	dirs, err := cfg.EnsureAndResolveGenesisDirs(dataDir, genesis.ID(), log)
 	if err != nil {
 		return err
 	}
+	srcDir, err := os.Stat(filepath.Dir(blocksPath))
+	if err != nil {
+		return err
+	}
+	// the ledger writes its account DB, history and catchpoint dirs in these, and ttimport rewrites the block DB
+	for _, dir := range []string{dirs.BlockGenesisDir, dirs.TrackerGenesisDir, dirs.TimeTravelGenesisDir, dirs.CatchpointGenesisDir} {
+		if fi, statErr := os.Stat(dir); statErr == nil && os.SameFile(fi, srcDir) {
+			return fmt.Errorf("the data directory's ledger would write into the source's directory %s", dir)
+		}
+	}
+	dstPath := filepath.Join(dirs.BlockGenesisDir, blockDBFile)
+
 	bal, err := genesis.Balances()
 	if err != nil {
 		return err
 	}
-	l, err := data.LoadLedger(log, ledger.DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: dirs},
+	// Archival is off, so the ledger neither resets nor prunes the archive: it
+	// only writes blocks added to it, and replay adds none.
+	replayDirs := dirs
+	replayDirs.BlockGenesisDir = filepath.Dir(blocksPath)
+	cfg.CatchpointTracking = config.CatchpointTrackingModeUntracked // no catchpoint work during the import
+	fmt.Printf("replaying the source up to round %d (-v shows progress); start algod on %s only after this finishes\n", tip, dataDir)
+	start := time.Now()
+	l, err := data.LoadLedger(log, ledger.DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: replayDirs},
 		false, genesis.Proto, bal, genesis.ID(), genesis.Hash(), cfg)
 	if err != nil {
 		return err
 	}
-	defer l.Close()
-
-	src, err := db.MakeAccessor(blocksPath, true, false)
+	latest, dbRound := l.Latest(), l.LatestTrackerCommitted()
+	hdrs := make([]bookkeeping.BlockHeader, 2)
+	hdrs[0], err = l.BlockHdr(dbRound)
+	if err == nil {
+		hdrs[1], err = l.BlockHdr(latest)
+	}
+	l.Close()
 	if err != nil {
 		return err
 	}
-	defer src.Close()
-	from := l.Latest()
-	rows, err := src.Handle.Query("SELECT rnd, blkdata, certdata FROM blocks WHERE rnd > ? ORDER BY rnd", from)
+	elapsed := time.Since(start).Round(time.Second)
+
+	// Keep what catchpoint catchup fetches (catchup/catchpointService.go), counted back
+	// from the trackers' round, where algod's replay starts, under either round's protocol.
+	lo := dbRound
+	for _, h := range hdrs {
+		proto := config.Consensus[h.CurrentProtocol]
+		lo = min(lo, dbRound.SubSaturate(basics.Round(max(proto.MaxTxnLife+proto.DeeperBlockHeaderHistory, proto.MaxBalLookback))))
+		if proto.StateProofInterval > 0 {
+			lo = min(lo, stateproof.GetOldestExpectedStateProof(&h).SubSaturate(basics.Round(proto.StateProofInterval+proto.StateProofVotersLookback)))
+		}
+	}
+	copied, err := keepBlocks(src.Handle, dstPath, lo, latest)
 	if err != nil {
-		return err
+		return fmt.Errorf("copying the last blocks into %s: %w", dstPath, err)
+	}
+	fmt.Printf("replayed to round %d in %v\n", latest, elapsed)
+	if copied {
+		fmt.Printf("%s now holds rounds %d..%d\n", dstPath, lo, latest)
+	} else {
+		fmt.Printf("%s already reaches round %d; left as is\n", dstPath, latest)
+	}
+	return nil
+}
+
+// keepBlocks replaces dst's blocks with src's rounds lo..hi in one transaction,
+// unless dst already reaches hi.
+func keepBlocks(src *sql.DB, dstPath string, lo, hi basics.Round) (bool, error) {
+	dst, err := db.MakeAccessor(dstPath, false, false)
+	if err != nil {
+		return false, err
+	}
+	defer dst.Close()
+	tx, err := dst.Handle.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	err = blockdb.BlockInit(tx, nil)
+	if err != nil {
+		return false, err
+	}
+	dstNext, err := blockdb.BlockNext(tx)
+	if err != nil || dstNext > hi {
+		return false, err
+	}
+	_, err = tx.Exec("DELETE FROM blocks")
+	if err != nil {
+		return false, err
+	}
+	rows, err := src.Query("SELECT rnd, proto, hdrdata, blkdata, certdata FROM blocks WHERE rnd BETWEEN ? AND ? ORDER BY rnd", lo, hi)
+	if err != nil {
+		return false, err
 	}
 	defer rows.Close()
-
-	hdr, err := l.BlockHdr(from)
-	if err != nil {
-		return err
-	}
-	start := time.Now()
-	last, lastRnd, lastTxns := start, from, hdr.TxnCounter
-	var blockWait, commitWait time.Duration // since the last report
-	for ctx.Err() == nil && rows.Next() {
+	next := lo
+	for rows.Next() {
 		var rnd basics.Round
-		var blkdata, certdata []byte
-		if err := rows.Scan(&rnd, &blkdata, &certdata); err != nil {
-			return err
+		var proto string
+		var hdr, blk, cert []byte
+		err = rows.Scan(&rnd, &proto, &hdr, &blk, &cert)
+		if err != nil {
+			return false, err
 		}
-		if to != 0 && rnd > to {
-			break
+		if rnd != next {
+			return false, fmt.Errorf("the source has no round %d", next)
 		}
-		if rnd != l.Latest()+1 {
-			return fmt.Errorf("the source has no round %d (next is %d): it must be an archival block database", l.Latest()+1, rnd)
+		_, err = tx.Exec("INSERT INTO blocks (rnd, proto, hdrdata, blkdata, certdata) VALUES (?, ?, ?, ?, ?)", rnd, proto, hdr, blk, cert)
+		if err != nil {
+			return false, err
 		}
-		var blk bookkeeping.Block
-		var cert agreement.Certificate
-		if err := protocol.Decode(blkdata, &blk); err != nil {
-			return fmt.Errorf("round %d: %w", rnd, err)
-		}
-		if err := protocol.Decode(certdata, &cert); err != nil {
-			return fmt.Errorf("round %d certificate: %w", rnd, err)
-		}
-		if blk.GenesisHash() != genesis.Hash() {
-			return fmt.Errorf("round %d belongs to another network (genesis hash %v)", rnd, blk.GenesisHash())
-		}
-		// Keep the in-memory backlog bounded, as catchup does.
-		t0 := time.Now()
-		<-l.Wait(rnd.SubSaturate(basics.Round(config.Consensus[blk.CurrentProtocol].MaxBalLookback)))
-		t1 := time.Now()
-		for l.IsBehindCommittingDeltas() {
-			time.Sleep(10 * time.Millisecond)
-		}
-		blockWait += t1.Sub(t0)
-		commitWait += time.Since(t1)
-		if err := l.AddBlock(blk, cert); err != nil {
-			return fmt.Errorf("round %d: %w", rnd, err)
-		}
-		if now := time.Now(); now.Sub(last) >= 10*time.Second {
-			secs := now.Sub(last).Seconds()
-			fmt.Printf("round %d: %.0f rounds/s, %.0f txns/s, waited %.0f%% on block DB, %.0f%% on commits (overall %.0f rounds/s)\n", rnd,
-				float64(rnd-lastRnd)/secs, float64(blk.TxnCounter-lastTxns)/secs,
-				100*blockWait.Seconds()/secs, 100*commitWait.Seconds()/secs, float64(rnd-from)/now.Sub(start).Seconds())
-			last, lastRnd, lastTxns = now, rnd, blk.TxnCounter
-			blockWait, commitWait = 0, 0
-		}
+		next++
 	}
-	if err := rows.Err(); err != nil {
-		return err
+	err = rows.Err()
+	if err != nil {
+		return false, err
 	}
-	l.WaitForCommit(l.Latest())
-	fmt.Printf("imported rounds %d..%d in %v (%.0f rounds/s)\n", from+1, l.Latest(), time.Since(start).Round(time.Second),
-		float64(l.Latest()-from)/time.Since(start).Seconds())
-	return nil
+	if next != hi+1 {
+		return false, fmt.Errorf("the source has no round %d", next)
+	}
+	return true, tx.Commit()
 }
