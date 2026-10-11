@@ -808,6 +808,9 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 			err = fmt.Errorf("trackerRegistry.replay: trackerEvalVerified failed : %w", err)
 			return
 		}
+		// Ledger.AddBlock trims for the MaxAcctLookback rounds a delta is kept; the
+		// replay keeps each one until a flush, up to maxFlushRounds rounds
+		delta.OptimizeAllocatedMemory(uint64(maxFlushRounds))
 		tr.newBlock(blk, delta)
 		changes += replayChanges(&delta)
 
