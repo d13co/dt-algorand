@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	rtmetrics "runtime/metrics"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -59,6 +60,7 @@ func main() {
 	blocks := flag.String("blocks", "", "source block database: <archival data dir>/<genesis id>/"+blockDBFile)
 	dataDir := flag.String("d", "", "algod data directory to build: genesis.json, and config.json with EnableTimeTravel")
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the run to this file")
+	memprofile := flag.String("memprofile", "", "write a heap profile to this file whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps), and on Ctrl-C")
 	verbose := flag.Bool("v", false, "also log the ledger's info messages")
 	flag.Parse()
 	if *blocks == "" || *dataDir == "" {
@@ -90,9 +92,14 @@ func main() {
 	go func() {
 		<-sig
 		pprof.StopCPUProfile()
+		if *memprofile != "" {
+			if err := writeHeapProfile(*memprofile); err != nil {
+				fmt.Fprintln(os.Stderr, "ttimport: heap profile:", err)
+			}
+		}
 		os.Exit(1)
 	}()
-	err := run(*blocks, *dataDir)
+	err := run(*blocks, *dataDir, *memprofile)
 	pprof.StopCPUProfile()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ttimport:", err)
@@ -100,7 +107,7 @@ func main() {
 	}
 }
 
-func run(blocksPath, dataDir string) error {
+func run(blocksPath, dataDir, memprofile string) error {
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(dataDir, config.GenesisJSONFile))
 	if err != nil {
 		return err
@@ -175,7 +182,7 @@ func run(blocksPath, dataDir string) error {
 	from := accountsRound(filepath.Join(dirs.TrackerGenesisDir, config.LedgerFilenamePrefix+".tracker.sqlite"))
 	fmt.Printf("replaying rounds %d..%d of the source; start algod on %s only after this finishes\n", from+1, tip, dataDir)
 	start := time.Now()
-	stopProgress := reportProgress(src.Handle, from, tip, start)
+	stopProgress := reportProgress(src.Handle, from, tip, start, memprofile)
 	l, err := data.LoadLedger(log, ledger.DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: replayDirs},
 		false, genesis.Proto, bal, genesis.ID(), genesis.Hash(), cfg)
 	stopProgress()
@@ -234,14 +241,19 @@ const progressInterval = 10 * time.Second
 // the share of the interval spent reading blocks (on a goroutine reading a few
 // blocks ahead, so near 100% means the replay waits for blocks) and in the account
 // DB and history writes of commits (which stop the replay), resident memory, and
-// the rate since start.
-func reportProgress(src *sql.DB, from, tip basics.Round, start time.Time) (stop func()) {
+// the rate since start. Resident memory is split into the Go runtime's (with the
+// heap's live bytes) and the rest, mostly C allocations: the time travel store's
+// block cache and memtables, and SQLite's page caches. With memprofile set, it
+// writes a heap profile there whenever resident memory reaches a new high, so
+// that one is left after an OOM kill.
+func reportProgress(src *sql.DB, from, tip basics.Round, start time.Time, memprofile string) (stop func()) {
 	done, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
 		ticker := time.NewTicker(progressInterval)
 		defer ticker.Stop()
 		prev, prevAt := ledgerMetrics(), start
+		nextProfile := uint64(heapProfileFrom)
 		for {
 			select {
 			case <-done:
@@ -268,7 +280,15 @@ func reportProgress(src *sql.DB, from, tip basics.Round, start time.Time) (stop 
 					(rnd-prevRnd)/secs, (cur[metrics.LedgerTransactionsTotal.Name]-prev[metrics.LedgerTransactionsTotal.Name])/secs,
 					share(blockReadMicros), share(accountWriteMicros), share(historyWriteMicros))
 				if rss, ok := residentBytes(); ok {
-					line += fmt.Sprintf(", RSS %.1f GiB", float64(rss)/(1<<30))
+					held, live := goMemory()
+					line += fmt.Sprintf(", RSS %.1f GiB (Go %.1f GiB with %.1f GiB live, other %.1f GiB)",
+						gib(rss), gib(held), gib(live), gib(rss-min(rss, held)))
+					if memprofile != "" && rss >= nextProfile {
+						if err := writeHeapProfile(memprofile); err != nil {
+							fmt.Fprintln(os.Stderr, "ttimport: heap profile:", err)
+						}
+						nextProfile = rss + heapProfileStep
+					}
 				}
 				fmt.Printf("%s (overall %.0f rounds/s)\n", line, (rnd-float64(from))/now.Sub(start).Seconds())
 				prev, prevAt = cur, now
@@ -285,6 +305,42 @@ func ledgerMetrics() map[string]float64 {
 	m := map[string]float64{}
 	metrics.DefaultRegistry().AddMetrics(m)
 	return m
+}
+
+// -memprofile writes a heap profile when resident memory first reaches
+// heapProfileFrom, then each time it grows by heapProfileStep past the last one.
+const (
+	heapProfileFrom = 1 << 30
+	heapProfileStep = 256 << 20
+)
+
+func gib(b uint64) float64 { return float64(b) / (1 << 30) }
+
+// goMemory is what the Go runtime holds (heap, stacks and its own metadata, less
+// what it returned to the OS), and the heap's live bytes as of the last GC.
+func goMemory() (held, live uint64) {
+	s := []rtmetrics.Sample{{Name: "/memory/classes/total:bytes"}, {Name: "/memory/classes/heap/released:bytes"}, {Name: "/gc/heap/live:bytes"}}
+	rtmetrics.Read(s)
+	return s[0].Value.Uint64() - s[1].Value.Uint64(), s[2].Value.Uint64()
+}
+
+// writeHeapProfile replaces path with a heap profile. It writes a temporary file
+// first, so that an OOM kill while writing leaves the previous profile.
+func writeHeapProfile(path string) error {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	err = pprof.Lookup("heap").WriteTo(f, 0)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // residentBytes is the process's resident set size, on Linux.
