@@ -82,9 +82,11 @@ func main() {
 		}
 	}
 	// The replay can't stop early, so Ctrl-C kills it (keeping the profile); a rerun
-	// resumes from the trackers' last commit.
+	// resumes from the trackers' last commit. A broken output pipe does too: piped to
+	// grep, Ctrl-C ends grep first, and the SIGPIPE of the next write to stdout or
+	// stderr would otherwise kill the process before the profile is written.
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGPIPE)
 	go func() {
 		<-sig
 		pprof.StopCPUProfile()
