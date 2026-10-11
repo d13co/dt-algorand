@@ -1,0 +1,16 @@
+[Unit]
+Description=Algorand time travel daemon for mainnet in /var/lib/ttalgorand
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/ttalgod -d /var/lib/ttalgorand
+PIDFile=/var/lib/ttalgorand/algod.pid
+User=ttalgorand
+Group=ttalgorand
+Restart=always
+RestartSec=5s
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

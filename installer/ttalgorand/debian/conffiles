@@ -1,0 +1,3 @@
+/etc/apt/apt.conf.d/51ttalgorand-upgrades
+/var/lib/ttalgorand/genesis.json
+/var/lib/ttalgorand/system.json

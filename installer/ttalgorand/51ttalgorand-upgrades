@@ -1,0 +1,11 @@
+## This file is provided by the ttalgorand package to configure
+## unattended upgrades from apt.d13.co.
+
+Unattended-Upgrade::Origins-Pattern {
+  "site=apt.d13.co,a=stable";
+};
+
+Dpkg::Options {
+   "--force-confdef";
+   "--force-confold";
+};

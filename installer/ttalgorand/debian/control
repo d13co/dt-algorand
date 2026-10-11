@@ -1,0 +1,19 @@
+Package: ttalgorand
+Version: @VER@
+Architecture: @ARCH@
+Maintainer: Tasos Bitsios <bit@d13.co>
+Installed-Size: @INSTALLED_SIZE@
+Depends: adduser
+Recommends: unattended-upgrades
+Section: net
+Priority: optional
+Homepage: https://github.com/d13co/go-algorand
+Description: Algorand node with time travel (state at past rounds)
+ A fork of the Algorand node software that keeps the value of every ledger
+ object at every round, so that lookups, the REST API and simulation work at
+ any past round.
+ .
+ It installs alongside the algorand package: its commands have a tt prefix
+ (ttalgod, ttgoal, ttkmd, ...) and its node lives in /var/lib/ttalgorand. The
+ node, ttalgorand.service, is not started on install: it syncs from genesis, so
+ set TimeTravelDBDir or import an archive with ttimport first.
