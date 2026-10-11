@@ -1,6 +1,6 @@
 # Time travel (non-standard fork)
 
-`EnableTimeTravel` turns a node into a *state-history* node: it keeps the value of every ledger object (accounts, asset holdings and params, app local states and params, boxes, totals) at every round since genesis, plus every block header, and serves lookups, the REST API and simulation **at any past round**. It is meant to replace an archival node for state queries: with `Archival: false` the old block bodies and certificates (≈3.5 TB on mainnet) are pruned, and the history costs ≈65 GB.
+`EnableTimeTravel` turns a node into a *state-history* node: it keeps the value of every ledger object (accounts, asset holdings and params, app local states and params, boxes, totals) at every round since genesis, plus every block header, and serves lookups, the REST API and simulation **at any past round**. It is meant to replace an archival node for state queries: with `Archival: false` the old block bodies and certificates (≈3.5 TB on mainnet) are pruned, and the history costs ≈65 GB (57–73 GB, see [Mainnet estimates](#mainnet-estimates)).
 
 This is a non-compliant fork feature: it changes no consensus rule, but the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](#limitations)).
 
@@ -43,7 +43,7 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 
 `GET /v2/deltas/{R}` works for any round whose block is still stored (every round with `Archival: true`, the last ~1000 otherwise): rounds older than the trackers' in-memory deltas are re-evaluated (see [Node integration](#node-integration)).
 
-`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. The cost is the archival block DB (~3.5 TB) plus the history (~53 GB; the ~12 GB of history headers duplicate the block DB and go unused).
+`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. The cost is the archival block DB (~3.5 TB) plus the history (~65 GB, of which the ~12 GB of history headers duplicate the block DB and go unused).
 
 ## Design
 
@@ -143,7 +143,7 @@ Steady-state disk bytes per round (zstd unless noted), write cost per round, and
 2026 only, 32 KB blocks: N=16 2,135, N=64 1,947, N=4096 1,613 B/round; incremental N=64 1,749, N=256 1,489. Write CPU of patch settings is 4–14× N=1's across the three eras.
 
 - **Uncompressed, patches matter** (−34% at N = 256): they strip the repeated programs out of app-param versions.
-- **With block compression they don't.** In object-major order an object's consecutive versions are neighbours in the same compression block, so zstd removes the same redundancy that patches do, and patches (high-entropy offsets and literals) compress poorly, while checkpoints re-store values. At 32 KB blocks patches still save 18–46%; at 128 KB blocks full versions win in 2024 (−12%) and 2026 (−7%) and lose by 4% in 2022. Over all of mainnet: 53 GB for full versions vs 57 GB for the best patch setting.
+- **With block compression they don't.** In object-major order an object's consecutive versions are neighbours in the same compression block, so zstd removes the same redundancy that patches do, and patches (high-entropy offsets and literals) compress poorly, while checkpoints re-store values. At 32 KB blocks patches still save 18–46%; at 128 KB blocks full versions win in 2024 (−12%) and 2026 (−7%) and lose by 4% in 2022. Over all of mainnet, with per-era ratios: 53 GB of state for full versions vs 57 GB for the best patch setting (see [Mainnet estimates](#mainnet-estimates) for the full-history figure).
 - Patches cost 4–14× the write CPU with a warm cache and **8.3 ms/round with a cold one** (every change reads its base; N = 1 writes stay at ~0.15 ms), stall commits for 0.15–0.5 s per checkpoint warm (2.9 s cold), and double read latency. Incremental patches are smaller but chain: hot objects average 82 patches per read at N = 1024 and 320 at N = 4096.
 
 **Default: N = 1 (full versions) with zstd and 128 KB blocks.** Patches stay available through `TimeTravelCheckpointInterval`, but cost more than they save.
@@ -166,9 +166,9 @@ Bigger blocks keep compressing better (adjacent versions of the same object shar
 
 ### Mainnet estimates
 
-Per-era disk/logical ratios from the runs, applied to the sampled history (rounds < 35 M use the 2022 ratios, 35–55 M the 2024 ones, the rest the 2026 ones):
+Comparing settings: each run's disk/logical ratio, applied to the sampled history (rounds < 35 M use the 2022 run, 35–55 M the 2024 one, the rest the 2026 one):
 
-| setting | state history, 65.8 M rounds | history writes during a genesis sync |
+| setting | state history, 65.8 M rounds, per-era ratios | history writes during a genesis sync |
 |---|---|---|
 | N=1, uncompressed | 689 GB | 3.6 h |
 | N=1, 32 KB | 92 GB | 3.6 h |
@@ -178,7 +178,44 @@ Per-era disk/logical ratios from the runs, applied to the sampled history (round
 | N=1024, 128 KB | 57 GB | 16.6 h (≈6 days with a cold cache) |
 | **N=1, 128 KB (default)** | **53 GB** | **3.5 h** |
 
-Archival comparison, from the sampled blocks: an archival block DB holds **~3.48 TB** raw (block bodies ~1.26 TB, **certificates 2.16 TB**, now ~65 KB per round, and headers stored twice). A time-travel node with `Archival: false` keeps headers only: 33 GB raw, **~12 GB** compressed (~150–310 B per round on disk). Total for full state history + headers: **~65 GB** (plus ~0.5 GB of per-round digests) vs ~3.5 TB of blocks that cannot answer a single historical state query.
+These figures rank the settings but are not absolute sizes. One ratio per era misweights the record classes. Fnet's time-travel store, the one full history built so far (25.3 M rounds by `ttimport`, 3.44 GB), also shows that a full history compresses better than separate runs. Fnet's own size says little about mainnet's: 74% of it is headers, since fnet is nearly idle. The full-history estimate for the default setting corrects two errors that roughly cancel:
+
+- **Class mix (+12 GB).** App params compress ~26×, accounts and holdings ~4×. The 2022 run is 83% app params by logical bytes, but rounds below 35 M are only 62%, so the run's blended ratio is too low for its era. Applying each run's per-class ratios to the sampled history gives 65.5 GB of state instead of 53. The reweighting shrinks the share of app params, where patches save the most, so it should not reverse the ranking above. The patch settings were not re-measured per class.
+- **Full-history adjacency (−14 GB).** Disk is close to a·records + b·runs, where a run is one object's versions within a window: the first version of a run compresses against unrelated neighbours, later ones against the previous version. In a full history an object has one run, so each extra run that the per-era windows imply costs b too much. Fitted on fnet windows of 50 k rounds or less, the model predicts fnet's full 25.3 M-round store within 0.1%. On mainnet, the number of objects ever is bounded by the catchpoint's live counts at 65.8 M (22.6 M accounts, 130 M holdings) plus the sampled deletions. Merging runs saves ~14 GB, mostly on accounts and holdings.
+
+| class | per-era runs | full history (bounds) |
+|---|---|---|
+| app params | 18.6 GB | 17.1 GB (16.2–17.8) |
+| accounts | 18.5 GB | 13.7 GB (11.5–14.9) |
+| holdings | 14.8 GB | 10.3 GB (8.9–11.7) |
+| local states | 4.2 GB | 3.4 GB (3.3–3.5) |
+| asset params | 4.0 GB | 3.0 GB (2.5–3.7) |
+| boxes | 3.3 GB | 1.8 GB (1.8–2.1) |
+| totals | 1.1 GB | 1.1 GB |
+| creator index | 1.0 GB | 0.6 GB (0.5–0.8) |
+| **state, fully compacted** | **65.5 GB** | **51 GB (45–57)** |
+| headers and digests | | 12.05 GB (11.0–13.3) |
+| expired stake (`E`, rounds ≥ 30,097,387) | | 0.2 GB |
+| fully compacted | | 63 GB (56–70) |
+| **live store** | | **65 GB (57–73)** |
+
+A live store is 2% larger than a fully compacted one (fnet: 3.44 vs 3.37 GB; 5% on state records). Header compression depends on the header's size: raw headers are ~400–480 B before round ~46.5 M, ~530 B with incentives, and ~680 B from ~54 M. They take ~120 B per round on disk early on and ~315 B now. The bounds combine:
+
+- the number of objects ever, from the live count up to the live count plus every sampled deletion;
+- the per-run saving, ±10% (the fnet fit);
+- each class's sampling error;
+- the header ratio of each size regime;
+- live overhead of 2–5%.
+
+They do not cover one risk: each era's per-class ratios come from a single run.
+
+Expected live store size while a node syncs from genesis (or `ttimport` replays):
+
+| round | 10 M | 20 M | 30 M | 40 M | 50 M | 60 M | 65.8 M |
+|---|---|---|---|---|---|---|---|
+| GB | 2.6 (2.1–3.0) | 11.4 (9.5–12.9) | 20.3 (17.5–22.7) | 31.5 (27.5–34.8) | 46.7 (40.9–51.8) | 59.1 (52.0–65.3) | 65.4 (56.8–73.1) |
+
+Archival comparison, from the sampled blocks: an archival block DB holds **~3.48 TB** raw (block bodies ~1.26 TB, **certificates 2.16 TB**, now ~65 KB per round, and headers stored twice). A time-travel node with `Archival: false` keeps headers only: 33 GB raw, **~12 GB** compressed with their digests. Total: **~65 GB** (57–73) vs ~3.5 TB of blocks that cannot answer a single historical state query.
 
 Sync from genesis: the history adds ~0.15–0.27 ms per round of write work in the commit goroutine (~3 hours over 65.8 M rounds, against days of block evaluation). Patch settings add 10–26 hours with a warm cache and ~6 days with a realistic cold one.
 
