@@ -190,10 +190,7 @@ func (ht *historyTracker) expiredStake(blk bookkeeping.Block, delta *ledgercore.
 	if blk.Round() == 0 || !proto.ExcludeExpiredCirculation {
 		return nil
 	}
-	expired, ok := ht.online.stake(delta.Totals.RewardsLevel)
-	if !ok {
-		return nil // cannot happen (it is part of the supply); the round's online stake is then unavailable
-	}
+	expired := ht.online.stake(delta.Totals.RewardsLevel)
 	return &expired
 }
 

@@ -48,22 +48,20 @@ type onlineEntry struct {
 }
 
 // expiredSums are the expired accounts' microAlgos, units and
-// units*rewardsBase.
+// units*rewardsBase. They use wrapping arithmetic: the stake computed from them
+// is exact as long as it fits in a uint64, which it does, being part of the
+// supply.
 type expiredSums struct {
 	microAlgos, units, unitsBase uint64
-	overflowed                   bool
 }
 
 func (s *expiredSums) add(e onlineEntry, rewardUnit uint64) {
-	var ot basics.OverflowTracker
 	units := e.microAlgos / rewardUnit
-	s.microAlgos = ot.Add(s.microAlgos, e.microAlgos)
-	s.units = ot.Add(s.units, units)
-	s.unitsBase = ot.Add(s.unitsBase, ot.Mul(units, e.rewardsBase))
-	s.overflowed = s.overflowed || ot.Overflowed
+	s.microAlgos += e.microAlgos
+	s.units += units
+	s.unitsBase += units * e.rewardsBase
 }
 
-// remove undoes add; sums that overflowed stay marked until a rebuild.
 func (s *expiredSums) remove(e onlineEntry, rewardUnit uint64) {
 	units := e.microAlgos / rewardUnit
 	s.microAlgos -= e.microAlgos
@@ -104,9 +102,10 @@ func (s *onlineSet) drop(addr basics.Address) {
 }
 
 // advance moves into sums the accounts whose keys expire before voteRnd. It
-// rebuilds the set when the vote round goes back or the reward unit changes.
+// rebuilds the set when the vote round goes back, the reward unit changes, or
+// stale entries make up most of unexpired.
 func (s *onlineSet) advance(voteRnd basics.Round, rewardUnit uint64) {
-	if voteRnd < s.voteRnd || rewardUnit != s.rewardUnit {
+	if voteRnd < s.voteRnd || rewardUnit != s.rewardUnit || len(s.unexpired) > maxUnexpired(len(s.accts)) {
 		s.rebuild(rewardUnit)
 	}
 	s.voteRnd = voteRnd
@@ -136,13 +135,16 @@ func (s *onlineSet) rebuild(rewardUnit uint64) {
 	heap.Init(&s.unexpired)
 }
 
-// stake is the expired accounts' stake at rewards level rewardsLevel, false
-// on overflow.
-func (s *onlineSet) stake(rewardsLevel uint64) (uint64, bool) {
-	var ot basics.OverflowTracker
-	// each account's rewardsBase is at most rewardsLevel, so the difference is not negative
-	total := ot.Add(s.sums.microAlgos, ot.Sub(ot.Mul(s.sums.units, rewardsLevel), s.sums.unitsBase))
-	return total, !s.sums.overflowed && !ot.Overflowed
+// stake is the expired accounts' stake at rewards level rewardsLevel.
+func (s *onlineSet) stake(rewardsLevel uint64) uint64 {
+	return s.sums.microAlgos + s.sums.units*rewardsLevel - s.sums.unitsBase
+}
+
+// maxUnexpired bounds unexpired for accts online accounts: each has at most one
+// valid entry, and the stale ones (left by keys changed or accounts gone offline
+// before their keys expired) would otherwise stay until those keys expire.
+func maxUnexpired(accts int) int {
+	return 2*accts + 1024
 }
 
 // unexpiredHeap orders accounts by VoteLastValid (container/heap). It keeps
