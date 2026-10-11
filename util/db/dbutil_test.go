@@ -479,6 +479,67 @@ func TestReadingWhileWriting(t *testing.T) {
 
 }
 
+// TestRetryOutlastsSharedCacheWriter checks that reads through LoggedRetry and
+// Atomic wait out a writer holding their table in a shared cache, as tracker
+// lookups and snapshots wait out commits in the in-memory databases of tests.
+// Without the sqlite_unlock_notify build tag, every try fails with
+// SQLITE_LOCKED until the writer commits.
+func TestRetryOutlastsSharedCacheWriter(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	// a writer left holding the database after a failed read keeps it alive
+	pair, err := OpenPair(fmt.Sprintf("%s_%d", t.Name(), crypto.RandUint64()), true)
+	require.NoError(t, err)
+	defer pair.Close()
+	pair.Rdb.SetLogger(logging.TestingLog(t))
+	pair.Wdb.SetLogger(logging.TestingLog(t))
+	_, err = pair.Wdb.Handle.Exec("CREATE TABLE foo (a INTEGER)")
+	require.NoError(t, err)
+	_, err = pair.Wdb.Handle.Exec("INSERT INTO foo (a) VALUES (0)")
+	require.NoError(t, err)
+
+	for i, read := range []func(a *int) error{
+		func(a *int) error {
+			return LoggedRetry(func() error {
+				return pair.Rdb.Handle.QueryRow("SELECT a FROM foo").Scan(a)
+			}, logging.TestingLog(t))
+		},
+		func(a *int) error {
+			return pair.Rdb.Atomic(func(ctx context.Context, tx *sql.Tx) error {
+				return tx.QueryRow("SELECT a FROM foo").Scan(a)
+			})
+		},
+	} {
+		const hold = 100 * time.Millisecond // 1000 tries back to back took ~6.5ms
+		locked := make(chan struct{}, 1)
+		committed := make(chan error, 1)
+		go func() {
+			committed <- pair.Wdb.Atomic(func(ctx context.Context, tx *sql.Tx) error {
+				if _, err := tx.Exec("UPDATE foo SET a = ?", i+1); err != nil {
+					return err
+				}
+				select {
+				case locked <- struct{}{}:
+				default:
+				}
+				time.Sleep(hold)
+				return nil
+			})
+		}()
+		select {
+		case <-locked:
+		case err := <-committed:
+			require.FailNow(t, "the writer ended before holding the table", "read %d: %v", i, err)
+		}
+
+		var a int
+		require.NoError(t, read(&a), "read %d", i)
+		require.Equal(t, i+1, a, "read %d", i)
+		require.NoError(t, <-committed, "read %d", i)
+	}
+}
+
 // using Write-Ahead Logging (WAL)
 func TestLockingTableWhileWritingWAL(t *testing.T) {
 	// partitiontest.PartitionTest(t) // partition handled inside testLockingTableWhileWriting

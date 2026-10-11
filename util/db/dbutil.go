@@ -182,6 +182,7 @@ func LoggedRetry(fn func() error, log logging.Logger) (err error) {
 			} else if i%warnTxRetriesInterval == 0 {
 				log.Warnf("db.LoggedRetry: %d retries (last err: %v)", i, err)
 			}
+			time.Sleep(retryPause)
 		}
 		err = fn()
 	}
@@ -270,6 +271,7 @@ func (db *Accessor) AtomicContext(ctx context.Context, fn idemFn, retryClearFn f
 			} else if i%warnTxRetriesInterval == 0 {
 				db.getDecoratedLogger(fn, extras).Warnf("db.atomic: %d connection retries (last err: %v)", i, err)
 			}
+			time.Sleep(retryPause)
 		}
 		conn, err = db.Handle.Conn(ctx)
 	}
@@ -290,6 +292,7 @@ func (db *Accessor) AtomicContext(ctx context.Context, fn idemFn, retryClearFn f
 			} else if i%warnTxRetriesInterval == 0 {
 				db.getDecoratedLogger(fn, extras).Warnf("db.atomic: %d retries (last err: %v)", i, err)
 			}
+			time.Sleep(retryPause)
 		}
 
 		tx, err = conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: db.readOnly})
@@ -436,6 +439,15 @@ type idemFn func(ctx context.Context, tx *sql.Tx) error
 
 const infoTxRetries = 5
 const warnTxRetriesInterval = 1
+
+// retryPause is how long LoggedRetry and AtomicContext wait before trying
+// again. A reader of a shared-cache database, like the in-memory ones of
+// tests, gets SQLITE_LOCKED at once while a writer holds a table it reads,
+// unless go-sqlite3 is built with sqlite_unlock_notify. Back to back, the 1000
+// tries of LoggedRetry took ~6.5ms, and lookups failed during tracker commits
+// that held acctrounds longer. With the pause, 1000 tries take at least 1s,
+// the time AtomicContext gives a transaction before it warns.
+const retryPause = time.Millisecond
 
 // SynchronousMode is the syncronious modes supported by sqlite database.
 type SynchronousMode int
