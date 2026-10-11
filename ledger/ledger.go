@@ -825,9 +825,7 @@ func (l *Ledger) OnlineCirculation(rnd basics.Round, voteRnd basics.Round) (basi
 	defer l.trackerMu.RUnlock()
 	c, err := l.acctsOnline.onlineCirculation(rnd, voteRnd)
 	if h := l.historyFor(rnd, err); h != nil {
-		// ponytail: online money at rnd, without subtracting accounts whose keys expired by voteRnd
-		t, err := histTotals(h, rnd)
-		return t.Online.Money, err
+		return histOnlineCirculation(h, rnd, voteRnd)
 	}
 	return c, err
 }

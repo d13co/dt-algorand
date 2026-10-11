@@ -1021,6 +1021,9 @@ func (v2 *Handlers) GetSupply(ctx echo.Context) error {
 
 	brnd := agreement.BalanceRound(latest, params)
 	onlineCirculation, err := ledger.OnlineCirculation(brnd, latest)
+	if errors.Is(err, errOnlineStakeUnavailable) {
+		return notFound(ctx, err, err.Error(), v2.Log)
+	}
 	if err != nil {
 		err = fmt.Errorf("GetSupply(): round %d, OnlineCirculation failed: %v", latest, err)
 		return internalError(ctx, err, errInternalFailure, v2.Log)

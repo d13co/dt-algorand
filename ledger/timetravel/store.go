@@ -33,6 +33,7 @@
 //
 // 'r' round -> keys changed in that round, kept only until the next
 // checkpoint is materialized. 'H' round -> encoded block header.
+// 'E' round -> the round's expired online stake (uvarint), see ExpiredStake.
 //
 // N = 1 (every version stored in full, one seek per read, blind writes) is
 // the recommended setting: with zstd over large blocks, an object's adjacent
@@ -56,6 +57,7 @@ const (
 	pfxPatch      = 'p'
 	pfxRoundIndex = 'r'
 	pfxHeader     = 'H'
+	pfxExpired    = 'E'
 )
 
 var keyMeta = []byte("m")
@@ -225,10 +227,11 @@ func verKey(pfx byte, obj []byte, rnd uint64) []byte {
 	return binary.BigEndian.AppendUint64(k, rnd)
 }
 
-// AddRound stores the changes of round rnd. Rounds at or below Last() are
-// skipped, so replaying after a crash is harmless. An empty store starts at
-// any round; objects not seen since are treated as absent before it.
-func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte) error {
+// AddRound stores the changes of round rnd, its encoded header and, if not
+// nil, its expired online stake. Rounds at or below Last() are skipped, so
+// replaying after a crash is harmless. An empty store starts at any round;
+// objects not seen since are treated as absent before it.
+func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint64) error {
 	if err := s.acquire(); err != nil {
 		return err
 	}
@@ -269,6 +272,11 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte) error {
 	// the header record also carries the round's ChangesDigest
 	if err := b.Set(binary.BigEndian.AppendUint64([]byte{pfxHeader}, rnd), append(ChangesDigest(changes), hdr...), nil); err != nil {
 		return err
+	}
+	if expired != nil {
+		if err := b.Set(binary.BigEndian.AppendUint64([]byte{pfxExpired}, rnd), binary.AppendUvarint(nil, *expired), nil); err != nil {
+			return err
+		}
 	}
 	meta := binary.BigEndian.AppendUint64(nil, rnd)
 	meta = binary.BigEndian.AppendUint64(meta, s.n)
@@ -453,6 +461,29 @@ func (s *Store) Digest(rnd uint64) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return v[:DigestLen], true, nil
+}
+
+// ExpiredStake returns the expired online stake stored with round rnd: the
+// stake of the accounts online at rnd whose keys expire before the vote round
+// that has rnd as its balance round.
+func (s *Store) ExpiredStake(rnd uint64) (uint64, bool, error) {
+	if err := s.acquire(); err != nil {
+		return 0, false, err
+	}
+	defer s.closeMu.RUnlock()
+	v, closer, err := s.db.Get(binary.BigEndian.AppendUint64([]byte{pfxExpired}, rnd))
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer closer.Close()
+	e, n := binary.Uvarint(v)
+	if n <= 0 {
+		return 0, false, fmt.Errorf("timetravel: bad expired stake record for round %d", rnd)
+	}
+	return e, true, nil
 }
 
 func (s *Store) headerRecord(rnd uint64) ([]byte, bool, error) {

@@ -24,8 +24,13 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 )
+
+// errOnlineStakeUnavailable: the history has no online stake for the round
+// (GetSupply's local ledger variable shadows the package).
+var errOnlineStakeUnavailable = ledger.ErrOnlineStakeUnavailable
 
 // historicalLedger is implemented by ledgers that can project state at past
 // rounds (EnableTimeTravel).

@@ -30,6 +30,7 @@ import (
 	"github.com/algorand/go-deadlock"
 	"github.com/algorand/msgp/msgp"
 
+	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
@@ -54,6 +55,12 @@ type historyTracker struct {
 	mu      deadlock.Mutex
 	pending []historyRound
 
+	// online holds the accounts online as of the last round given to
+	// newBlock, for each round's expired stake. Only loadFromDisk and
+	// newBlock, which the tracker registry serializes, touch it.
+	online   []onlineEntry
+	onlineAt map[basics.Address]int // index into online
+
 	// reeval bounds concurrent re-evaluations of old state deltas.
 	// ponytail: fixed at 2, a config knob if delta-heavy clients need more
 	reeval chan struct{}
@@ -64,6 +71,16 @@ type historyRound struct {
 	changes []timetravel.Change
 	idx     map[string]int // changes by key
 	hdr     []byte
+	expired *uint64 // expired online stake, for rounds with ExcludeExpiredCirculation
+}
+
+// onlineEntry is what onlineAccounts keeps of an online account to compute
+// the expired stake (trackerdb.BaseOnlineAccountData).
+type onlineEntry struct {
+	addr          basics.Address
+	microAlgos    uint64
+	rewardsBase   uint64
+	voteLastValid basics.Round
 }
 
 func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
@@ -103,6 +120,9 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 	ht.mu.Lock()
 	ht.pending = nil
 	ht.mu.Unlock()
+	if err := ht.loadOnline(l); err != nil {
+		return err
+	}
 
 	last, ok := ht.store.Last()
 	if ok {
@@ -123,10 +143,93 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 	for _, ad := range l.GenesisAccounts() {
 		totals.AddAccount(l.GenesisProto().RewardUnit, ledgercore.ToAccountData(ad), &ot)
 	}
-	if err := ht.store.AddRound(0, timetravel.GenesisChanges(l.GenesisAccounts(), totals), protocol.Encode(&hdr)); err != nil {
+	if err := ht.store.AddRound(0, timetravel.GenesisChanges(l.GenesisAccounts(), totals), protocol.Encode(&hdr), nil); err != nil {
 		return err
 	}
 	return ht.store.Sync()
+}
+
+// loadOnline loads the online accounts at the tracker DB round from its
+// onlineaccounts table; newBlock then applies the rounds replayed after it.
+func (ht *historyTracker) loadOnline(l ledgerForTracker) error {
+	ht.online, ht.onlineAt = nil, map[basics.Address]int{}
+	var rows []trackerdb.PersistedOnlineAccountData
+	err := l.trackerDB().Snapshot(func(ctx context.Context, tx trackerdb.SnapshotScope) error {
+		ar, err := tx.MakeAccountsReader()
+		if err != nil {
+			return err
+		}
+		rows, err = ar.OnlineAccountsAll(0)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("loading online accounts for the time travel history: %w", err)
+	}
+	// rows are by address, then round: an address ends at its latest row,
+	// which is empty if it went offline
+	for _, r := range rows {
+		if r.AccountData.IsVotingEmpty() {
+			ht.dropOnline(r.Addr)
+		} else {
+			ht.setOnline(onlineEntry{r.Addr, r.AccountData.MicroAlgos.Raw, r.AccountData.RewardsBase, r.AccountData.VoteLastValid})
+		}
+	}
+	return nil
+}
+
+func (ht *historyTracker) setOnline(e onlineEntry) {
+	if i, ok := ht.onlineAt[e.addr]; ok {
+		ht.online[i] = e
+		return
+	}
+	ht.onlineAt[e.addr] = len(ht.online)
+	ht.online = append(ht.online, e)
+}
+
+func (ht *historyTracker) dropOnline(addr basics.Address) {
+	i, ok := ht.onlineAt[addr]
+	if !ok {
+		return
+	}
+	last := len(ht.online) - 1
+	ht.online[i] = ht.online[last]
+	ht.onlineAt[ht.online[i].addr] = i
+	ht.online = ht.online[:last]
+	delete(ht.onlineAt, addr)
+}
+
+// expiredStake applies the round's accounts to the online set and returns
+// what onlineAccounts.expiredOnlineCirculation(rnd, voteRnd) will return once
+// rnd is the balance round of vote round voteRnd: the stake, with rewards at
+// rnd, of the accounts online at rnd whose keys expire before voteRnd. Nil
+// for rounds whose online stake does not exclude it.
+func (ht *historyTracker) expiredStake(blk bookkeeping.Block, delta *ledgercore.StateDelta) *uint64 {
+	for i := 0; i < delta.Accts.Len(); i++ {
+		addr, ad := delta.Accts.GetByIdx(i)
+		if ad.Status == basics.Online {
+			ht.setOnline(onlineEntry{addr, ad.MicroAlgos.Raw, ad.RewardsBase, ad.VoteLastValid})
+		} else {
+			ht.dropOnline(addr)
+		}
+	}
+	proto := config.Consensus[blk.CurrentProtocol]
+	if blk.Round() == 0 || !proto.ExcludeExpiredCirculation {
+		return nil
+	}
+	voteRnd := blk.Round() + agreement.BalanceLookback(proto)
+	var ot basics.OverflowTracker
+	var expired basics.MicroAlgos
+	// ponytail: walks every online account (2 µs for mainnet's 1.5k), bucket them by VoteLastValid if that reaches 100k+
+	for _, e := range ht.online {
+		if e.voteLastValid != 0 && e.voteLastValid < voteRnd {
+			stake, _, _ := basics.WithUpdatedRewards(proto.RewardUnit, basics.Online, basics.MicroAlgos{Raw: e.microAlgos}, basics.MicroAlgos{}, e.rewardsBase, delta.Totals.RewardsLevel)
+			expired = ot.AddA(expired, stake)
+		}
+	}
+	if ot.Overflowed {
+		return nil // cannot happen (it is part of the supply); the round's online stake is then unavailable
+	}
+	return &expired.Raw
 }
 
 func (ht *historyTracker) newBlock(blk bookkeeping.Block, delta ledgercore.StateDelta) {
@@ -135,6 +238,7 @@ func (ht *historyTracker) newBlock(blk bookkeeping.Block, delta ledgercore.State
 	for i, ch := range r.changes {
 		r.idx[string(ch.Key)] = i
 	}
+	r.expired = ht.expiredStake(blk, &delta)
 	ht.mu.Lock()
 	ht.pending = append(ht.pending, r)
 	ht.mu.Unlock()
@@ -161,7 +265,7 @@ func (ht *historyTracker) prepareCommit(dcc *deferredCommitContext) error {
 		return nil
 	}
 	for _, r := range rounds {
-		if err := ht.store.AddRound(uint64(r.rnd), r.changes, r.hdr); err != nil {
+		if err := ht.store.AddRound(uint64(r.rnd), r.changes, r.hdr, r.expired); err != nil {
 			return err
 		}
 	}
@@ -263,6 +367,19 @@ func (v *histView) Header(rnd uint64) ([]byte, bool, error) {
 	return v.store.Header(rnd)
 }
 
+// ExpiredStake returns the expired online stake recorded for round rnd.
+func (v *histView) ExpiredStake(rnd uint64) (uint64, bool, error) {
+	for i := range v.pending {
+		if uint64(v.pending[i].rnd) == rnd {
+			if e := v.pending[i].expired; e != nil {
+				return *e, true, nil
+			}
+			return 0, false, nil
+		}
+	}
+	return v.store.ExpiredStake(rnd)
+}
+
 // Scan is timetravel.Store.Scan with the in-memory rounds merged in.
 func (v *histView) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) bool) error {
 	over := map[string]timetravel.Change{}
@@ -343,6 +460,40 @@ func histTotals(h *histView, rnd basics.Round) (ledgercore.AccountTotals, error)
 		err = fmt.Errorf("no totals for round %d", rnd)
 	}
 	return t, err
+}
+
+// ErrOnlineStakeUnavailable is returned for an online stake the history did
+// not record: a round written before it recorded expired stake, or a vote
+// round that agreement does not pair with the balance round.
+var ErrOnlineStakeUnavailable = errors.New("the time travel history does not record this online stake")
+
+// histOnlineCirculation is onlineAccounts.onlineCirculation from the history.
+func histOnlineCirculation(h *histView, rnd, voteRnd basics.Round) (basics.MicroAlgos, error) {
+	t, err := histTotals(h, rnd)
+	if err != nil {
+		return basics.MicroAlgos{}, err
+	}
+	hdr, err := histHeader(h, rnd)
+	if err != nil {
+		return basics.MicroAlgos{}, err
+	}
+	proto := config.Consensus[hdr.CurrentProtocol]
+	if rnd == 0 || !proto.ExcludeExpiredCirculation {
+		return t.Online.Money, nil
+	}
+	expired, ok, err := h.ExpiredStake(uint64(rnd))
+	if err != nil {
+		return basics.MicroAlgos{}, err
+	}
+	if !ok || voteRnd != rnd+agreement.BalanceLookback(proto) {
+		return basics.MicroAlgos{}, fmt.Errorf("%w: balance round %d, vote round %d", ErrOnlineStakeUnavailable, rnd, voteRnd)
+	}
+	var ot basics.OverflowTracker
+	c := ot.SubA(t.Online.Money, basics.MicroAlgos{Raw: expired})
+	if ot.Overflowed {
+		return basics.MicroAlgos{}, fmt.Errorf("round %d: expired stake %d exceeds the online money %d", rnd, expired, t.Online.Money.Raw)
+	}
+	return c, nil
 }
 
 func histHeader(h *histView, rnd basics.Round) (bookkeeping.BlockHeader, error) {
@@ -600,6 +751,18 @@ func (p pastLedger) LatestTotals() (basics.Round, ledgercore.AccountTotals, erro
 
 func (p pastLedger) FlushCaches() {}
 
+// OnlineCirculation falls back to the online money, an upper bound, where the
+// history did not record the online stake: verifyDelta rejects a delta that
+// it changed.
+func (p pastLedger) OnlineCirculation(rnd, voteRnd basics.Round) (basics.MicroAlgos, error) {
+	c, err := p.Ledger.OnlineCirculation(rnd, voteRnd)
+	if errors.Is(err, ErrOnlineStakeUnavailable) {
+		t, terr := p.Totals(rnd)
+		return t.Online.Money, terr
+	}
+	return c, err
+}
+
 // ErrDeltaReevaluation wraps the failures to rebuild an old round's state
 // delta other than its block being gone.
 var ErrDeltaReevaluation = errors.New("re-evaluating the round's block failed")
@@ -607,9 +770,9 @@ var ErrDeltaReevaluation = errors.New("re-evaluating the round's block failed")
 // reevalDelta rebuilds the state delta of round rnd by evaluating its block
 // against the history at rnd-1 the way AddBlock did (no validation: the block
 // is certified), then checks the result against the round's stored changes.
-// Lookups the history only approximates (online stake, for the online_stake
-// and voter_params_get opcodes) can make an evaluation diverge; the check
-// turns that into an error.
+// Where the history did not record the online stake (online_stake opcode),
+// the evaluation uses an upper bound and can diverge; the check turns that
+// into an error.
 func (l *Ledger) reevalDelta(rnd basics.Round) (ledgercore.StateDelta, error) {
 	blk, err := l.Block(rnd)
 	if err != nil {

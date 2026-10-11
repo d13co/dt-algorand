@@ -76,12 +76,13 @@ Since a read is one seek whatever the age of the version, the store never re-wri
 - Reads go through a view that merges the rounds the tracker holds in memory (from `newBlock` until their commit, already encoded as store keys) over the store, so every round up to the tip is readable, including listings at rounds between the tracker DB round and the tip.
 - Old state deltas: `GetStateDeltaForRound` falls back to evaluating the round's block against the history at the previous round, exactly as `AddBlock` does (no validation: the block is certified), at most two at a time. Each round's header record also stores an 8-byte digest of the round's sorted changes; a re-evaluated delta must reproduce it exactly, or the request fails with a 500 instead of returning a delta that disagrees (missing or extra writes included). A round whose block is gone is a 404.
 - REST: `?round=R` wraps the node's ledger in a view whose "latest" is R (`daemon/algod/api/server/v2/timetravel.go`); the handlers are unchanged apart from how they obtain the ledger.
+- Online stake: since `ExcludeExpiredCirculation` (v38, mainnet round 30,097,387), the online stake of vote round V (`OnlineCirculation(BalanceRound(V), V)`, used by agreement, `/v2/ledger/supply` and the `online_stake` opcode) is the online money at the balance round minus the stake of the accounts online then whose keys expire before V. The trackers work it out from ~320 rounds of online-account history, which the history does not keep; instead the tracker keeps the online accounts in memory (loaded from the tracker DB's `onlineaccounts` table, then updated from each round's delta) and records each round's expired stake for vote round round + 320 (`E` keyspace, written with the round). Summing the online accounts takes ~2 µs per round for mainnet's 1.5k. `TestTimeTravelOnlineCirculation` checks every round against the trackers.
 
 ### Limitations
 
-- `OnlineCirculation` at an old round is the online stake in that round's totals, without subtracting accounts whose keys expired by the vote round.
+- The online stake is only recorded for rounds written since the history recorded it, and only for the vote round agreement pairs with each balance round. Otherwise `/v2/ledger/supply?round=` answers 404, and the `online_stake` opcode fails in a simulation. Rounds before v38 need no record: their online stake is the online money.
 - Simulating at an old round does not detect duplicate txids/leases, and does not knock offline absent accounts.
-- A re-evaluated delta depends on the history's lookups; `online_stake` and `voter_params_get` read the approximate online stake, so a block whose apps branch on them can fail the digest check (an error, never a wrong delta).
+- Re-evaluating a delta whose round has no recorded online stake gives `online_stake` the online money (an upper bound); if that changes the block's writes, the digest check fails (an error, never a wrong delta). `voter_params_get` reads only the account's online data, which the history answers exactly.
 - The store pre-allocates WAL files (~200 MB fixed overhead).
 
 ### TODO

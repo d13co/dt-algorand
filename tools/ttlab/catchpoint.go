@@ -104,7 +104,7 @@ func catchpoint(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := s.AddRound(0, changes, nil); err != nil {
+		if err := s.AddRound(0, changes, nil, nil); err != nil {
 			return err
 		}
 		if err := s.DB().Compact(context.Background(), []byte{0}, []byte{0xff}, true); err != nil {

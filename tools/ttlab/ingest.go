@@ -100,7 +100,7 @@ func ingest(args []string) error {
 			hdr = nil
 		}
 		t0 := time.Now()
-		if err := s.AddRound(rd.rnd, rd.changes, hdr); err != nil {
+		if err := s.AddRound(rd.rnd, rd.changes, hdr, nil); err != nil {
 			return err
 		}
 		d := time.Since(t0)

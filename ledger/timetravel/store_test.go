@@ -107,15 +107,20 @@ func TestStoreModel(t *testing.T) {
 					state[string(obj)] = v
 					chs = append(chs, Change{Key: obj, Value: v})
 				}
-				require.NoError(t, s.AddRound(r, chs, []byte{byte(r)}))
+				var expired *uint64 // odd rounds carry an expired stake
+				if r%2 == 1 {
+					e := r << 40
+					expired = &e
+				}
+				require.NoError(t, s.AddRound(r, chs, []byte{byte(r)}, expired))
 				snap := map[string][]byte{}
 				for k, v := range state {
 					snap[k] = v
 				}
 				history = append(history, snap)
 			}
-			require.NoError(t, s.AddRound(5, nil, nil)) // replay is skipped
-			require.Error(t, s.AddRound(rounds+1, nil, nil))
+			require.NoError(t, s.AddRound(5, nil, nil, nil)) // replay is skipped
+			require.Error(t, s.AddRound(rounds+1, nil, nil, nil))
 			require.NoError(t, s.Close())
 
 			s, err = Open(dir, Options{CheckpointInterval: 99})
@@ -137,6 +142,12 @@ func TestStoreModel(t *testing.T) {
 				require.NoError(t, err)
 				require.True(t, ok)
 				require.Equal(t, []byte{byte(r)}, h)
+				e, ok, err := s.ExpiredStake(r)
+				require.NoError(t, err)
+				require.Equal(t, r%2 == 1, ok)
+				if ok {
+					require.Equal(t, r<<40, e)
+				}
 
 				var want, got []string
 				for k := range history[r] {
