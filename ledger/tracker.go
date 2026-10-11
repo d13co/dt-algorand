@@ -817,9 +817,11 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 		// flush to disk if any of the following applies:
 		// 1. if we have loaded up more than initializeCachesRoundFlushInterval rounds since the last time we flushed the data to disk
 		//    (and, on a time travel ledger, more than maxFlushRounds rounds or timeTravelReplayFlushChanges changes)
-		// 2. if we completed the loading and we loaded up more than 320 rounds.
+		// 2. on a time travel ledger, if the rounds since then made more than timeTravelReplayFlushMaxChanges changes
+		// 3. if we completed the loading and we loaded up more than 320 rounds.
 		sinceFlush := blk.Round() - lastFlushedRound
 		flushIntervalExceed := sinceFlush > initializeCachesRoundFlushInterval && (sinceFlush > maxFlushRounds || changes > timeTravelReplayFlushChanges)
+		flushIntervalExceed = flushIntervalExceed || (tr.cfg.EnableTimeTravel && changes > timeTravelReplayFlushMaxChanges)
 		loadCompleted := (lastestBlockRound == blk.Round() && lastBalancesRound+basics.Round(maxAcctLookback) < lastestBlockRound)
 		if flushIntervalExceed || loadCompleted {
 			// adjust the last flush time, so that we would not hold off the flushing due to "working too fast"

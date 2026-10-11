@@ -82,10 +82,15 @@ type historyRound struct {
 // initializeCachesRoundFlushInterval rounds, its replay therefore flushes only
 // once the rounds since the last flush made more than
 // timeTravelReplayFlushChanges changes (replayChanges) or number
-// timeTravelReplayMaxFlushRounds. Variables for tests.
+// timeTravelReplayMaxFlushRounds. Busy rounds flush sooner, once they made more
+// than timeTravelReplayFlushMaxChanges changes: memory grows with changes, both
+// what the trackers hold and the commit's compacted deltas. Mainnet's rounds of
+// March 2021 make ~1,950 changes each; flushed every 1,001 rounds, they needed
+// 3.5 GB of live heap. Variables for tests.
 var (
-	timeTravelReplayMaxFlushRounds = basics.Round(10_000)
-	timeTravelReplayFlushChanges   = 100_000
+	timeTravelReplayMaxFlushRounds  = basics.Round(10_000)
+	timeTravelReplayFlushChanges    = 100_000
+	timeTravelReplayFlushMaxChanges = 250_000
 )
 
 // replayChanges counts what a round keeps in the trackers' memory until it is

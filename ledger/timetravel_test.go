@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 	"github.com/algorand/go-algorand/crypto/merklesignature"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
+	"github.com/algorand/go-algorand/data/committee"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
@@ -587,16 +589,34 @@ func TestTimeTravelReplayFlushes(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	// not parallel: it sets the flush variables and counts commits
 
-	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 10)
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 1000)
 	cfg := config.GetDefaultLocal()
 	cfg.EnableTimeTravel = true
 	cfg.Archival = true // keep every block for the replays
 	prefix := filepath.Join(t.TempDir(), "ledger")
 	l, err := OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
 	require.NoError(t, err)
+	var addrs []basics.Address
+	for addr := range genesisInitState.Accounts {
+		if addr != testPoolAddr && addr != testSinkAddr {
+			addrs = append(addrs, addr)
+		}
+	}
+	// a payment a round, for changes the flushes count; the evaluator fills in its
+	// rewards, and nothing checks the signature
 	const rounds = 5000
 	for range rounds {
-		addEmptyValidatedBlock(t, l, genesisInitState.Accounts)
+		hdr, err := l.BlockHdr(l.Latest())
+		require.NoError(t, err)
+		eval, err := l.StartEvaluator(bookkeeping.MakeBlock(hdr).BlockHeader, 1, 0, nil)
+		require.NoError(t, err)
+		pay := txntest.Txn{Type: protocol.PaymentTx, Sender: addrs[0], Receiver: addrs[1], Amount: 1,
+			FirstValid: l.Latest() + 1, GenesisHash: genesisInitState.GenesisHash}
+		pay.FillDefaults(config.Consensus[hdr.CurrentProtocol])
+		require.NoError(t, eval.TransactionGroup(pay.SignedTxn().WithAD()))
+		ub, err := eval.GenerateBlock(nil)
+		require.NoError(t, err)
+		require.NoError(t, l.AddBlock(ub.FinishBlock(committee.Seed{1}, basics.Address{1}, false), agreement.Certificate{}))
 	}
 	// commit up to the round a replay ends at
 	l.WaitForCommit(l.Latest())
@@ -616,24 +636,27 @@ func TestTimeTravelReplayFlushes(t *testing.T) {
 	want := digests(l)
 	l.Close()
 
-	defer func(r basics.Round, c int) { timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges = r, c }(timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges)
+	defer func(r basics.Round, c, m int) {
+		timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges, timeTravelReplayFlushMaxChanges = r, c, m
+	}(timeTravelReplayMaxFlushRounds, timeTravelReplayFlushChanges, timeTravelReplayFlushMaxChanges)
 	timeTravelReplayMaxFlushRounds = 2000
-	// little change: flushes after rounds 2001, 4002 and the last; much: every 1001 rounds and the last
+	// little change: flushes after rounds 2001, 4002 and the last; much: every
+	// 1001 rounds and the last; more than maxChanges (6 a round): every 401 rounds and the last
 	for _, tc := range []struct {
-		changes int
-		commits uint64
-	}{{rounds, 3}, {-1, 5}} {
+		changes, maxChanges int
+		commits             uint64
+	}{{math.MaxInt, math.MaxInt, 3}, {-1, math.MaxInt, 5}, {-1, 2400, 13}} {
 		// without its account DB and history, the ledger replays every block
 		require.DirExists(t, prefix+".timetravel")
 		require.NoError(t, os.RemoveAll(prefix+".timetravel"))
 		for _, suffix := range []string{"", "-wal", "-shm"} {
 			require.NoError(t, os.RemoveAll(prefix+".tracker.sqlite"+suffix))
 		}
-		timeTravelReplayFlushChanges = tc.changes
+		timeTravelReplayFlushChanges, timeTravelReplayFlushMaxChanges = tc.changes, tc.maxChanges
 		commits := ledgerCommitroundCount.GetUint64Value()
 		l, err = OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
 		require.NoError(t, err)
-		require.Equal(t, tc.commits, ledgerCommitroundCount.GetUint64Value()-commits, "changes %d", tc.changes)
+		require.Equal(t, tc.commits, ledgerCommitroundCount.GetUint64Value()-commits, "changes %d, max %d", tc.changes, tc.maxChanges)
 		require.Equal(t, want, digests(l))
 		l.Close()
 	}
