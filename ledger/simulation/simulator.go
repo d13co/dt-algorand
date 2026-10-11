@@ -63,6 +63,13 @@ func (l simulatorLedger) LatestTotals() (basics.Round, ledgercore.AccountTotals,
 	return l.start, totals, err
 }
 
+// CheckDup is part of the ledger.Ledger interface. We override this so that
+// a simulation at a past round does not count the transactions and leases of
+// the rounds after it.
+func (l simulatorLedger) CheckDup(currentProto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
+	return l.Ledger.CheckDupAt(currentProto, current, firstValid, lastValid, txid, txl)
+}
+
 // LookupLatest would implicitly use the latest round in the _underlying_
 // Ledger, it would give wrong results if that ledger has moved forward. But it
 // should never be called, as the REST API is the only code using this function,

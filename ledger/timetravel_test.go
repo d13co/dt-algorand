@@ -790,3 +790,52 @@ func deltaJSON(t *testing.T, sd ledgercore.StateDelta) string {
 	sd.Txleases = nil // not representable in JSON
 	return string(protocol.EncodeJSONStrict(sd))
 }
+
+// TestTimeTravelCheckDupPast checks CheckDupAt, simulate's CheckDup, at rounds
+// the ledger already has: only the leases and confirmations of earlier rounds
+// count, and a transaction whose txid the txtail dropped is not an error. At
+// the next round it is CheckDup, which keeps its checks at every round.
+func TestTimeTravelCheckDupPast(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg)
+	defer dl.Close()
+	l := dl.validator
+	proto := config.Consensus[protocol.ConsensusFuture]
+
+	lease := ledgercore.Txlease{Sender: addrs[0], Lease: [32]byte{1}}
+	leased := txntest.Txn{Type: "pay", Sender: addrs[0], Receiver: addrs[1], Amount: 1, Lease: lease.Lease}
+	dl.txn(&leased)
+	leasedRnd, leasedID := l.Latest(), leased.Txn().ID()
+	short := txntest.Txn{Type: "pay", Sender: addrs[0], Receiver: addrs[1], Amount: 2, FirstValid: l.Latest() + 1, LastValid: l.Latest() + 3}
+	dl.txn(&short)
+	shortRnd, shortID := l.Latest(), short.Txn().ID()
+	for range 10 {
+		dl.fullBlock()
+	}
+	// drop short's txid, as notifyCommit does once the blocks are written
+	l.txTail.committedUpTo(l.Latest())
+
+	var leaseErr *ledgercore.LeaseInLedgerError
+	var dupErr *ledgercore.TransactionInLedgerError
+	var missing *errTxTailMissingRound
+	other := transactions.Txid{9}
+	for _, current := range []basics.Round{leasedRnd + 1, l.Latest() + 1} {
+		require.ErrorAs(t, l.CheckDupAt(proto, current, leased.FirstValid, leased.LastValid, other, lease), &leaseErr, "round %d", current)
+		require.ErrorAs(t, l.CheckDupAt(proto, current, leased.FirstValid, leased.LastValid, leasedID, ledgercore.Txlease{}), &dupErr, "round %d", current)
+	}
+	// leased's own block: its lease and txid come later
+	require.NoError(t, l.CheckDupAt(proto, leasedRnd, leased.FirstValid, leased.LastValid, other, lease))
+	require.NoError(t, l.CheckDupAt(proto, leasedRnd, leased.FirstValid, leased.LastValid, leasedID, ledgercore.Txlease{}))
+	// a duplicate the txtail no longer knows of goes undetected in the past
+	require.NoError(t, l.CheckDupAt(proto, shortRnd+1, short.FirstValid, short.LastValid, shortID, ledgercore.Txlease{}))
+	require.ErrorAs(t, l.CheckDupAt(proto, l.Latest()+1, short.FirstValid, short.LastValid, shortID, ledgercore.Txlease{}), &missing)
+
+	// CheckDup, the transaction pool's, still sees every round it holds
+	require.ErrorAs(t, l.CheckDup(proto, leasedRnd, leased.FirstValid, leased.LastValid, other, lease), &leaseErr)
+	require.ErrorAs(t, l.CheckDup(proto, shortRnd+1, short.FirstValid, short.LastValid, shortID, ledgercore.Txlease{}), &missing)
+}

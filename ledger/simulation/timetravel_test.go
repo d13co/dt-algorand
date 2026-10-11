@@ -154,10 +154,10 @@ func TestSimulateTimeTravelOnlineStake(t *testing.T) {
 		stakes[r] = stake
 	}
 
-	// more than MaxTxnLife back, as CheckDup only skips the txtail check there;
-	// first+200's balance round is 0
+	// first+200's balance round is 0; the last round is within MaxTxnLife of
+	// the tip, with a LastValid whose txids the txtail has already dropped
 	s := simulation.MakeSimulator(env.Ledger, false)
-	for _, r := range []basics.Round{first + 200, first + 350} {
+	for _, r := range []basics.Round{first + 200, first + 350, env.TxnInfo.LatestRound() - 20} {
 		txn := txntest.Txn{Type: protocol.ApplicationCallTx, Sender: sender.Addr, ApplicationID: app,
 			FirstValid: r, LastValid: r + 10, GenesisHash: env.TxnInfo.LatestHeader.GenesisHash}
 		txn.FillDefaults(proto)

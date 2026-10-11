@@ -224,7 +224,9 @@ func (t *txTail) newBlock(blk bookkeeping.Block, delta ledgercore.StateDelta) {
 		// rounds as missing. A replay adds blocks below lowWaterMark (loadFromDisk
 		// sets it to the latest block) and committedUpTo never goes back below it,
 		// so it would keep them for good: on tools/ttimport's replay of a whole
-		// archive, every replayed txid.
+		// archive, every replayed txid. This keeps lowWaterMark itself, as
+		// checkDup does; loadFromDisk's > also drops the txids expiring at
+		// lowWaterMark, the latest round then, which no block to come can include.
 		if txnInc.LastValid >= t.lowWaterMark {
 			if _, ok := t.lastValid[txnInc.LastValid]; !ok {
 				t.lastValid[txnInc.LastValid] = make(map[transactions.Txid]uint16)

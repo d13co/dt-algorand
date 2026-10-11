@@ -836,14 +836,7 @@ func (l *Ledger) OnlineCirculation(rnd basics.Round, voteRnd basics.Round) (basi
 
 // CheckDup return whether a transaction is a duplicate one.
 func (l *Ledger) CheckDup(currentProto config.ConsensusParams, current basics.Round, firstValid basics.Round, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
-	err := l.txTail.checkDup(currentProto, current, firstValid, lastValid, txid, txl)
-	var missing *errTxTailMissingRound
-	if l.history != nil && errors.As(err, &missing) && current+basics.Round(currentProto.MaxTxnLife) < l.Latest() {
-		// evaluating at a round long before the txtail window (historical
-		// simulate): the history keeps no txids, so duplicates are not detected
-		return nil
-	}
-	return err
+	return l.txTail.checkDup(currentProto, current, firstValid, lastValid, txid, txl)
 }
 
 // CheckConfirmedTail checks if a transaction txid happens to have LastValid greater than the current round at the time of calling and has been already committed to the ledger.

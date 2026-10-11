@@ -35,6 +35,7 @@ import (
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
+	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
@@ -746,6 +747,45 @@ func (l *Ledger) histAccountWithRewards(h *histView, rnd basics.Round, addr basi
 	}
 	withoutRewards := ad.MicroAlgos
 	return ad.WithUpdatedRewards(config.Consensus[hdr.CurrentProtocol].RewardUnit, hdr.RewardsLevel), withoutRewards, nil
+}
+
+// CheckDupAt is CheckDup for simulate, which evaluates round current on top of
+// round current-1 even when the ledger already has current. On a time travel
+// ledger such a check skips the later rounds (checkDupPast); other ledgers,
+// whose simulate only reaches back through the trackers' window, keep
+// CheckDup. The transaction pool calls CheckDup, never this: in the moment its
+// evaluator lags a block just added, it still sees that block's transactions.
+func (l *Ledger) CheckDupAt(currentProto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
+	if l.history == nil || current > l.Latest() {
+		return l.CheckDup(currentProto, current, firstValid, lastValid, txid, txl)
+	}
+	return l.txTail.checkDupPast(currentProto, current, firstValid, lastValid, txid, txl)
+}
+
+// checkDupPast is txTail.checkDup for evaluating at a round current that the
+// ledger already has. The txtail holds the rounds up to Latest(), so it skips
+// the leases and confirmations of current and later rounds. The txids of a
+// lastValid below the low watermark are gone, and the history keeps none: as
+// for leases older than the txtail window, those duplicates go undetected.
+func (t *txTail) checkDupPast(proto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
+	t.tailMu.RLock()
+	defer t.tailMu.RUnlock()
+
+	if proto.SupportTransactionLeases && (txl.Lease != [32]byte{}) {
+		firstChecked, lastChecked := firstValid, lastValid
+		if proto.FixTransactionLeases {
+			firstChecked, lastChecked = current.SubSaturate(basics.Round(proto.MaxTxnLife)), current
+		}
+		for rnd := firstChecked; rnd <= lastChecked && rnd < current; rnd++ {
+			if expires, ok := t.recent[rnd].txleases[txl]; ok && current <= expires {
+				return ledgercore.MakeLeaseInLedgerError(txid, txl, false)
+			}
+		}
+	}
+	if deltaR, ok := t.lastValid[lastValid][txid]; ok && lastValid-basics.Round(deltaR) < current {
+		return &ledgercore.TransactionInLedgerError{Txid: txid, InBlockEvaluator: false}
+	}
+	return nil
 }
 
 // pastLedger is the ledger as of round rnd, for re-evaluating block rnd+1.
