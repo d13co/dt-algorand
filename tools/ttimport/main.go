@@ -23,12 +23,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime/pprof"
+	"syscall"
 	"time"
+
+	"github.com/algorand/go-deadlock"
 
 	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"
@@ -45,18 +51,36 @@ func main() {
 	blocks := flag.String("blocks", "", "source block database: <archival data dir>/<genesis id>/ledger.block.sqlite")
 	dataDir := flag.String("d", "", "algod data directory to build: genesis.json, and config.json with EnableTimeTravel")
 	to := flag.Uint64("to", 0, "last round to import (default: the source's last round)")
+	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the run to this file")
 	flag.Parse()
 	if *blocks == "" || *dataDir == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(*blocks, *dataDir, basics.Round(*to)); err != nil {
+	// lock tracking records a stack trace per Lock, ~25% of the import's CPU
+	deadlock.Opts.Disable = true
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err == nil {
+			err = pprof.StartCPUProfile(f)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ttimport:", err)
+			os.Exit(1)
+		}
+	}
+	// Ctrl-C stops after the current block and closes the ledger; a second one kills.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	context.AfterFunc(ctx, stop)
+	err := run(ctx, *blocks, *dataDir, basics.Round(*to))
+	pprof.StopCPUProfile()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "ttimport:", err)
 		os.Exit(1)
 	}
 }
 
-func run(blocksPath, dataDir string, to basics.Round) error {
+func run(ctx context.Context, blocksPath, dataDir string, to basics.Round) error {
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(dataDir, config.GenesisJSONFile))
 	if err != nil {
 		return err
@@ -97,8 +121,14 @@ func run(blocksPath, dataDir string, to basics.Round) error {
 	}
 	defer rows.Close()
 
-	start, report := time.Now(), time.Now()
-	for rows.Next() {
+	hdr, err := l.BlockHdr(from)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	last, lastRnd, lastTxns := start, from, hdr.TxnCounter
+	var blockWait, commitWait time.Duration // since the last report
+	for ctx.Err() == nil && rows.Next() {
 		var rnd basics.Round
 		var blkdata, certdata []byte
 		if err := rows.Scan(&rnd, &blkdata, &certdata); err != nil {
@@ -122,16 +152,24 @@ func run(blocksPath, dataDir string, to basics.Round) error {
 			return fmt.Errorf("round %d belongs to another network (genesis hash %v)", rnd, blk.GenesisHash())
 		}
 		// Keep the in-memory backlog bounded, as catchup does.
+		t0 := time.Now()
 		<-l.Wait(rnd.SubSaturate(basics.Round(config.Consensus[blk.CurrentProtocol].MaxBalLookback)))
+		t1 := time.Now()
 		for l.IsBehindCommittingDeltas() {
 			time.Sleep(10 * time.Millisecond)
 		}
+		blockWait += t1.Sub(t0)
+		commitWait += time.Since(t1)
 		if err := l.AddBlock(blk, cert); err != nil {
 			return fmt.Errorf("round %d: %w", rnd, err)
 		}
-		if time.Since(report) >= 10*time.Second {
-			report = time.Now()
-			fmt.Printf("round %d, %.0f rounds/s\n", rnd, float64(rnd-from)/time.Since(start).Seconds())
+		if now := time.Now(); now.Sub(last) >= 10*time.Second {
+			secs := now.Sub(last).Seconds()
+			fmt.Printf("round %d: %.0f rounds/s, %.0f txns/s, waited %.0f%% on block DB, %.0f%% on commits (overall %.0f rounds/s)\n", rnd,
+				float64(rnd-lastRnd)/secs, float64(blk.TxnCounter-lastTxns)/secs,
+				100*blockWait.Seconds()/secs, 100*commitWait.Seconds()/secs, float64(rnd-from)/now.Sub(start).Seconds())
+			last, lastRnd, lastTxns = now, rnd, blk.TxnCounter
+			blockWait, commitWait = 0, 0
 		}
 	}
 	if err := rows.Err(); err != nil {
