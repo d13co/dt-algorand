@@ -95,6 +95,11 @@ type Options struct {
 	// AddRound skips when they repeat the stored state; 0 is the default
 	// (2^18, ~30 MB), negative stores every change.
 	DedupEntries int
+	// ReadOnly opens an existing store without writing to it: no new store,
+	// no compactions, and AddRound, RemoveNoops, CompactCheckpoints and Sync
+	// fail with ErrReadOnly. The store is still locked, so another process
+	// cannot open it meanwhile.
+	ReadOnly bool
 }
 
 // Change is the new value of one object in a round.
@@ -111,6 +116,7 @@ type Store struct {
 	db          *pebble.DB
 	n           uint64
 	incremental bool
+	readOnly    bool
 	last        atomic.Int64 // -1 when empty
 
 	writeMu sync.Mutex   // serializes AddRound and RemoveNoops
@@ -125,6 +131,9 @@ var commitBatch = func(b *pebble.Batch) error { return b.Commit(pebble.NoSync) }
 
 // ErrClosed is returned by operations on a closed store.
 var ErrClosed = errors.New("timetravel: store closed")
+
+// ErrReadOnly is returned by writes to a store opened with Options.ReadOnly.
+var ErrReadOnly = errors.New("timetravel: store opened read-only")
 
 func (s *Store) acquire() error {
 	s.closeMu.RLock()
@@ -164,6 +173,7 @@ func Open(dir string, o Options) (*Store, error) {
 		FormatMajorVersion:         pebble.FormatNewest,
 		MaxOpenFiles:               4096,
 		Logger:                     o.Logger,
+		ReadOnly:                   o.ReadOnly,
 	}
 	for i := range opts.Levels {
 		l := &opts.Levels[i]
@@ -177,7 +187,10 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, dedup: newLastWritten(o.DedupEntries)}
+	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly}
+	if !o.ReadOnly {
+		s.dedup = newLastWritten(o.DedupEntries)
+	}
 	s.last.Store(-1)
 	v, closer, err := db.Get(keyMeta)
 	if errors.Is(err, pebble.ErrNotFound) {
@@ -221,8 +234,30 @@ func (s *Store) Last() (uint64, bool) {
 	return uint64(l), l >= 0
 }
 
+// First returns the first stored round, the round of the first header
+// record, or ok=false if the store is empty. A store built from genesis
+// starts at 0.
+func (s *Store) First() (uint64, bool, error) {
+	if err := s.acquire(); err != nil {
+		return 0, false, err
+	}
+	defer s.closeMu.RUnlock()
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte{pfxHeader}, UpperBound: []byte{pfxHeader + 1}})
+	if err != nil {
+		return 0, false, err
+	}
+	defer it.Close()
+	if !it.First() {
+		return 0, false, it.Error()
+	}
+	return binary.BigEndian.Uint64(it.Key()[1:]), true, nil
+}
+
 // CheckpointInterval returns N.
 func (s *Store) CheckpointInterval() uint64 { return s.n }
+
+// Incremental reports whether patches chain from the previous version.
+func (s *Store) Incremental() bool { return s.incremental }
 
 // Sync makes all added rounds durable.
 func (s *Store) Sync() error {
@@ -230,6 +265,9 @@ func (s *Store) Sync() error {
 		return err
 	}
 	defer s.closeMu.RUnlock()
+	if s.readOnly {
+		return ErrReadOnly
+	}
 	return s.db.LogData(nil, pebble.Sync)
 }
 
@@ -254,6 +292,9 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 		return err
 	}
 	defer s.closeMu.RUnlock()
+	if s.readOnly {
+		return ErrReadOnly
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	last, ok := s.Last()
@@ -416,6 +457,9 @@ func (s *Store) RemoveNoops(ctx context.Context, progress func(scanned, removed 
 		return 0, err
 	}
 	defer s.closeMu.RUnlock()
+	if s.readOnly {
+		return 0, ErrReadOnly
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if s.n != 1 {
@@ -505,6 +549,9 @@ func (s *Store) CompactCheckpoints(ctx context.Context) error {
 		return err
 	}
 	defer s.closeMu.RUnlock()
+	if s.readOnly {
+		return ErrReadOnly
+	}
 	return s.db.Compact(ctx, []byte{pfxCheckpoint}, []byte{pfxCheckpoint + 1}, true)
 }
 

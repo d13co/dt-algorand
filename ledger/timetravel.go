@@ -107,9 +107,14 @@ func replayChanges(delta *ledgercore.StateDelta) int {
 	return delta.Accts.Len() + len(delta.Accts.AppResources) + len(delta.Accts.AssetResources) + len(delta.KvMods) + len(delta.Txids)
 }
 
-func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
+// TimeTravelPath is the directory of the time travel store of a ledger in dirs.
+func TimeTravelPath(dirs DirsAndPrefix) string {
 	// hand-built DirsAndPrefix may lack the time travel dir: keep the store next to the blocks then
-	path := filepath.Join(cmp.Or(dirs.TimeTravelGenesisDir, dirs.BlockGenesisDir), dirs.DBFilePrefix) + ".timetravel"
+	return filepath.Join(cmp.Or(dirs.TimeTravelGenesisDir, dirs.BlockGenesisDir), dirs.DBFilePrefix) + ".timetravel"
+}
+
+func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
+	path := TimeTravelPath(dirs)
 	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}})
 	if err != nil {
 		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
@@ -522,7 +527,10 @@ func histOnlineCirculation(h *histView, rnd, voteRnd basics.Round) (basics.Micro
 	if err != nil {
 		return basics.MicroAlgos{}, err
 	}
-	proto := config.Consensus[hdr.CurrentProtocol]
+	proto, err := histProto(hdr)
+	if err != nil {
+		return basics.MicroAlgos{}, err
+	}
 	if rnd == 0 || !proto.ExcludeExpiredCirculation {
 		return t.Online.Money, nil
 	}
@@ -662,6 +670,10 @@ func (l *Ledger) LookupAssetsAt(rnd basics.Round, addr basics.Address, assetIDGT
 	if h == nil {
 		return nil, 0, errHistoryUnavailable
 	}
+	return histAssets(h, rnd, addr, assetIDGT, limit)
+}
+
+func histAssets(h *histView, rnd basics.Round, addr basics.Address, assetIDGT basics.AssetIndex, limit uint64) ([]ledgercore.AssetResourceWithIDs, basics.Round, error) {
 	holdings, err := scanIDs(h, rnd, timetravel.HoldingKey(addr, 0)[:1+len(addr)], uint64(assetIDGT), limit)
 	if err != nil {
 		return nil, 0, err
@@ -748,7 +760,11 @@ func (l *Ledger) LookupLatestAt(rnd basics.Round, addr basics.Address) (basics.A
 	if h == nil {
 		return basics.AccountData{}, 0, basics.MicroAlgos{}, errHistoryUnavailable
 	}
-	ad, withoutRewards, err := l.histAccountWithRewards(h, rnd, addr)
+	return histLatest(h, rnd, addr)
+}
+
+func histLatest(h *histView, rnd basics.Round, addr basics.Address) (basics.AccountData, basics.Round, basics.MicroAlgos, error) {
+	ad, withoutRewards, err := histAccountWithRewards(h, rnd, addr)
 	if err != nil {
 		return basics.AccountData{}, 0, basics.MicroAlgos{}, err
 	}
@@ -792,7 +808,7 @@ func (l *Ledger) LookupLatestAt(rnd basics.Round, addr basics.Address) (basics.A
 
 // histAccountWithRewards returns the account at rnd with pending rewards
 // applied, and its balance before them.
-func (l *Ledger) histAccountWithRewards(h *histView, rnd basics.Round, addr basics.Address) (ledgercore.AccountData, basics.MicroAlgos, error) {
+func histAccountWithRewards(h *histView, rnd basics.Round, addr basics.Address) (ledgercore.AccountData, basics.MicroAlgos, error) {
 	ad, err := histAccount(h, rnd, addr)
 	if err != nil {
 		return ad, basics.MicroAlgos{}, err
@@ -801,8 +817,23 @@ func (l *Ledger) histAccountWithRewards(h *histView, rnd basics.Round, addr basi
 	if err != nil {
 		return ad, basics.MicroAlgos{}, err
 	}
+	proto, err := histProto(hdr)
+	if err != nil {
+		return ad, basics.MicroAlgos{}, err
+	}
 	withoutRewards := ad.MicroAlgos
-	return ad.WithUpdatedRewards(config.Consensus[hdr.CurrentProtocol].RewardUnit, hdr.RewardsLevel), withoutRewards, nil
+	return ad.WithUpdatedRewards(proto.RewardUnit, hdr.RewardsLevel), withoutRewards, nil
+}
+
+// histProto returns the consensus parameters of a header from the history.
+// A node knows every protocol of its chain, but a tool reading a store
+// (HistoryReader) may not, and a zero RewardUnit divides by zero.
+func histProto(hdr bookkeeping.BlockHeader) (config.ConsensusParams, error) {
+	proto, ok := config.Consensus[hdr.CurrentProtocol]
+	if !ok {
+		return proto, fmt.Errorf("round %d has an unknown consensus protocol %s", hdr.Round, hdr.CurrentProtocol)
+	}
+	return proto, nil
 }
 
 // CheckDupAt is CheckDup for simulate, which evaluates round current on top of

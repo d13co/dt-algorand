@@ -81,6 +81,8 @@ tools/x-repo-types/x-repo-types
 
 # time travel lab tool binary
 tools/ttlab/ttlab
+tools/ttimport/ttimport
+tools/ttdump/ttdump
 
 # python virtual environment
 .venv

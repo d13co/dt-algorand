@@ -236,3 +236,25 @@ func TestAccountRandomRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestConvertTKVSorted checks that TEAL key/value stores come out in the
+// order of their raw keys, whatever the map's iteration order.
+func TestConvertTKVSorted(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	tkv := basics.TealKeyValue{}
+	for i := 0; i < 50; i++ {
+		tkv[fmt.Sprintf("k%02d", (i*37)%50)] = basics.TealValue{Type: basics.TealUintType, Uint: uint64(i)}
+	}
+	for try := 0; try < 10; try++ {
+		got := convertTKVToGenerated(&tkv)
+		require.Len(t, *got, len(tkv))
+		for i, kv := range *got {
+			key, err := base64.StdEncoding.DecodeString(kv.Key)
+			require.NoError(t, err)
+			require.Equal(t, fmt.Sprintf("k%02d", i), string(key))
+			require.Equal(t, tkv[string(key)].Uint, kv.Value.Uint)
+		}
+	}
+}

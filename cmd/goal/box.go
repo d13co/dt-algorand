@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/algorand/go-algorand/cmd/util/ttview"
 	"github.com/algorand/go-algorand/data/basics"
 )
 
@@ -93,7 +94,7 @@ var appBoxInfoCmd = &cobra.Command{
 		reportInfof("Name:  %s", boxName)
 
 		// Print box value
-		reportInfof("Value: %s", encodeBytesAsAppCallBytes(box.Value))
+		reportInfof("Value: %s", ttview.AppCallBytes(box.Value))
 	},
 }
 
@@ -140,9 +141,9 @@ Use --values to include box values in the output.`,
 			}
 
 			for _, descriptor := range boxesRes.Boxes {
-				encodedName := encodeBytesAsAppCallBytes(descriptor.Name)
+				encodedName := ttview.AppCallBytes(descriptor.Name)
 				if boxValues && descriptor.Value != nil {
-					encodedValue := encodeBytesAsAppCallBytes(*descriptor.Value)
+					encodedValue := ttview.AppCallBytes(*descriptor.Value)
 					reportInfof("%s : %s", encodedName, encodedValue)
 				} else {
 					reportInfof("%s", encodedName)

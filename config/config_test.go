@@ -898,6 +898,37 @@ func TestEnsureAndResolveGenesisDirs(t *testing.T) {
 	require.DirExists(t, paths.TimeTravelGenesisDir)
 }
 
+// TestTimeTravelGenesisDir checks that TimeTravelGenesisDir resolves the
+// directory EnsureAndResolveGenesisDirs does, and creates nothing.
+func TestTimeTravelGenesisDir(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	for _, set := range []func(cfg *Local, dir string){
+		func(*Local, string) {},
+		func(cfg *Local, dir string) { cfg.ColdDataDir = filepath.Join(dir, "cold") },
+		func(cfg *Local, dir string) {
+			cfg.ColdDataDir, cfg.BlockDBDir = filepath.Join(dir, "cold"), filepath.Join(dir, "BAD/../block")
+		},
+		func(cfg *Local, dir string) {
+			cfg.BlockDBDir, cfg.TimeTravelDBDir = filepath.Join(dir, "block"), filepath.Join(dir, "tt")
+		},
+		func(cfg *Local, dir string) { cfg.HotDataDir = filepath.Join(dir, "hot") },
+	} {
+		cfg := GetDefaultLocal()
+		root := t.TempDir()
+		set(&cfg, root)
+		got, err := cfg.TimeTravelGenesisDir(root, "gid")
+		require.NoError(t, err)
+		entries, err := os.ReadDir(root)
+		require.NoError(t, err)
+		require.Empty(t, entries, "nothing is created")
+		paths, err := cfg.EnsureAndResolveGenesisDirs(root, "gid", tLogger{t: t})
+		require.NoError(t, err)
+		require.Equal(t, paths.TimeTravelGenesisDir, got)
+	}
+}
+
 // TestEnsureAndResolveGenesisDirs_hierarchy confirms that when only some directories are specified, other directories defer to them
 func TestEnsureAndResolveGenesisDirs_hierarchy(t *testing.T) {
 	partitiontest.PartitionTest(t)

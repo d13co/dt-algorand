@@ -228,66 +228,122 @@ func parseVersionsExclude(vals []string) (ledger.AccountVersionsExclude, error) 
 func (v2 *Handlers) accountVersionsResponse(ctx echo.Context, addr basics.Address, round basics.Round, page ledger.VersionPage) error {
 	out := make([]model.AccountVersion, 0, len(page.Versions))
 	for _, v := range page.Versions {
-		mv := model.AccountVersion{Round: v.Round, Timestamp: v.Timestamp}
-		if v.Account != nil {
-			base := model.AccountBaseVersion{Deleted: v.Account.Deleted}
-			if v.Account.Data != nil {
-				proto := config.Consensus[v.Proto]
-				acct, err := baseAccount(addr, *v.Account.Data, v.Round, &proto, v.Account.WithoutRewards)
-				if err != nil {
-					return internalError(ctx, err, errInternalFailure, v2.Log)
-				}
-				base.Account = &acct
-			}
-			mv.Base = &base
-		}
-		if len(v.Holdings) > 0 {
-			hs := make([]model.AssetHoldingVersion, len(v.Holdings))
-			for i, h := range v.Holdings {
-				hs[i] = model.AssetHoldingVersion{AssetId: h.Asset, Deleted: h.Deleted}
-				if h.Holding != nil {
-					mh := AssetHolding(*h.Holding, h.Asset)
-					hs[i].AssetHolding = &mh
-				}
-			}
-			mv.Assets = &hs
-		}
-		if len(v.LocalStates) > 0 {
-			ls := make([]model.ApplicationLocalStateVersion, len(v.LocalStates))
-			for i, s := range v.LocalStates {
-				ls[i] = model.ApplicationLocalStateVersion{AppId: s.App, Deleted: s.Deleted}
-				if s.State != nil {
-					ms := AppLocalState(*s.State, s.App)
-					ls[i].AppLocalState = &ms
-				}
-			}
-			mv.AppsLocalState = &ls
-		}
-		if len(v.Assets) > 0 {
-			as := make([]model.CreatedAssetVersion, len(v.Assets))
-			for i, a := range v.Assets {
-				as[i] = model.CreatedAssetVersion{AssetId: a.Asset, Deleted: a.Deleted}
-				if a.Params != nil {
-					ma := AssetParamsToAsset(a.Creator.String(), a.Asset, a.Params)
-					as[i].Asset = &ma
-				}
-			}
-			mv.CreatedAssets = &as
-		}
-		if len(v.Apps) > 0 {
-			as := make([]model.CreatedApplicationVersion, len(v.Apps))
-			for i, a := range v.Apps {
-				as[i] = model.CreatedApplicationVersion{AppId: a.App, Deleted: a.Deleted}
-				if a.Params != nil {
-					ma := AppParamsToApplication(a.Creator.String(), a.App, a.Params)
-					as[i].Application = &ma
-				}
-			}
-			mv.CreatedApps = &as
+		mv, err := AccountVersionToModel(addr, v)
+		if err != nil {
+			return internalError(ctx, err, errInternalFailure, v2.Log)
 		}
 		out = append(out, mv)
 	}
 	return ctx.JSON(http.StatusOK, model.AccountVersionsResponse{Round: round, NextToken: nextToken(page), Versions: out})
+}
+
+// AccountVersionToModel is the REST form of a version of an account's
+// objects, from the ledger's AccountVersions, AccountAssetVersions or
+// AccountAppVersions.
+func AccountVersionToModel(addr basics.Address, v ledger.Version) (model.AccountVersion, error) {
+	mv := model.AccountVersion{Round: v.Round, Timestamp: v.Timestamp}
+	if v.Account != nil {
+		base := model.AccountBaseVersion{Deleted: v.Account.Deleted}
+		if v.Account.Data != nil {
+			proto := config.Consensus[v.Proto]
+			acct, err := BaseAccount(addr, *v.Account.Data, v.Round, &proto, v.Account.WithoutRewards)
+			if err != nil {
+				return mv, err
+			}
+			base.Account = &acct
+		}
+		mv.Base = &base
+	}
+	if len(v.Holdings) > 0 {
+		hs := make([]model.AssetHoldingVersion, len(v.Holdings))
+		for i, h := range v.Holdings {
+			hs[i] = model.AssetHoldingVersion{AssetId: h.Asset, Deleted: h.Deleted}
+			if h.Holding != nil {
+				mh := AssetHolding(*h.Holding, h.Asset)
+				hs[i].AssetHolding = &mh
+			}
+		}
+		mv.Assets = &hs
+	}
+	if len(v.LocalStates) > 0 {
+		ls := make([]model.ApplicationLocalStateVersion, len(v.LocalStates))
+		for i, s := range v.LocalStates {
+			ls[i] = model.ApplicationLocalStateVersion{AppId: s.App, Deleted: s.Deleted}
+			if s.State != nil {
+				ms := AppLocalState(*s.State, s.App)
+				ls[i].AppLocalState = &ms
+			}
+		}
+		mv.AppsLocalState = &ls
+	}
+	if len(v.Assets) > 0 {
+		as := make([]model.CreatedAssetVersion, len(v.Assets))
+		for i, a := range v.Assets {
+			as[i] = model.CreatedAssetVersion{AssetId: a.Asset, Deleted: a.Deleted}
+			if a.Params != nil {
+				ma := AssetParamsToAsset(a.Creator.String(), a.Asset, a.Params)
+				as[i].Asset = &ma
+			}
+		}
+		mv.CreatedAssets = &as
+	}
+	if len(v.Apps) > 0 {
+		as := make([]model.CreatedApplicationVersion, len(v.Apps))
+		for i, a := range v.Apps {
+			as[i] = model.CreatedApplicationVersion{AppId: a.App, Deleted: a.Deleted}
+			if a.Params != nil {
+				ma := AppParamsToApplication(a.Creator.String(), a.App, a.Params)
+				as[i].Application = &ma
+			}
+		}
+		mv.CreatedApps = &as
+	}
+	return mv, nil
+}
+
+// AssetVersionToModel is the REST form of a version from the ledger's
+// AssetVersions.
+func AssetVersionToModel(v ledger.Version) (model.AssetVersion, error) {
+	mv := model.AssetVersion{Round: v.Round, Timestamp: v.Timestamp}
+	if len(v.Assets) != 1 {
+		return mv, fmt.Errorf("asset version at round %d has %d entries", v.Round, len(v.Assets))
+	}
+	a := v.Assets[0]
+	mv.Deleted = a.Deleted
+	if a.Params != nil {
+		ma := AssetParamsToAsset(a.Creator.String(), a.Asset, a.Params)
+		mv.Asset = &ma
+	}
+	return mv, nil
+}
+
+// ApplicationVersionToModel is the REST form of a version from the ledger's
+// AppVersions.
+func ApplicationVersionToModel(v ledger.Version) (model.ApplicationVersion, error) {
+	mv := model.ApplicationVersion{Round: v.Round, Timestamp: v.Timestamp}
+	if len(v.Apps) != 1 {
+		return mv, fmt.Errorf("application version at round %d has %d entries", v.Round, len(v.Apps))
+	}
+	a := v.Apps[0]
+	mv.Deleted = a.Deleted
+	if a.Params != nil {
+		ma := AppParamsToApplication(a.Creator.String(), a.App, a.Params)
+		mv.Application = &ma
+	}
+	return mv, nil
+}
+
+// BoxVersionToModel is the REST form of a version from the ledger's
+// KvVersions, with the value if values is set.
+func BoxVersionToModel(v ledger.Version, values bool) (model.BoxVersion, error) {
+	if v.Box == nil {
+		return model.BoxVersion{}, fmt.Errorf("box version at round %d has no entry", v.Round)
+	}
+	mv := model.BoxVersion{Round: v.Round, Timestamp: v.Timestamp, Deleted: v.Box.Deleted}
+	if values && !v.Box.Deleted {
+		mv.Value = &v.Box.Value
+	}
+	return mv, nil
 }
 
 // AssetVersions lists the versions of an asset's params.
@@ -303,15 +359,9 @@ func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, p
 	}
 	out := make([]model.AssetVersion, 0, len(page.Versions))
 	for _, v := range page.Versions {
-		mv := model.AssetVersion{Round: v.Round, Timestamp: v.Timestamp}
-		if len(v.Assets) != 1 {
-			return internalError(ctx, fmt.Errorf("asset %d version at round %d has %d entries", assetID, v.Round, len(v.Assets)), errInternalFailure, v2.Log)
-		}
-		a := v.Assets[0]
-		mv.Deleted = a.Deleted
-		if a.Params != nil {
-			ma := AssetParamsToAsset(a.Creator.String(), a.Asset, a.Params)
-			mv.Asset = &ma
+		mv, err := AssetVersionToModel(v)
+		if err != nil {
+			return internalError(ctx, fmt.Errorf("asset %d: %w", assetID, err), errInternalFailure, v2.Log)
 		}
 		out = append(out, mv)
 	}
@@ -331,15 +381,9 @@ func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.A
 	}
 	out := make([]model.ApplicationVersion, 0, len(page.Versions))
 	for _, v := range page.Versions {
-		mv := model.ApplicationVersion{Round: v.Round, Timestamp: v.Timestamp}
-		if len(v.Apps) != 1 {
-			return internalError(ctx, fmt.Errorf("application %d version at round %d has %d entries", applicationID, v.Round, len(v.Apps)), errInternalFailure, v2.Log)
-		}
-		a := v.Apps[0]
-		mv.Deleted = a.Deleted
-		if a.Params != nil {
-			ma := AppParamsToApplication(a.Creator.String(), a.App, a.Params)
-			mv.Application = &ma
+		mv, err := ApplicationVersionToModel(v)
+		if err != nil {
+			return internalError(ctx, fmt.Errorf("application %d: %w", applicationID, err), errInternalFailure, v2.Log)
 		}
 		out = append(out, mv)
 	}
@@ -367,12 +411,9 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 	}
 	out := make([]model.BoxVersion, 0, len(page.Versions))
 	for _, v := range page.Versions {
-		if v.Box == nil {
-			return internalError(ctx, fmt.Errorf("box version at round %d has no entry", v.Round), errInternalFailure, v2.Log)
-		}
-		mv := model.BoxVersion{Round: v.Round, Timestamp: v.Timestamp, Deleted: v.Box.Deleted}
-		if r.Values && !v.Box.Deleted {
-			mv.Value = &v.Box.Value
+		mv, err := BoxVersionToModel(v, r.Values)
+		if err != nil {
+			return internalError(ctx, err, errInternalFailure, v2.Log)
 		}
 		out = append(out, mv)
 	}

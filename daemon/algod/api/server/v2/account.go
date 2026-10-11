@@ -19,6 +19,7 @@ package v2
 import (
 	"encoding/base64"
 	"errors"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -170,9 +171,10 @@ func convertTKVToGenerated(tkv *basics.TealKeyValue) *model.TealKeyValueStore {
 		return nil
 	}
 
+	// in the order of the raw keys
 	converted := make(model.TealKeyValueStore, 0, len(*tkv))
-	rawKeyBytes := make([]string, 0, len(*tkv))
-	for k, v := range *tkv {
+	for _, k := range slices.Sorted(maps.Keys(*tkv)) {
+		v := (*tkv)[k]
 		converted = append(converted, model.TealKeyValue{
 			Key: base64.StdEncoding.EncodeToString([]byte(k)),
 			Value: model.TealValue{
@@ -181,11 +183,7 @@ func convertTKVToGenerated(tkv *basics.TealKeyValue) *model.TealKeyValueStore {
 				Uint:  v.Uint,
 			},
 		})
-		rawKeyBytes = append(rawKeyBytes, k)
 	}
-	sort.Slice(converted, func(i, j int) bool {
-		return rawKeyBytes[i] < rawKeyBytes[j]
-	})
 	return &converted
 }
 

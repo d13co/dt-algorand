@@ -610,7 +610,7 @@ func (l *Ledger) LookupAccount(round basics.Round, addr basics.Address) (data le
 
 	data, rnd, rewardsVersion, rewardsLevel, err := l.accts.lookupWithoutRewards(round, addr, true /* take lock */)
 	if h := l.historyFor(round, err); h != nil {
-		data, withoutRewards, err = l.histAccountWithRewards(h, round, addr)
+		data, withoutRewards, err = histAccountWithRewards(h, round, addr)
 		return data, round, withoutRewards, err
 	}
 	if err != nil {

@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"maps"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"testing"
@@ -532,4 +534,55 @@ func TestStoreRemoveNoops(t *testing.T) {
 	defer p.Close()
 	_, err = p.RemoveNoops(context.Background(), nil)
 	require.Error(t, err)
+}
+
+// TestStoreReadOnly checks that a read-only store sees every added round,
+// including those only in the WAL, writes nothing, and keeps the lock.
+func TestStoreReadOnly(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	dir := t.TempDir()
+
+	_, err := Open(filepath.Join(dir, "missing"), Options{ReadOnly: true})
+	require.Error(t, err)
+	_, err = os.Stat(filepath.Join(dir, "missing"))
+	require.True(t, os.IsNotExist(err), "a read-only open must not create a store")
+
+	path := filepath.Join(dir, "store")
+	s, err := Open(path, Options{CheckpointInterval: 3, Incremental: true})
+	require.NoError(t, err)
+	x := KvKey("x")
+	for rnd := uint64(0); rnd < 5; rnd++ {
+		hdr := []byte(fmt.Sprintf("hdr%d", rnd))
+		require.NoError(t, s.AddRound(rnd, []Change{{Key: x, Value: []byte(fmt.Sprintf("v%d", rnd))}}, hdr, nil))
+	}
+	// unflushed: the rounds are only in the WAL and the memtable
+	require.NoError(t, s.Close())
+
+	ro, err := Open(path, Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer ro.Close()
+	last, ok := ro.Last()
+	require.True(t, ok)
+	require.EqualValues(t, 4, last)
+	require.EqualValues(t, 3, ro.CheckpointInterval())
+	require.True(t, ro.Incremental())
+	for rnd := uint64(0); rnd < 5; rnd++ {
+		v, ok, err := ro.Get(x, rnd)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, fmt.Sprintf("v%d", rnd), string(v))
+		h, ok, err := ro.Header(rnd)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, fmt.Sprintf("hdr%d", rnd), string(h))
+	}
+
+	require.ErrorIs(t, ro.AddRound(5, nil, nil, nil), ErrReadOnly)
+	_, err = ro.RemoveNoops(context.Background(), nil)
+	require.ErrorIs(t, err, ErrReadOnly)
+	require.ErrorIs(t, ro.CompactCheckpoints(context.Background()), ErrReadOnly)
+	require.ErrorIs(t, ro.Sync(), ErrReadOnly)
+
+	_, err = Open(path, Options{ReadOnly: true})
+	require.Error(t, err, "the store is locked while open")
 }

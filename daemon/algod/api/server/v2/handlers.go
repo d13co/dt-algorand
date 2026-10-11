@@ -560,7 +560,7 @@ func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Addres
 		return internalError(ctx, err, fmt.Sprintf("could not retrieve consensus information for last round (%d)", lastRound), v2.Log)
 	}
 
-	account, err := baseAccount(addr, record, lastRound, &consensus, amountWithoutPendingRewards)
+	account, err := BaseAccount(addr, record, lastRound, &consensus, amountWithoutPendingRewards)
 	if err != nil {
 		return internalError(ctx, err, errInternalFailure, v2.Log)
 	}
@@ -568,8 +568,9 @@ func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Addres
 	return ctx.JSON(http.StatusOK, response)
 }
 
-// baseAccount is an account's base record (no assets or apps) as of round lastRound.
-func baseAccount(addr basics.Address, record ledgercore.AccountData, lastRound basics.Round, consensus *config.ConsensusParams, amountWithoutPendingRewards basics.MicroAlgos) (model.Account, error) {
+// BaseAccount is an account's base record (no assets or apps) as of round
+// lastRound, as GET /v2/accounts/{address}?exclude=all returns it.
+func BaseAccount(addr basics.Address, record ledgercore.AccountData, lastRound basics.Round, consensus *config.ConsensusParams, amountWithoutPendingRewards basics.MicroAlgos) (model.Account, error) {
 	var apiParticipation *model.AccountParticipation
 	if !record.VoteID.IsEmpty() {
 		apiParticipation = &model.AccountParticipation{

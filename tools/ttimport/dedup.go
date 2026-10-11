@@ -26,6 +26,7 @@ import (
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/bookkeeping"
+	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/timetravel"
 	"github.com/algorand/go-algorand/logging"
 )
@@ -47,8 +48,7 @@ func removeNoops(dataDir string) error {
 	if err != nil {
 		return err
 	}
-	// where the ledger opens it (ledger/timetravel.go)
-	path := filepath.Join(dirs.TimeTravelGenesisDir, config.LedgerFilenamePrefix) + ".timetravel"
+	path := ledger.TimeTravelPath(ledger.DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: dirs})
 	if _, err = os.Stat(path); err != nil {
 		return fmt.Errorf("no time travel store: %w", err)
 	}

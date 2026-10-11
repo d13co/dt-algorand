@@ -111,24 +111,3 @@ func TestParseLocalRef(t *testing.T) {
 	assert.Zero(t, lr.appID)
 	assert.Equal(t, "STUFF", lr.address)
 }
-
-func TestBytesToAppCallBytes(t *testing.T) {
-	partitiontest.PartitionTest(t)
-	t.Parallel()
-
-	testCases := []struct {
-		input    []byte
-		expected string
-	}{
-		{[]byte("unicode"), "str:unicode"},
-		{[]byte{1, 2, 3, 4}, "b64:AQIDBA=="},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.expected, func(t *testing.T) {
-			t.Parallel()
-			acb := encodeBytesAsAppCallBytes(tc.input)
-			require.Equal(t, tc.expected, acb)
-		})
-	}
-}

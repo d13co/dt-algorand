@@ -27,7 +27,6 @@ import (
 
 	"github.com/algorand/msgp/msgp"
 
-	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
@@ -142,6 +141,10 @@ func (l *Ledger) AccountVersions(addr basics.Address, ex AccountVersionsExclude,
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
+	return histAccountVersions(h, addr, ex, r)
+}
+
+func histAccountVersions(h *histView, addr basics.Address, ex AccountVersionsExclude, r VersionRange) (VersionPage, error) {
 	srcs := [][]byte{timetravel.AccountKey(addr)}
 	add := func(obj []byte) bool {
 		srcs = append(srcs, obj)
@@ -181,22 +184,34 @@ func (l *Ledger) AccountVersions(addr basics.Address, ex AccountVersionsExclude,
 // AccountAssetVersions lists the versions of an account's holding of an
 // asset and, if the account created it, of the asset's params.
 func (l *Ledger) AccountAssetVersions(addr basics.Address, aidx basics.AssetIndex, r VersionRange) (VersionPage, error) {
-	return l.accountResourceVersions(addr, basics.CreatableIndex(aidx), basics.AssetCreatable,
-		timetravel.HoldingKey(addr, aidx), timetravel.AssetParamsKey(aidx), r)
+	h := l.historyNow(r.Max)
+	if h == nil {
+		return VersionPage{}, errHistoryUnavailable
+	}
+	return histAccountAssetVersions(h, addr, aidx, r)
 }
 
 // AccountAppVersions lists the versions of an account's local state of an
 // app and, if the account created it, of the app's params.
 func (l *Ledger) AccountAppVersions(addr basics.Address, aidx basics.AppIndex, r VersionRange) (VersionPage, error) {
-	return l.accountResourceVersions(addr, basics.CreatableIndex(aidx), basics.AppCreatable,
-		timetravel.LocalKey(addr, aidx), timetravel.AppParamsKey(aidx), r)
-}
-
-func (l *Ledger) accountResourceVersions(addr basics.Address, cidx basics.CreatableIndex, ctype basics.CreatableType, resKey, paramsKey []byte, r VersionRange) (VersionPage, error) {
 	h := l.historyNow(r.Max)
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
+	return histAccountAppVersions(h, addr, aidx, r)
+}
+
+func histAccountAssetVersions(h *histView, addr basics.Address, aidx basics.AssetIndex, r VersionRange) (VersionPage, error) {
+	return histAccountResourceVersions(h, addr, basics.CreatableIndex(aidx), basics.AssetCreatable,
+		timetravel.HoldingKey(addr, aidx), timetravel.AssetParamsKey(aidx), r)
+}
+
+func histAccountAppVersions(h *histView, addr basics.Address, aidx basics.AppIndex, r VersionRange) (VersionPage, error) {
+	return histAccountResourceVersions(h, addr, basics.CreatableIndex(aidx), basics.AppCreatable,
+		timetravel.LocalKey(addr, aidx), timetravel.AppParamsKey(aidx), r)
+}
+
+func histAccountResourceVersions(h *histView, addr basics.Address, cidx basics.CreatableIndex, ctype basics.CreatableType, resKey, paramsKey []byte, r VersionRange) (VersionPage, error) {
 	srcs := [][]byte{resKey}
 	// creators never change: the params are the account's if it ever created the creatable
 	created := false
@@ -325,9 +340,13 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 				if err = protocol.Decode(val, &ba); err != nil {
 					return Version{}, 0, err
 				}
+				proto, err := histProto(hdr)
+				if err != nil {
+					return Version{}, 0, err
+				}
 				ad := ba.GetLedgerCoreAccountData()
 				av.WithoutRewards = ad.MicroAlgos
-				ad = ad.WithUpdatedRewards(config.Consensus[hdr.CurrentProtocol].RewardUnit, hdr.RewardsLevel)
+				ad = ad.WithUpdatedRewards(proto.RewardUnit, hdr.RewardsLevel)
 				av.Data = &ad
 			}
 			v.Account = av
