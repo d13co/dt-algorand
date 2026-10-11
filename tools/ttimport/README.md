@@ -96,7 +96,7 @@ removed 50291820 records in 22s; compacting
 compacted in 59s: 3.21 GiB -> 2.94 GiB
 ```
 
-Reads and `/versions` answer the same afterwards. The one difference: apps and assets created and deleted within a single round no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it.
+Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it.
 
 ## Flags
 

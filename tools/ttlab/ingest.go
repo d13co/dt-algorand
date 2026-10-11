@@ -65,14 +65,20 @@ func ingest(args []string) error {
 	nq := fs.Int("q", 20000, "read queries per class")
 	cacheMB := fs.Int64("cache", 256, "block cache MB")
 	keep := fs.Bool("keep", false, "keep the store")
+	dedup := fs.Bool("dedup", false, "skip no-op writes, as algod does")
 	fs.Parse(args)
 
 	cp, err := compressionByName(*comp)
 	if err != nil {
 		return err
 	}
+	// store every change unless -dedup: the measurements in ledger/timetravel/README.md include the no-op writes
+	dedupEntries := -1
+	if *dedup {
+		dedupEntries = 0
+	}
 	os.RemoveAll(*dbPath)
-	s, err := timetravel.Open(*dbPath, timetravel.Options{CheckpointInterval: *n, Incremental: *inc, Compression: cp, BlockSize: *block, CacheSize: *cacheMB << 20})
+	s, err := timetravel.Open(*dbPath, timetravel.Options{CheckpointInterval: *n, Incremental: *inc, Compression: cp, BlockSize: *block, CacheSize: *cacheMB << 20, DedupEntries: dedupEntries})
 	if err != nil {
 		return err
 	}

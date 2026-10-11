@@ -77,6 +77,7 @@ Adds rounds `-from` to `-to` to a new store one at a time, as a syncing node doe
 | `-q` | 20000 | reads per class |
 | `-cache` | 256 | block cache, MB |
 | `-keep` | false | keep the store, e.g. for `engines` |
+| `-dedup` | false | skip [no-op writes](../../ledger/timetravel/README.md#no-op-writes) as algod does. Off, every change is stored, as in the time travel README's measurements. |
 
 The output's main fields:
 
