@@ -15,7 +15,7 @@ A time travel node must be built from genesis, since the history comes from ever
 - **An archival node's block database for the same network**, holding every round from genesis: `<archival data dir>/<genesis id>/ledger.block.sqlite`, or under its `BlockDBDir` or `ColdDataDir`.
   - The archival node can keep running. Blocks it writes during the import are left for a rerun, which replays only the new rounds. This was tested with a writer appending blocks to the archive the way algod's block queue does.
 - **Disk for the new data directory:**
-  - the history: ~65 GB on mainnet (57–73, see the [estimate](../../ledger/timetravel/README.md#mainnet-estimates)), 3.4 GB for fnet's 25.3 M rounds;
+  - the history: ~65 GB on mainnet (57–73, see the [estimate](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
   - the account DB of a non-archival node;
   - about 1,000 blocks.
   
@@ -77,12 +77,34 @@ A time travel node must be built from genesis, since the history comes from ever
 
    algod catches up the rounds after the archive's last one from the network, verifying certificates as usual. The node no longer needs the archive.
 
+## Removing no-op records
+
+Stores written before the ledger skipped [no-op writes](../../ledger/timetravel/README.md#no-op-writes) hold a record for the totals and the rewards pool in nearly every round. With the node stopped, remove them:
+
+```sh
+goal node stop -d ~/tt
+ttimport -dedup -d ~/tt
+goal node start -d ~/tt
+```
+
+On fnet's 25.3 M rounds:
+
+```
+removing no-op records from /home/me/tt/fnet-v1/ledger.timetravel (rounds 0..25314401, 3.21 GiB)
+scanned 91824136 records, removed 50291820
+removed 50291820 records in 22s; compacting
+compacted in 59s: 3.21 GiB -> 2.94 GiB
+```
+
+Reads and `/versions` answer the same afterwards. The one difference: apps and assets created and deleted within a single round no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it.
+
 ## Flags
 
 | flag | |
 |---|---|
 | `-blocks` | the archive's block database; the file must be named `ledger.block.sqlite` |
 | `-d` | the data directory to build: `genesis.json`, and `config.json` with `EnableTimeTravel` and without `Archival` |
+| `-dedup` | instead of importing, remove the no-op records from the time travel store of `-d` (no `-blocks`) |
 | `-v` | also print the ledger's info log |
 | `-cpuprofile <file>` | CPU profile of the run, kept on Ctrl-C |
 | `-memprofile <file>` | heap profile, rewritten whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps) and on Ctrl-C, so that one survives an OOM kill |

@@ -12,7 +12,7 @@ This is a non-compliant fork feature: it changes no consensus rule, but the node
 
 - The node must sync from genesis, over the network or from an archive with `ttimport` (below): the history is built from every block's state delta. Fast catchup (`goal node catchup`) is refused, and a ledger whose tracker DB is past genesis with an empty history fails to open. So does one whose tracker DB is ahead of its block DB, which a stock node resets, resyncing from genesis; delete the tracker DB to do that on purpose.
 - The store (Pebble) lives in `<dir>/<genesis id>/ledger.timetravel/`, where `<dir>` is `TimeTravelDBDir`, else `BlockDBDir`, else `ColdDataDir`, else the data directory. Queries at past rounds read it at random, so point `TimeTravelDBDir` at a fast disk to keep their latency down. To move an existing store, stop the node, move the `ledger.timetravel` directory, and set `TimeTravelDBDir`. `goal node clone` copies it when it lives in the data directory.
-- `tools/ttimport` builds a non-archival node's ledger and history from an existing archival node's block database instead of the network: `ttimport -blocks <archival data dir>/<genesis id>/ledger.block.sqlite -d <new data dir>`. The ledger replays the archive in place like algod after a restart (no certificate or signature checks, nothing written to the archive), then the data directory gets the last ~1,000 blocks, and algod started on it continues from the network. On fnet's first 40k rounds it replayed at ~8,700 rounds/s (~35× a network sync) and produced a byte-identical history. See [tools/ttimport/README.md](../../tools/ttimport/README.md) for the how-to.
+- `tools/ttimport` builds a non-archival node's ledger and history from an existing archival node's block database instead of the network: `ttimport -blocks <archival data dir>/<genesis id>/ledger.block.sqlite -d <new data dir>`. The ledger replays the archive in place like algod after a restart (no certificate or signature checks, nothing written to the archive), then the data directory gets the last ~1,000 blocks, and algod started on it continues from the network. On fnet's first 40k rounds it replayed at ~8,700 rounds/s (~35× a network sync) and produced a byte-identical history (identical reads in any case: after a restart, the raw records can differ by the [no-op writes](#no-op-writes) a fresh cache lets through). See [tools/ttimport/README.md](../../tools/ttimport/README.md) for the how-to.
 - `TimeTravelCheckpointInterval` (N) is fixed when the store is created. 1 (the default) is the recommended setting; see [Patches and N](#patches-and-n).
 
 ### REST
@@ -75,9 +75,16 @@ Two record kinds, governed by `TimeTravelCheckpointInterval` (N):
 - reading X@R: the latest `c` record ≤ c(R), however old, plus the latest `p` record in (c(R), R], applied in memory. Two seeks.
 - a per-round index (`r`) of changed keys lets a checkpoint round be materialized after a restart; it is deleted once the checkpoint is written.
 
-With N = 1 (the default) every version is a checkpoint record: no patches, no index, one seek per read, and **writes are blind appends** (patching needs a read of the base for every change).
+With N = 1 (the default) every version is a checkpoint record: no patches, no index, one seek per read, and **writes are blind appends** (patching needs a read of the base for every change; skipping [no-op writes](#no-op-writes) reads only memory).
 
 Since a read is one seek whatever the age of the version, the store never re-writes the whole state: there are no periodic snapshots of unchanged objects.
+
+### No-op writes
+
+Deltas rewrite objects that did not change: every block writes the totals and the rewards pool account, changed or not, and apps rewrite identical global state and boxes. In fnet's first 25.3 M rounds these were 55% of the records (50.2 M of 91.8 M); on mainnet the pool alone writes one in every round that distributes no rewards. The size measurements and estimates below include them.
+
+- `AddRound` skips a change that leaves its object in the state its latest record holds, when an in-memory cache of recently written objects knows that state: 2^18 objects (~30 MB), each by the SHA-256 of its value. Writes still read nothing from the store, and the cache costs about one more hash of the round's values. Objects the cache has forgotten are stored as before, as is the first rewrite of each object after a restart. The round's digest still covers every change.
+- `ttimport -dedup -d <data dir>` removes them from the store of a stopped node, including those written before the cache existed, and drops the tombstones of objects that never existed (created and deleted in one round). On fnet it removed 50.3 M records (3.21 → 2.94 GiB) in 1.5 minutes, and every read compared answered the same.
 
 ### Node integration
 

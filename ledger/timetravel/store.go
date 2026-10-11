@@ -35,14 +35,19 @@
 // checkpoint is materialized. 'H' round -> encoded block header.
 // 'E' round -> the round's expired online stake (uvarint), see ExpiredStake.
 //
-// N = 1 (every version stored in full, one seek per read, blind writes) is
-// the recommended setting: with zstd over large blocks, an object's adjacent
-// versions compress as well as patches would, at a fraction of the write
-// cost. See README.md for the evaluation on mainnet data.
+// N = 1 (every version stored in full, one seek per read, writes that read
+// nothing) is the recommended setting: with zstd over large blocks, an
+// object's adjacent versions compress as well as patches would, at a fraction
+// of the write cost. See README.md for the evaluation on mainnet data.
+//
+// A change that repeats the state of its object's latest record is not
+// stored when an in-memory cache of recently written objects knows that state
+// (see lastWritten); RemoveNoops removes the ones it missed.
 package timetravel
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -86,6 +91,10 @@ type Options struct {
 	Compression *sstable.CompressionProfile
 	// Logger receives engine messages; nil drops informational ones.
 	Logger pebble.Logger
+	// DedupEntries bounds the recently written objects whose changes
+	// AddRound skips when they repeat the stored state; 0 is the default
+	// (2^18, ~30 MB), negative stores every change.
+	DedupEntries int
 }
 
 // Change is the new value of one object in a round.
@@ -95,18 +104,24 @@ type Change struct {
 	Deleted bool
 }
 
-// Store is the history database. AddRound must be called by a single writer
-// with consecutive rounds; Get/Header/Scan may be called concurrently for any
-// round up to Last(), and fail with ErrClosed after Close.
+// Store is the history database. AddRound must be called with consecutive
+// rounds; Get/Header/Scan may be called concurrently for any round up to
+// Last(), and fail with ErrClosed after Close.
 type Store struct {
 	db          *pebble.DB
 	n           uint64
 	incremental bool
 	last        atomic.Int64 // -1 when empty
 
+	writeMu sync.Mutex   // serializes AddRound and RemoveNoops
+	dedup   *lastWritten // nil: store every change; guarded by writeMu
+
 	closeMu sync.RWMutex // held for reading by every operation
 	closed  bool
 }
+
+// commitBatch commits a round's batch; tests make it fail.
+var commitBatch = func(b *pebble.Batch) error { return b.Commit(pebble.NoSync) }
 
 // ErrClosed is returned by operations on a closed store.
 var ErrClosed = errors.New("timetravel: store closed")
@@ -162,7 +177,7 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental}
+	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, dedup: newLastWritten(o.DedupEntries)}
 	s.last.Store(-1)
 	v, closer, err := db.Get(keyMeta)
 	if errors.Is(err, pebble.ErrNotFound) {
@@ -231,12 +246,16 @@ func verKey(pfx byte, obj []byte, rnd uint64) []byte {
 // AddRound stores the changes of round rnd, its encoded header and, if not
 // nil, its expired online stake. Rounds at or below Last() are skipped, so
 // replaying after a crash is harmless. An empty store starts at any round;
-// objects not seen since are treated as absent before it.
+// objects not seen since are treated as absent before it. Changes that the
+// dedup cache knows repeat their object's stored state are not stored; the
+// round's digest covers all of them. AddRound does not modify changes.
 func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint64) error {
 	if err := s.acquire(); err != nil {
 		return err
 	}
 	defer s.closeMu.RUnlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	last, ok := s.Last()
 	if ok && rnd <= last {
 		return nil
@@ -244,16 +263,17 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	if ok && rnd != last+1 {
 		return fmt.Errorf("timetravel: round %d does not follow stored round %d", rnd, last)
 	}
+	write, states := s.dedup.filter(changes)
 	b := s.db.NewBatch()
 	defer b.Close()
 	c := rnd - rnd%s.n
 	if rnd == c {
-		if err := s.checkpoint(b, rnd, changes); err != nil {
+		if err := s.checkpoint(b, rnd, write); err != nil {
 			return err
 		}
 	} else {
 		var idx []byte
-		for _, ch := range changes {
+		for _, ch := range write {
 			rec, err := s.patchRecord(ch, rnd, c)
 			if err != nil {
 				return err
@@ -285,10 +305,13 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	if err := b.Set(keyMeta, meta, nil); err != nil {
 		return err
 	}
-	if err := b.Commit(pebble.NoSync); err != nil {
+	if err := commitBatch(b); err != nil {
 		return err
 	}
 	s.last.Store(int64(rnd))
+	// only now: a round that failed to commit is added again, and must not
+	// find its own changes in the cache
+	s.dedup.update(states)
 	return nil
 }
 
@@ -374,6 +397,115 @@ func (s *Store) checkpoint(b *pebble.Batch, rnd uint64, changes []Change) error 
 		return err
 	}
 	return b.DeleteRange(lo, hi, nil)
+}
+
+// removeNoopsBatchOps is the number of deletions RemoveNoops commits at once.
+var removeNoopsBatchOps = uint32(1 << 16)
+
+// RemoveNoops deletes the records of an N = 1 store that change nothing:
+// those that repeat the object's previous record (the no-op writes of stores
+// written before AddRound skipped them, and the ones its cache missed), and
+// tombstones before an object's first value (objects created and deleted in
+// one round). Every read answers as before, except that Objects no longer
+// lists objects that never had a value. CompactCheckpoints reclaims the
+// space. progress, if not nil, is called with the records scanned and removed
+// after each batch of deletions and at the end. Reads may run concurrently;
+// AddRound waits.
+func (s *Store) RemoveNoops(ctx context.Context, progress func(scanned, removed uint64)) (uint64, error) {
+	if err := s.acquire(); err != nil {
+		return 0, err
+	}
+	defer s.closeMu.RUnlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.n != 1 {
+		return 0, fmt.Errorf("timetravel: RemoveNoops needs a store with N = 1, not %d", s.n)
+	}
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte{pfxCheckpoint}, UpperBound: []byte{pfxCheckpoint + 1}})
+	if err != nil {
+		return 0, err
+	}
+	defer it.Close()
+	b := s.db.NewBatch()
+	defer func() { b.Close() }()
+	var scanned, removed uint64
+	// the current object, its latest kept record, and the run of records
+	// [first, last] that repeat it
+	var obj, prev, first, last []byte
+	deleteRun := func() error {
+		if first == nil {
+			return nil
+		}
+		var err error
+		if bytes.Equal(first, last) {
+			err = b.Delete(first, nil)
+		} else {
+			// the keys in between are the object's: object keys never prefix one another
+			err = b.DeleteRange(first, append(last, 0), nil)
+		}
+		first = nil
+		if err != nil || b.Count() < removeNoopsBatchOps {
+			return err
+		}
+		if err := b.Commit(pebble.NoSync); err != nil {
+			return err
+		}
+		b.Close()
+		b = s.db.NewBatch()
+		if progress != nil {
+			progress(scanned, removed)
+		}
+		return nil
+	}
+	for valid := it.First(); valid; valid = it.Next() {
+		if scanned%4096 == 0 && ctx.Err() != nil {
+			return removed, ctx.Err()
+		}
+		scanned++
+		k, v := it.Key(), it.Value()
+		if o := k[1 : len(k)-8]; !bytes.Equal(o, obj) {
+			if err := deleteRun(); err != nil {
+				return removed, err
+			}
+			obj = append(obj[:0], o...)
+			prev = append(prev[:0], recDeleted) // absent before its first record
+		}
+		if bytes.Equal(v, prev) {
+			if first == nil {
+				first = append([]byte(nil), k...)
+			}
+			last = append(last[:0], k...)
+			removed++
+			continue
+		}
+		if err := deleteRun(); err != nil {
+			return removed, err
+		}
+		prev = append(prev[:0], v...)
+	}
+	if err := it.Error(); err != nil {
+		return removed, err
+	}
+	if err := deleteRun(); err != nil {
+		return removed, err
+	}
+	if err := b.Commit(pebble.Sync); err != nil {
+		return removed, err
+	}
+	if progress != nil {
+		progress(scanned, removed)
+	}
+	return removed, nil
+}
+
+// CompactCheckpoints rewrites the checkpoint keyspace, dropping the records
+// that RemoveNoops deleted.
+func (s *Store) CompactCheckpoints(ctx context.Context) error {
+	if err := s.acquire(); err != nil {
+		return err
+	}
+	defer s.closeMu.RUnlock()
+	return s.db.Compact(ctx, []byte{pfxCheckpoint}, []byte{pfxCheckpoint + 1}, true)
 }
 
 // latest returns the newest record of obj in keyspace pfx with round in [lo, hi].

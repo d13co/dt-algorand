@@ -26,6 +26,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/avm-abi/apps"
@@ -838,4 +839,45 @@ func TestTimeTravelCheckDupPast(t *testing.T) {
 	// CheckDup, the transaction pool's, still sees every round it holds
 	require.ErrorAs(t, l.CheckDup(proto, leasedRnd, leased.FirstValid, leased.LastValid, other, lease), &leaseErr)
 	require.ErrorAs(t, l.CheckDup(proto, shortRnd+1, short.FirstValid, short.LastValid, shortID, ledgercore.Txlease{}), &missing)
+}
+
+// TestTimeTravelSkipsNoops checks that the history stores no record that
+// repeats the one before: blocks write the totals and the rewards pool every
+// round, changed or not.
+func TestTimeTravelSkipsNoops(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 10)
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	l, err := OpenLedger(logging.TestingLog(t), filepath.Join(t.TempDir(), "ledger"), false, genesisInitState, cfg)
+	require.NoError(t, err)
+	defer l.Close()
+	const rounds = 20
+	for range rounds {
+		addEmptyValidatedBlock(t, l, genesisInitState.Accounts)
+	}
+	commitRoundLookback(0, l)
+	require.Equal(t, basics.Round(rounds), l.LatestTrackerCommitted())
+
+	hdr, err := l.BlockHdr(0)
+	require.NoError(t, err)
+	s := l.history.store
+	for _, obj := range [][]byte{timetravel.TotalsKey, timetravel.AccountKey(hdr.RewardsPool)} {
+		var records, versions int
+		lo := append([]byte{'c'}, obj...)
+		it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: append(lo, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)})
+		require.NoError(t, err)
+		for it.First(); it.Valid(); it.Next() {
+			records++
+		}
+		require.NoError(t, it.Close())
+		require.NoError(t, s.Versions(obj, 0, rounds, false, func(uint64, []byte, bool) bool {
+			versions++
+			return true
+		}))
+		require.Equal(t, versions, records, "%x", obj)
+		require.Less(t, records, rounds, "%x changes in some rounds only", obj)
+	}
 }

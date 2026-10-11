@@ -6,7 +6,7 @@ Status: implemented on branch `timetravel-versions` (see [Implementation](#imple
 
 ## What a version is
 
-The store writes one record per object per round in which the object appears in the round's state delta. A **version** of an object is a round at which its stored value changed:
+The store writes one record per object per round in which the object appears in the round's state delta, except for the [no-op writes](README.md#no-op-writes) it skips. A **version** of an object is a round at which its stored value changed:
 
 - A write of identical bytes is not a version (deltas can carry no-op writes; with N > 1, checkpoint records also repeat values). The scan compares each record with its predecessor, which it already holds.
 - A deletion is a version with `deleted: true`: account closed, holding opted out, local state cleared, asset/app destroyed, box deleted. Creation is the first version after a tombstone or no record.

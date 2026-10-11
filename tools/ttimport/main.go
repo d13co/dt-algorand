@@ -62,8 +62,9 @@ func main() {
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the run to this file")
 	memprofile := flag.String("memprofile", "", "write a heap profile to this file whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps), and on Ctrl-C")
 	verbose := flag.Bool("v", false, "also log the ledger's info messages")
+	dedup := flag.Bool("dedup", false, "instead of importing, remove the records that change nothing from the time travel store of -d, whose algod must be stopped")
 	flag.Parse()
-	if *blocks == "" || *dataDir == "" {
+	if *dataDir == "" || (*blocks == "") != *dedup {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -84,7 +85,8 @@ func main() {
 		}
 	}
 	// The replay can't stop early, so Ctrl-C kills it (keeping the profile); a rerun
-	// resumes from the trackers' last commit. A broken output pipe does too: piped to
+	// resumes from the trackers' last commit (a -dedup rerun starts over, skipping
+	// what was removed). A broken output pipe does too: piped to
 	// grep, Ctrl-C ends grep first, and the SIGPIPE of the next write to stdout or
 	// stderr would otherwise kill the process before the profile is written.
 	sig := make(chan os.Signal, 1)
@@ -99,7 +101,12 @@ func main() {
 		}
 		os.Exit(1)
 	}()
-	err := run(*blocks, *dataDir, *memprofile)
+	var err error
+	if *dedup {
+		err = removeNoops(*dataDir)
+	} else {
+		err = run(*blocks, *dataDir, *memprofile)
+	}
 	pprof.StopCPUProfile()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ttimport:", err)
