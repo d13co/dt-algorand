@@ -85,6 +85,9 @@ tools/ttlab/ttlab
 # python virtual environment
 .venv
 
+# python bytecode cache
+__pycache__/
+
 # ignore local claude config changes, but share commands/skills/settings.json
 CLAUDE.local.md
 .claude/settings.local.json*
