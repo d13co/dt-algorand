@@ -2124,6 +2124,37 @@ func BenchmarkLedgerStartup(b *testing.B) {
 	})
 }
 
+// TestLedgerReplayPrunesTxTail checks that a replay longer than MaxTxnLife,
+// as after the account DB is lost or under tools/ttimport, keeps txTail's
+// per-round leases to MaxTxnLife rounds instead of one per replayed round.
+func TestLedgerReplayPrunesTxTail(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, _ := ledgertesting.GenerateInitState(t, protocol.ConsensusCurrentVersion, 10)
+	cfg := config.GetDefaultLocal()
+	cfg.Archival = true // keep every block for the replay
+	prefix := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.NoError(t, err)
+	maxTxnLife := int(config.Consensus[protocol.ConsensusCurrentVersion].MaxTxnLife)
+	for range maxTxnLife + 500 {
+		addEmptyValidatedBlock(t, l, genesisInitState.Accounts)
+	}
+	l.WaitForCommit(l.Latest())
+	l.Close()
+
+	// without its account DB, the ledger replays every block
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		require.NoError(t, os.RemoveAll(prefix+".tracker.sqlite"+suffix))
+	}
+	l, err = OpenLedger(logging.TestingLog(t), prefix, false, genesisInitState, cfg)
+	require.NoError(t, err)
+	defer l.Close()
+	require.Equal(t, basics.Round(maxTxnLife+500), l.Latest())
+	require.LessOrEqual(t, len(l.txTail.recent), maxTxnLife+1)
+}
+
 // TestLedgerReloadShrinkDeltas checks the ledger has correct account state
 // after reloading with new configuration with shorter in-memory deltas for trackers
 func TestLedgerReloadShrinkDeltas(t *testing.T) {

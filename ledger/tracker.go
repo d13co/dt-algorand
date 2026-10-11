@@ -821,8 +821,10 @@ func (tr *trackerRegistry) replay(l ledgerForTracker) (err error) {
 
 			var roundsBehind basics.Round
 
-			// flush the account data
-			tr.scheduleCommit(blk.Round(), basics.Round(maxAcctLookback))
+			// flush the account data. committedUpTo, as Ledger.notifyCommit calls it, also lets
+			// trackers drop what they keep per round (txTail's leases and txids), which would
+			// otherwise grow with every replayed round.
+			tr.committedUpTo(blk.Round())
 			// wait for the writing to complete.
 			tr.waitAccountsWriting()
 
