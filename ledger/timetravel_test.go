@@ -264,96 +264,204 @@ func TestTimeTravelLookups(t *testing.T) {
 
 // TestTimeTravelOnlineCirculation checks the expired stake the history records
 // for every round against onlineAccounts while the round is in its window,
-// then the online stake served from the history once it left the window.
+// then the online stake served from the history once it left the window,
+// directly and to the online_stake opcode of re-evaluated blocks. Before
+// ExcludeExpiredCirculation nothing is recorded and the online stake is the
+// online money. That case runs on v33: with the state proofs of v34-v37, the
+// two ledgers of a DoubleLedger sometimes disagree on StateProofOnlineTotalWeight
+// when the validator is read between blocks, history or not.
 func TestTimeTravelOnlineCirculation(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	genBalances, addrs, _ := ledgertesting.NewTestGenesis()
-	// a genesis account whose keys expire during the test: the online set
-	// loaded at genesis counts
-	gen := genBalances.Balances[addrs[0]]
-	gen.Status, gen.VoteLastValid = basics.Online, 400
-	gen.VoteID, gen.SelectionID, gen.StateProofID = crypto.OneTimeSignatureVerifier{1}, crypto.VRFVerifier{1}, merklesignature.Commitment{1}
-	genBalances.Balances[addrs[0]] = gen
+	for _, tc := range []struct {
+		name string
+		cv   protocol.ConsensusVersion
+	}{{"v33", protocol.ConsensusV33}, {"future", protocol.ConsensusFuture}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proto := config.Consensus[tc.cv]
+			exclude := proto.ExcludeExpiredCirculation
+			require.Equal(t, tc.cv == protocol.ConsensusFuture, exclude)
 
-	cfg := config.GetDefaultLocal()
-	cfg.EnableTimeTravel = true
-	cfg.MaxAcctLookback = 4
-	dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, simpleLedgerNotArchival())
-	defer dl.Close()
-	l := dl.validator
-	lookback := agreement.BalanceLookback(config.Consensus[protocol.ConsensusFuture])
+			genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+			// a genesis account whose keys expire during the test: the online set
+			// loaded at genesis counts
+			gen := genBalances.Balances[addrs[0]]
+			gen.Status, gen.VoteLastValid = basics.Online, 400
+			gen.VoteID, gen.SelectionID, gen.StateProofID = crypto.OneTimeSignatureVerifier{1}, crypto.VRFVerifier{1}, merklesignature.Commitment{1}
+			genBalances.Balances[addrs[0]] = gen
 
-	accts := make([]basics.Address, 6)
-	dl.beginBlock()
-	for i := range accts {
-		accts[i] = ledgertesting.RandomAddress()
-		dl.txn(&txntest.Txn{Type: "pay", Sender: addrs[1], Receiver: accts[i], Amount: 1000_000_000})
-	}
-	dl.endBlock()
+			cfg := config.GetDefaultLocal()
+			cfg.EnableTimeTravel = true
+			cfg.MaxAcctLookback = 4
+			dl := NewDoubleLedger(t, genBalances, tc.cv, cfg) // archival: old blocks are re-evaluated
+			defer dl.Close()
+			l := dl.validator
+			lookback := agreement.BalanceLookback(proto)
 
-	want := map[basics.Round]basics.MicroAlgos{}
-	expiring := 0
-	for i := 0; i < 900; i++ {
-		r := l.Latest() + 1
-		dl.beginBlock()
-		a := accts[i%len(accts)]
-		dl.txn(&txntest.Txn{Type: "pay", Sender: addrs[1], Receiver: a, Amount: uint64(1000 + i)})
-		switch i % 40 {
-		case 0: // online with keys that expire 100 to 590 rounds from now
-			a = accts[(i/40)%len(accts)]
-			dl.txn(&txntest.Txn{Type: "keyreg", Sender: a, VoteFirst: r, VoteLast: r + 100 + basics.Round(i*7%500),
-				VotePK: crypto.OneTimeSignatureVerifier(a), SelectionPK: crypto.VRFVerifier(a), StateProofPK: merklesignature.Commitment{1}, VoteKeyDilution: 1024})
-		case 20:
-			dl.txn(&txntest.Txn{Type: "keyreg", Sender: accts[(i/40+3)%len(accts)]})
-		}
-		dl.endBlock()
+			// stores online_stake (AVM 11) every round
+			var app basics.AppIndex
+			if proto.LogicSigVersion >= 11 {
+				app = dl.createApp(addrs[2], main(`byte "s"; online_stake; app_global_put`), basics.StateSchema{NumUint: 1})
+			}
+			accts := make([]basics.Address, 6)
+			dl.beginBlock()
+			for i := range accts {
+				accts[i] = ledgertesting.RandomAddress()
+				dl.txn(&txntest.Txn{Type: "pay", Sender: addrs[1], Receiver: accts[i], Amount: 1000_000_000})
+			}
+			dl.endBlock()
 
-		expired, err := l.acctsOnline.expiredOnlineCirculation(r, r+lookback)
-		require.NoError(t, err)
-		got, ok, err := l.historyAt(r).ExpiredStake(uint64(r))
-		require.NoError(t, err)
-		require.True(t, ok, "round %d", r)
-		require.Equal(t, expired.Raw, got, "round %d", r)
-		if !expired.IsZero() {
-			expiring++
-		}
-		want[r], err = l.acctsOnline.onlineCirculation(r, r+lookback)
-		require.NoError(t, err)
+			want := map[basics.Round]basics.MicroAlgos{}
+			deltas := map[basics.Round]ledgercore.StateDelta{}
+			expiring := map[basics.Round]bool{}
+			for i := 0; i < 900; i++ {
+				r := l.Latest() + 1
+				dl.beginBlock()
+				a := accts[i%len(accts)]
+				dl.txn(&txntest.Txn{Type: "pay", Sender: addrs[1], Receiver: a, Amount: uint64(1000 + i)})
+				switch i % 40 {
+				case 0: // online with keys that expire 100 to 590 rounds from now
+					a = accts[(i/40)%len(accts)]
+					dl.txn(&txntest.Txn{Type: "keyreg", Sender: a, VoteFirst: r, VoteLast: r + 100 + basics.Round(i*7%500),
+						VotePK: crypto.OneTimeSignatureVerifier(a), SelectionPK: crypto.VRFVerifier(a), StateProofPK: merklesignature.Commitment{1}, VoteKeyDilution: 1024})
+				case 20:
+					dl.txn(&txntest.Txn{Type: "keyreg", Sender: accts[(i/40+3)%len(accts)]})
+				}
+				if app != 0 {
+					dl.txn(&txntest.Txn{Type: "appl", Sender: addrs[2], ApplicationID: app})
+				}
+				dl.endBlock()
 
-		if i%100 == 0 {
-			commitRoundLookback(4, dl.generator)
+				expired, err := l.acctsOnline.expiredOnlineCirculation(r, r+lookback)
+				require.NoError(t, err)
+				got, ok, err := l.historyAt(r).ExpiredStake(uint64(r))
+				require.NoError(t, err)
+				require.Equal(t, exclude, ok, "round %d", r)
+				if exclude {
+					require.Equal(t, expired.Raw, got, "round %d", r)
+				}
+				expiring[r] = !expired.IsZero()
+				want[r], err = l.acctsOnline.onlineCirculation(r, r+lookback)
+				require.NoError(t, err)
+				deltas[r], err = l.GetStateDeltaForRound(r)
+				require.NoError(t, err)
+
+				if i%100 == 0 {
+					commitRoundLookback(4, dl.generator)
+					commitRoundLookback(4, l)
+				}
+				if i == 450 {
+					dl.reloadLedgers() // the online set is loaded again, from the tracker DB
+				}
+			}
+			n := 0
+			for _, e := range expiring {
+				if e {
+					n++
+				}
+			}
+			require.Greater(t, n, 300, "the test must exercise expiring keys")
+
 			commitRoundLookback(4, l)
-		}
-		if i == 450 {
-			dl.reloadLedgers() // the online set is loaded again, from the tracker DB
-		}
-	}
-	require.Greater(t, expiring, 300, "the test must exercise expiring keys")
+			old := 0
+			for r, c := range want {
+				if _, _, err := l.acctsOnline.onlineTotals(r); !tooOld(err) {
+					continue
+				}
+				old++
+				got, err := l.OnlineCirculation(r, r+lookback)
+				require.NoError(t, err, "round %d", r)
+				require.Equal(t, c, got, "round %d", r)
+				totals, err := l.Totals(r)
+				require.NoError(t, err)
+				if !exclude {
+					require.Equal(t, totals.Online.Money, got, "round %d", r)
+					continue
+				}
 
-	commitRoundLookback(4, l)
-	old := 0
-	for r, c := range want {
-		if _, _, err := l.acctsOnline.onlineTotals(r); !tooOld(err) {
+				// agreement never pairs these rounds: the history cannot answer, but
+				// re-evaluating a delta falls back to the online money
+				_, err = l.OnlineCirculation(r, r)
+				require.ErrorIs(t, err, ErrOnlineStakeUnavailable)
+				up, err := pastLedger{l, r}.OnlineCirculation(r, r)
+				require.NoError(t, err)
+				require.Equal(t, totals.Online.Money, up)
+			}
+			require.Greater(t, old, 400)
+
+			// the online stake of balance round 0 (vote rounds up to 320) is the online money
+			totals, err := l.Totals(0)
+			require.NoError(t, err)
+			c, err := l.OnlineCirculation(0, lookback)
+			require.NoError(t, err)
+			require.Equal(t, totals.Online.Money, c)
+
+			// old blocks re-evaluate to the same deltas, with online_stake read from the history
+			exact := 0
+			for r, sd := range deltas {
+				if _, err := l.accts.lookupStateDelta(r); err == nil {
+					continue
+				}
+				got, err := l.GetStateDeltaForRound(r)
+				require.NoError(t, err, "round %d", r)
+				require.Equal(t, deltaJSON(t, sd), deltaJSON(t, got), "round %d", r)
+				if r > lookback && expiring[r-lookback] {
+					exact++
+				}
+			}
+			if app != 0 {
+				require.Greater(t, exact, 100, "online_stake must exclude expired stake in re-evaluated blocks")
+			}
+		})
+	}
+}
+
+// TestHistOnlineCirculation covers the history's online stake for each kind of
+// round, including one a store wrote before it recorded the expired stake.
+func TestHistOnlineCirculation(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	s, err := timetravel.Open(t.TempDir(), timetravel.Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	totals := ledgercore.AccountTotals{Online: ledgercore.AlgoCount{Money: basics.MicroAlgos{Raw: 1000}}}
+	expired := uint64(300)
+	for r, rd := range []struct {
+		cv      protocol.ConsensusVersion
+		expired *uint64
+	}{
+		{protocol.ConsensusFuture, nil},      // genesis
+		{protocol.ConsensusV37, nil},         // before ExcludeExpiredCirculation
+		{protocol.ConsensusFuture, nil},      // written before the history recorded expired stake
+		{protocol.ConsensusFuture, &expired}, // recorded
+	} {
+		hdr := bookkeeping.BlockHeader{Round: basics.Round(r), UpgradeState: bookkeeping.UpgradeState{CurrentProtocol: rd.cv}}
+		require.NoError(t, s.AddRound(uint64(r), []timetravel.Change{{Key: timetravel.TotalsKey, Value: protocol.Encode(&totals)}}, protocol.Encode(&hdr), rd.expired))
+	}
+	h := &histView{store: s, last: 3}
+	lookback := agreement.BalanceLookback(config.Consensus[protocol.ConsensusFuture])
+	for _, tc := range []struct {
+		rnd, voteRnd basics.Round
+		want         uint64
+		err          error
+	}{
+		{0, 7, 1000, nil},
+		{1, 1 + lookback, 1000, nil},
+		{2, 2 + lookback, 0, ErrOnlineStakeUnavailable},
+		{3, 3 + lookback, 700, nil},
+		{3, 3, 0, ErrOnlineStakeUnavailable}, // a pair agreement does not use
+	} {
+		c, err := histOnlineCirculation(h, tc.rnd, tc.voteRnd)
+		if tc.err != nil {
+			require.ErrorIs(t, err, tc.err, "%+v", tc)
 			continue
 		}
-		old++
-		got, err := l.OnlineCirculation(r, r+lookback)
-		require.NoError(t, err, "round %d", r)
-		require.Equal(t, c, got, "round %d", r)
-
-		// agreement never pairs these rounds: the history cannot answer, but
-		// re-evaluating a delta falls back to the online money
-		_, err = l.OnlineCirculation(r, r)
-		require.ErrorIs(t, err, ErrOnlineStakeUnavailable)
-		totals, err := l.Totals(r)
-		require.NoError(t, err)
-		up, err := pastLedger{l, r}.OnlineCirculation(r, r)
-		require.NoError(t, err)
-		require.Equal(t, totals.Online.Money, up)
+		require.NoError(t, err, "%+v", tc)
+		require.Equal(t, tc.want, c.Raw, "%+v", tc)
 	}
-	require.Greater(t, old, 400)
 }
 
 // TestTimeTravelOpenFailure checks that a store that cannot be opened fails

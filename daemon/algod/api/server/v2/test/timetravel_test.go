@@ -18,6 +18,7 @@ package test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,6 +30,7 @@ import (
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
 	"github.com/algorand/go-algorand/logging"
@@ -92,4 +94,44 @@ func TestAccountInformationAtRound(t *testing.T) {
 	cfg.EnableTimeTravel = false
 	code, _ = get(historyLedger{ml}, "?round=7")
 	require.Equal(t, http.StatusBadRequest, code, "time travel disabled")
+}
+
+// supplyLedger answers OnlineCirculation with stake, or err.
+type supplyLedger struct {
+	historyLedger
+	stake uint64
+	err   error
+}
+
+func (l supplyLedger) OnlineCirculation(basics.Round, basics.Round) (basics.MicroAlgos, error) {
+	return basics.MicroAlgos{Raw: l.stake}, l.err
+}
+
+// TestSupplyAtRound checks GetSupply at a past round: the online stake where
+// the history recorded it, 404 where it did not.
+func TestSupplyAtRound(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	ml := &mockLedger{latest: 10}
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	get := func(lgr v2.LedgerForAPI) (int, model.SupplyResponse) {
+		h := v2.Handlers{Node: makeMockNodeWithConfig(lgr, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
+		rec := httptest.NewRecorder()
+		ctx := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/?round=7", nil), rec)
+		require.NoError(t, h.GetSupply(ctx))
+		var resp model.SupplyResponse
+		if rec.Code == http.StatusOK {
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		}
+		return rec.Code, resp
+	}
+
+	code, resp := get(supplyLedger{historyLedger: historyLedger{ml}, stake: 42})
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, basics.Round(7), resp.CurrentRound)
+	require.EqualValues(t, 42, resp.OnlineStake)
+
+	code, _ = get(supplyLedger{historyLedger: historyLedger{ml}, err: fmt.Errorf("%w: balance round 0, vote round 7", ledger.ErrOnlineStakeUnavailable)})
+	require.Equal(t, http.StatusNotFound, code)
 }

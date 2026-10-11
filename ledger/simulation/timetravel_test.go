@@ -24,7 +24,10 @@ import (
 	"github.com/algorand/avm-abi/apps"
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/crypto"
+	"github.com/algorand/go-algorand/crypto/merklesignature"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/txntest"
@@ -113,4 +116,60 @@ done: int 1`, other.Addr),
 		require.Equal(t, []string{string(want.n), string(want.box), string(want.bal)}, result.TxnGroups[0].Txns[0].Txn.ApplyData.EvalDelta.Logs, "round %d", r)
 		require.NotNil(t, result.TxnGroups[0].UnnamedResourcesAccessed, "round %d", r)
 	}
+}
+
+// TestSimulateTimeTravelOnlineStake runs online_stake at rounds the trackers no
+// longer hold: it must see the online stake they gave while they held it,
+// which excludes the stake of keys that expire before the vote round.
+func TestSimulateTimeTravelOnlineStake(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t, func(cfg *config.Local) {
+		cfg.Archival = false
+		cfg.EnableTimeTravel = true
+	})
+	defer env.Close()
+	sender, other := env.Accounts[0], env.Accounts[1]
+	proto := env.TxnInfo.CurrentProtocolParams()
+
+	app := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+		ApprovalProgram:   "#pragma version 11\ntxn ApplicationID\nbz done\nonline_stake\nitob\nlog\ndone: int 1",
+		ClearStateProgram: "#pragma version 11\nint 1",
+	})
+	// other's keys expire at first+300, so vote rounds after that whose
+	// balance round has other online exclude its stake
+	first := env.TxnInfo.LatestRound() + 1
+	keyreg := env.TxnInfo.NewTxn(txntest.Txn{Type: protocol.KeyRegistrationTx, Sender: other.Addr, VoteFirst: first, VoteLast: first + 300,
+		VotePK: crypto.OneTimeSignatureVerifier(other.Addr), SelectionPK: crypto.VRFVerifier(other.Addr), StateProofPK: merklesignature.Commitment{1}, VoteKeyDilution: 1024})
+	env.Txn(keyreg.SignedTxn())
+
+	// the online stake the block after r reads, from the trackers
+	stakes := map[basics.Round]basics.MicroAlgos{}
+	for i := 0; i < 1400; i++ {
+		env.TransferAlgos(sender.Addr, other.Addr, uint64(1000+i))
+		r := env.TxnInfo.LatestRound()
+		stake, err := env.Ledger.OnlineCirculation(agreement.BalanceRound(r+1, proto), r+1)
+		require.NoError(t, err)
+		stakes[r] = stake
+	}
+
+	// more than MaxTxnLife back, as CheckDup only skips the txtail check there;
+	// first+200's balance round is 0
+	s := simulation.MakeSimulator(env.Ledger, false)
+	for _, r := range []basics.Round{first + 200, first + 350} {
+		txn := txntest.Txn{Type: protocol.ApplicationCallTx, Sender: sender.Addr, ApplicationID: app,
+			FirstValid: r, LastValid: r + 10, GenesisHash: env.TxnInfo.LatestHeader.GenesisHash}
+		txn.FillDefaults(proto)
+		result, err := s.Simulate(simulation.Request{
+			Round:     r,
+			TxnGroups: [][]transactions.SignedTxn{{txn.Txn().Sign(sender.Sk)}},
+		})
+		require.NoError(t, err)
+		require.Empty(t, result.TxnGroups[0].FailureMessage, "round %d", r)
+		require.Equal(t, []string{string(binary.BigEndian.AppendUint64(nil, stakes[r].Raw))}, result.TxnGroups[0].Txns[0].Txn.ApplyData.EvalDelta.Logs, "round %d", r)
+	}
+	totals, err := env.Ledger.Totals(agreement.BalanceRound(first+351, proto))
+	require.NoError(t, err)
+	require.Less(t, stakes[first+350].Raw, totals.Online.Money.Raw, "other's expiring stake must be excluded")
 }
