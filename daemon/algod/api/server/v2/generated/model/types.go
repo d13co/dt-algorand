@@ -1964,7 +1964,7 @@ type GetApplicationBoxesParams struct {
 	// Limit Maximum number of boxes to return per page.
 	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// Next A box name, in the goal app call arg form 'encoding:value', representing the earliest box name to include in results. Use the next-token from a previous response.
+	// Next A box name, in the goal app call arg form 'encoding:value'. Only boxes whose names sort strictly after it are returned. Use the next-token from a previous response.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
 	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', to filter results by. Only boxes whose names start with this prefix will be returned.

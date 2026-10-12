@@ -5304,7 +5304,7 @@
             "x-go-type": "uint64"
           },
           {
-            "description": "A box name, in the goal app call arg form 'encoding:value', representing the earliest box name to include in results. Use the next-token from a previous response.",
+            "description": "A box name, in the goal app call arg form 'encoding:value'. Only boxes whose names sort strictly after it are returned. Use the next-token from a previous response.",
             "in": "query",
             "name": "next",
             "schema": {
