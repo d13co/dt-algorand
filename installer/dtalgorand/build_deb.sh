@@ -9,10 +9,12 @@
 # Syntax:   installer/dtalgorand/build_deb.sh [output directory]
 #
 # Set BUILDNUMBER to reuse a build number, e.g. to give every architecture the same version, and
-# NO_BUILD=1 to package the binaries of a previous build again.
+# NO_BUILD=1 to package the binaries of a previous build again. Set DEB_VERSION to pin the package
+# version instead of the computed <major>.<minor>.<build number>, e.g. to the release's git tag.
 #
 # Examples: installer/dtalgorand/build_deb.sh tmp/dtalgorand
 #           BUILDNUMBER=3050 installer/dtalgorand/build_deb.sh tmp/dtalgorand
+#           DEB_VERSION=5.0.3050 installer/dtalgorand/build_deb.sh tmp/dtalgorand
 
 set -eo pipefail
 umask 022
@@ -33,7 +35,7 @@ fi
 export BUILDNUMBER=${BUILDNUMBER:-$(./scripts/compute_build_number.sh)}
 export BUILD_NUMBER=${BUILDNUMBER}
 export CHANNEL=stable
-VER=$(./scripts/compute_build_number.sh -f)
+VER=${DEB_VERSION:-$(./scripts/compute_build_number.sh -f)}
 
 # A separate GOBIN, so that the build leaves $GOPATH/bin alone.
 export GOBIN="${REPO_DIR}/tmp/dtalgorand/${ARCH}/bin"

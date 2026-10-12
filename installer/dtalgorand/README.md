@@ -10,7 +10,7 @@ installer/dtalgorand/build_deb.sh tmp/dtalgorand
 
 The script builds the binaries into `tmp/dtalgorand/<arch>/bin`, not `$GOPATH/bin`, and writes `dtalgorand_<version>_<arch>.deb` to the given directory. It builds for the host's architecture only (cgo), so build the arm64 package on an arm64 host. Pass the same `BUILDNUMBER` to both builds to give them the same version.
 
-The version is `<VersionMajor>.<VersionMinor>.<build number>` from `config/version.go` and `scripts/buildnumber.py` (days since 2018-05-25, then the hour), so later builds sort higher.
+By default the version is `<VersionMajor>.<VersionMinor>.<build number>` from `config/version.go` and `scripts/buildnumber.py` (days since 2018-05-25, then the hour), so later builds sort higher. Set `DEB_VERSION` to pin the package version instead — the release workflow sets it from the git tag, and `BUILDNUMBER` to its last part so the binaries report the same version, e.g. `DEB_VERSION=5.0.3050 BUILDNUMBER=3050 installer/dtalgorand/build_deb.sh tmp/dtalgorand`.
 
 ## Layout
 

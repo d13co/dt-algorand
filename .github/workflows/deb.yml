@@ -1,0 +1,62 @@
+name: deb
+
+# Check that the packaging still works, without waiting for a release tag:
+# the release workflow's scripts parse and installer/dtalgorand/build_deb.sh
+# produces a well-formed .deb. The full build is slow, so only run it on the
+# paths it packages.
+on:
+  pull_request:
+    paths:
+      - 'installer/dtalgorand/**'
+      # what build_deb.sh also packages
+      - 'installer/genesis/**'
+      - 'installer/system.json'
+      - 'installer/config.json.example'
+      - 'COPYING'
+      - '.github/apt-publish.sh'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/deb.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deb-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-deb:
+    if: github.repository == 'd13co/go-algorand'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-prefix: buildsrc
+      - uses: ./.github/actions/setup-test
+      - name: Check the scripts parse
+        run: |
+          sh -n .github/apt-publish.sh
+          sh -n installer/dtalgorand/debian/postinst installer/dtalgorand/debian/prerm installer/dtalgorand/debian/postrm
+          bash -n installer/dtalgorand/build_deb.sh
+      - name: Build the .deb
+        env:
+          DEB_VERSION: 0.0.0
+        run: installer/dtalgorand/build_deb.sh dist
+      - name: Check the .deb
+        run: |
+          set -- dist/*.deb # an assignment wouldn't expand the glob
+          f=$1
+          [ -f "$f" ] || { echo "no .deb built"; exit 1; }
+          dpkg-deb --info "$f"
+          [ "$(dpkg-deb -f "$f" Package)" = dtalgorand ]
+          [ "$(dpkg-deb -f "$f" Version)" = 0.0.0 ]
+          [ "$(dpkg-deb -f "$f" Architecture)" = "$(dpkg --print-architecture)" ]
+          # the commands the package is expected to provide
+          for p in usr/bin/dtalgod usr/bin/dtgoal usr/lib/dtalgorand/bin/algod usr/bin/ttimport; do
+            dpkg-deb --fsys-tarfile "$f" | tar -t | grep -qx "./$p" || { echo "missing $p"; exit 1; }
+          done
