@@ -719,11 +719,17 @@ func (s *Store) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) 
 // prefix and that has a record at any round, including objects deleted
 // since. It stops when fn returns false.
 func (s *Store) Objects(prefix []byte, fn func(obj []byte) bool) error {
+	return s.ObjectsAfter(prefix, nil, fn)
+}
+
+// ObjectsAfter is Objects for the objects whose key is also greater than
+// after, as in Scan.
+func (s *Store) ObjectsAfter(prefix, after []byte, fn func(obj []byte) bool) error {
 	if err := s.acquire(); err != nil {
 		return err
 	}
 	defer s.closeMu.RUnlock()
-	return s.distinct(prefix, nil, fn)
+	return s.distinct(prefix, after, fn)
 }
 
 // distinct calls fn for the distinct objects of both versioned keyspaces
