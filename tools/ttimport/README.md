@@ -98,6 +98,22 @@ compacted in 59s: 3.21 GiB -> 2.94 GiB
 
 Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it.
 
+## Filling a gap left by an algod without time travel
+
+An algod without time travel (upstream `algod`, say, which ignores `EnableTimeTravel`) started on the directory catches up and commits rounds to the account DB alone. The ledger then refuses the directory:
+
+```
+ttimport: reloadLedger.loadFromDisk tracker *ledger.historyTracker failed to loadFromDisk : time travel store /home/me/tt/mainnet-v1.0/ledger.timetravel ends at round 65949151 but the ledger is at round 65949318
+```
+
+With algod stopped, `-fill` adds the missing rounds to the store, with their state deltas from an algod API that serves `/v2/deltas` for them (any archival node with deltas, such as `https://mainnet-api.4160.nodely.dev`) and their headers from the archive:
+
+```sh
+ttimport -fill https://mainnet-api.4160.nodely.dev -blocks /var/lib/algorand/mainnet-v1.0/ledger.block.sqlite -d ~/tt
+```
+
+It first rebuilds the last 10 stored rounds from their deltas and adds nothing unless their changes, headers and expired stake match the store. The expired stake comes from the account DB's online account history, which reaches back `MaxBalLookback` (320) rounds, so the gap must be shorter than ~310 rounds: past that, only an import from genesis rebuilds the store. Then rerun the import, or start the node.
+
 ## Flags
 
 | flag | |
@@ -105,6 +121,7 @@ Reads and `/versions` answer the same afterwards. The one difference: objects cr
 | `-blocks` | the archive's block database; the file must be named `ledger.block.sqlite` |
 | `-d` | the data directory to build: `genesis.json`, and `config.json` with `EnableTimeTravel` and without `Archival` |
 | `-dedup` | instead of importing, remove the no-op records from the time travel store of `-d` (no `-blocks`) |
+| `-fill <algod API URL>` | instead of importing, add to the time travel store of `-d` the rounds its account DB is ahead by, with deltas from the API and headers from `-blocks` |
 | `-v` | also print the ledger's info log |
 | `-cpuprofile <file>` | CPU profile of the run, kept on Ctrl-C |
 | `-memprofile <file>` | heap profile, rewritten whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps) and on Ctrl-C, so that one survives an OOM kill |

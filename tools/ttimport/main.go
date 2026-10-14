@@ -63,8 +63,9 @@ func main() {
 	memprofile := flag.String("memprofile", "", "write a heap profile to this file whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps), and on Ctrl-C")
 	verbose := flag.Bool("v", false, "also log the ledger's info messages")
 	dedup := flag.Bool("dedup", false, "instead of importing, remove the records that change nothing from the time travel store of -d, whose algod must be stopped")
+	fillAPI := flag.String("fill", "", "instead of importing, add to the time travel store of -d, whose algod must be stopped, the rounds its account DB is ahead by, with their deltas from this algod API URL and their headers from -blocks")
 	flag.Parse()
-	if *dataDir == "" || (*blocks == "") != *dedup {
+	if *dataDir == "" || (*blocks == "") != *dedup || (*dedup && *fillAPI != "") {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -102,9 +103,12 @@ func main() {
 		os.Exit(1)
 	}()
 	var err error
-	if *dedup {
+	switch {
+	case *dedup:
 		err = removeNoops(*dataDir)
-	} else {
+	case *fillAPI != "":
+		err = fill(*blocks, *dataDir, *fillAPI)
+	default:
 		err = run(*blocks, *dataDir, *memprofile)
 	}
 	pprof.StopCPUProfile()
