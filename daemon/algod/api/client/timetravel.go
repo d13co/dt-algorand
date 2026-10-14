@@ -93,6 +93,13 @@ func (client RestClient) ApplicationVersions(appID basics.AppIndex, p VersionsPa
 	return
 }
 
+// ApplicationBoxesVersions lists the rounds at which any box of an
+// application changed, with the boxes that did.
+func (client RestClient) ApplicationBoxesVersions(appID basics.AppIndex, p VersionsParams) (response model.BoxesVersionsResponse, err error) {
+	err = client.get(&response, fmt.Sprintf("/v2/applications/%d/boxes/versions", appID), p.query())
+	return
+}
+
 // ApplicationBoxVersions lists the versions of a box. name is in goal's app
 // call argument form, e.g. "b64:..." or "str:...".
 func (client RestClient) ApplicationBoxVersions(appID basics.AppIndex, name string, p VersionsParams) (response model.BoxVersionsResponse, err error) {

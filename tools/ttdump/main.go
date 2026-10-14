@@ -53,14 +53,15 @@ commands:
   account ADDR [-r R] [-exclude all|created-apps-params|created-assets-params]
                                the account at R, as GET /v2/accounts/{addr}?round=R
   versions OBJECT [-from R] [-to R] [-desc] [-n N] [-full] [-exclude ...]
-                               the object's versions, with the changes between them
+                               the object's versions, with the changes between them;
+                               OBJECT boxes:APP lists the changes of every box of APP
   ls WHAT [-r R] [-ever] [-after OBJECT] [-n N]
                                accounts | assets | apps | boxes APP | kv [PREFIX] |
                                holdings ADDR | locals ADDR | created ADDR
   header R [R2]                the block header of round R, or a table of R..R2
   raw [-prefix P] [-after HEX] [-n N]
                                the raw records in key order; P is an object, a
-                               keyspace (c p r H E m) or hex:PREFIX
+                               keyspace (b c p r H E m) or hex:PREFIX
 
 ` + specHelp + `
 

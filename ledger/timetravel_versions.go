@@ -71,6 +71,7 @@ type Version struct {
 	Assets      []AssetVersion // asset params
 	Apps        []AppVersion   // app params
 	Box         *BoxVersion
+	Boxes       []BoxChange // AppBoxVersions: the app's boxes that changed, by name
 }
 
 // AccountVersion is a version of an account's base record. Data has the
@@ -119,6 +120,13 @@ type AppVersion struct {
 type BoxVersion struct {
 	Deleted bool
 	Value   []byte
+}
+
+// BoxChange is a change of one of an app's boxes.
+type BoxChange struct {
+	Name    []byte
+	Deleted bool
+	Value   []byte // nil when deleted or values were not requested
 }
 
 // AccountVersionsExclude narrows an account's versions the way exclude
@@ -237,6 +245,81 @@ func (l *Ledger) AppVersions(aidx basics.AppIndex, r VersionRange) (VersionPage,
 // KvVersions lists the versions of a kv entry (box).
 func (l *Ledger) KvVersions(key string, r VersionRange) (VersionPage, error) {
 	return l.objectVersions(timetravel.KvKey(key), r)
+}
+
+// ErrNoBoxIndex is returned by AppBoxVersions for rounds before the time
+// travel store's box index is complete.
+var ErrNoBoxIndex = timetravel.ErrNoBoxIndex
+
+// AppBoxVersions lists the rounds at which any box of an app changed, with
+// the boxes that did. Pages cost what they hold, however many boxes the app
+// ever had: the store indexes box changes by app and round.
+func (l *Ledger) AppBoxVersions(app basics.AppIndex, r VersionRange) (VersionPage, error) {
+	h := l.historyNow(r.Max)
+	if h == nil {
+		return VersionPage{}, errHistoryUnavailable
+	}
+	return histAppBoxVersions(h, app, r)
+}
+
+func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, error) {
+	var page VersionPage
+	var cur Version // the round being read, not yet in the page
+	var curSize, size uint64
+	// add adds cur to the page unless its values exceed the budget; a round is
+	// never split
+	add := func() bool {
+		if r.MaxBytes > 0 && len(page.Versions) > 0 && size+curSize > r.MaxBytes {
+			page.More, page.Next = true, cur.Round
+			return false
+		}
+		page.Versions = append(page.Versions, cur)
+		size += curSize
+		return true
+	}
+	// the callback must not read the store: it runs inside the store's read
+	// lock, which Close waits for while blocking new readers
+	err := h.BoxChanges(uint64(app), uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		if R := basics.Round(rnd); len(cur.Boxes) == 0 || R != cur.Round {
+			if len(cur.Boxes) > 0 && !add() {
+				return false
+			}
+			if uint64(len(page.Versions)) == r.Limit {
+				page.More, page.Next = true, R
+				return false
+			}
+			cur, curSize = Version{Round: R}, 0
+		}
+		bc := BoxChange{Name: name, Deleted: !ok}
+		if r.Values && ok {
+			bc.Value = val
+			curSize += uint64(len(val))
+		}
+		cur.Boxes = append(cur.Boxes, bc)
+		return true
+	})
+	// a descending page that reached rounds the box index lacks ends with
+	// the changes it found, all of those since; the next page fails
+	partial := errors.Is(err, ErrNoBoxIndex) && r.Desc && (len(page.Versions) > 0 || len(cur.Boxes) > 0)
+	if err != nil && !partial {
+		return VersionPage{}, err
+	}
+	if len(cur.Boxes) > 0 && !page.More {
+		add()
+	}
+	if partial && !page.More {
+		page.More, page.Next = true, page.Versions[len(page.Versions)-1].Round-1
+	}
+	for i := range page.Versions {
+		v := &page.Versions[i]
+		hdr, err := histHeader(h, v.Round)
+		if err != nil {
+			return VersionPage{}, err
+		}
+		v.Timestamp, v.Proto = hdr.TimeStamp, hdr.CurrentProtocol
+		slices.SortFunc(v.Boxes, func(a, b BoxChange) int { return bytes.Compare(a.Name, b.Name) })
+	}
+	return page, nil
 }
 
 func (l *Ledger) objectVersions(obj []byte, r VersionRange) (VersionPage, error) {
@@ -531,6 +614,68 @@ func (v *histView) Objects(prefix []byte, fn func(obj []byte) bool) error {
 	for _, k := range keys {
 		if !fn([]byte(k)) {
 			return nil
+		}
+	}
+	return nil
+}
+
+// BoxChanges is timetravel.Store.BoxChanges with the in-memory rounds merged
+// in. fn must not modify name or val.
+func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, name, val []byte, ok bool) bool) error {
+	type change struct {
+		rnd       uint64
+		name, val []byte
+		ok        bool
+	}
+	// the in-memory rounds' changes, oldest first, by name within a round
+	var mem []change
+	prefix := timetravel.BoxKvPrefix(app)
+	for i := range v.pending {
+		p := &v.pending[i]
+		if p.rnd <= v.last || uint64(p.rnd) < lo || uint64(p.rnd) > hi {
+			continue
+		}
+		n := len(mem)
+		for j, ch := range p.changes {
+			if !bytes.HasPrefix(ch.Key, prefix) || p.idx[string(ch.Key)] != j { // a key's last change counts
+				continue
+			}
+			_, name, isBox := timetravel.BoxOf(ch.Key)
+			if !isBox {
+				continue
+			}
+			prev, prevOK, err := v.Get(ch.Key, uint64(p.rnd)-1)
+			if err != nil {
+				return err
+			}
+			if prevOK != !ch.Deleted || (prevOK && !bytes.Equal(prev, ch.Value)) {
+				mem = append(mem, change{uint64(p.rnd), name, ch.Value, !ch.Deleted})
+			}
+		}
+		slices.SortFunc(mem[n:], func(a, b change) int { return bytes.Compare(a.name, b.name) })
+	}
+	if desc {
+		for i := len(mem) - 1; i >= 0; i-- {
+			if !fn(mem[i].rnd, mem[i].name, mem[i].val, mem[i].ok) {
+				return nil
+			}
+		}
+	}
+	if storeHi := min(hi, uint64(v.last)); lo <= storeHi {
+		stopped := false
+		err := v.store.BoxChanges(app, lo, storeHi, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+			stopped = !fn(rnd, name, val, ok)
+			return !stopped
+		})
+		if err != nil || stopped {
+			return err
+		}
+	}
+	if !desc {
+		for _, m := range mem {
+			if !fn(m.rnd, m.name, m.val, m.ok) {
+				return nil
+			}
 		}
 	}
 	return nil

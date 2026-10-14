@@ -289,6 +289,16 @@ done: int 1`)
 	}
 	check(fmt.Sprintf("GET /v2/applications/%d/box/versions?name=str:b&include=values -> %d versions", app, len(vs)),
 		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+	// the app has one box: the changes of all its boxes are that box's versions
+	vs, n = pages(fmt.Sprintf("/v2/applications/%d/boxes/versions?%s&limit=3&include=values", app, span))
+	valuesOK = len(vs) == len(want)
+	for _, v := range vs {
+		boxes := asSlice(v["boxes"])
+		valuesOK = valuesOK && len(boxes) == 1 && boxes[0].(map[string]any)["name"] == base64.StdEncoding.EncodeToString([]byte("b")) &&
+			fmt.Sprint(boxes[0].(map[string]any)["value"]) == history[uint64(v["round"].(float64))].box
+	}
+	check(fmt.Sprintf("GET /v2/applications/%d/boxes/versions?include=values, %d pages -> %d versions", app, n, len(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
 
 	// pending rewards move amount every round; versions follow the record
 	want = changed(func(l live) any { return l.raw })

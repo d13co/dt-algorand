@@ -106,6 +106,36 @@ func KvKeyString(obj []byte) string {
 	return string(b)
 }
 
+// boxKeyPrefix starts the kv key of every box: "bx:", then the app id (8
+// bytes, big endian), then the name.
+const boxKeyPrefix = "bx:"
+
+// kvBoxPrefix is the object key prefix of every box.
+var kvBoxPrefix = KvPrefix(boxKeyPrefix)
+
+// BoxKvPrefix is the object key prefix of the boxes of app.
+func BoxKvPrefix(app uint64) []byte {
+	return KvPrefix(string(binary.BigEndian.AppendUint64([]byte(boxKeyPrefix), app)))
+}
+
+// BoxOf returns the app and name of a box's object key; ok is false if obj
+// is not a box's.
+func BoxOf(obj []byte) (app uint64, name []byte, ok bool) {
+	if !bytes.HasPrefix(obj, kvBoxPrefix) {
+		return 0, nil, false
+	}
+	k := KvKeyString(obj)
+	if len(k) < len(boxKeyPrefix)+8 {
+		return 0, nil, false
+	}
+	return binary.BigEndian.Uint64([]byte(k[len(boxKeyPrefix):])), []byte(k[len(boxKeyPrefix)+8:]), true
+}
+
+// boxObject is the object key of box name of app.
+func boxObject(app uint64, name []byte) []byte {
+	return KvKey(string(append(binary.BigEndian.AppendUint64([]byte(boxKeyPrefix), app), name...)))
+}
+
 // Changes extracts the new object versions of a state delta, including totals.
 func Changes(sd *ledgercore.StateDelta) []Change {
 	out := make([]Change, 0, len(sd.Accts.Accts)+len(sd.Accts.AssetResources)+len(sd.Accts.AppResources)+len(sd.KvMods)+1)

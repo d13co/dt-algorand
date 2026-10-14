@@ -46,6 +46,7 @@ Registered only when `EnableTimeTravel` is on (absent otherwise, so 404).
 | `GET /v2/assets/{asset-id}/versions` | `A id` | `AssetVersion` |
 | `GET /v2/applications/{application-id}/versions` | `P id` | `ApplicationVersion` |
 | `GET /v2/applications/{application-id}/box/versions?name=` | `k` key | `BoxVersion` |
+| `GET /v2/applications/{application-id}/boxes/versions` | the `b app` box index, then each entry's `k` record | `BoxesVersion` |
 
 Not versioned: `/v2/ledger/supply` (totals change nearly every round; `?round=` covers it), blocks.
 
@@ -80,6 +81,18 @@ Leaf (`/v2/applications/1002/versions?min-round=100&limit=3`):
 
 With `include=values`, each non-deleted entry adds `"application": {...}` (the `Application` model, as `GET /v2/applications/1002?round=120` returns it). `AssetVersion` adds `asset`, `BoxVersion` adds `value` (base64).
 
+App boxes (`/v2/applications/1002/boxes/versions?include=values`): each entry is a round in which any box of the app changed, with the boxes that did, in name order.
+
+```json
+{
+  "round": 4500000,
+  "versions": [
+    { "round": 120, "timestamp": 1700000123, "boxes": [ { "name": "Yg==", "deleted": false, "value": "djE=" }, { "name": "Yw==", "deleted": true } ] }
+  ],
+  "next-token": "121"
+}
+```
+
 Account (`/v2/accounts/ABC.../versions?include=values`): each entry lists only what changed at that round.
 
 ```json
@@ -108,12 +121,22 @@ Without `include=values` the same entries carry ids and `deleted` only (`"base":
 3. **REST** (`daemon/algod/api/server/v2/timetravel_versions.go`): the six endpoints, tag `timetravel`, generated package `generated/timetravel` registered in `router.go` iff `EnableTimeTravel`. `basicAccountInformation`'s conversion is now `baseAccount`, shared with the account versions. `algod.oas3.yml` was converted with a local `swaggerapi/swagger-converter` container (it reproduces the committed file byte for byte from the old spec) instead of the Makefile's public converter. Handler tests: `test/timetravel_versions_test.go`.
 4. **End to end**: `tools/ttlab demo` checks the endpoints on a dev-mode node against the live state it recorded at every round (app, box and account versions with values, paging both ways, the creator's composite versions).
 
-Not done: the `tools/ttlab versions` measurements (hot app params, accounts with 1k and 10k holdings, warm and cold).
+5. **App boxes**: merging every box an app ever had (option A below) costs two seeks per box per page, and the busiest mainnet box apps churn through a different name on nearly every write (~10–20 M boxes for app 1264162043, with 2 live). So boxes get a secondary index, round-major per app (`b` app round name, see the [README](README.md#box-index)), and `Store.BoxChanges` reads a range of it, checking each entry against the box's records to drop no-ops. `histView.BoxChanges` merges the rounds in memory; `Ledger.AppBoxVersions` groups the changes by round, never splitting one, under the same `Limit` and byte budget. `TestStoreModel` and `TestStoreIndexBoxes` check the index at N = 1, 4, 4 incremental and 7 (with no-op writes, a backfill, a store extended without the index), `TestTimeTravelAppBoxVersions` against `LookupKv` at every round with box churn (created and deleted in adjacent rounds and within one).
+
+   | option | read cost per page | extra storage (mainnet, est.) | verdict |
+   |---|---|---|---|
+   | A. merge the app's boxes (`Objects` + `versions`) | O(boxes ever) seeks | 0 | unusable for churning apps |
+   | B. **index entry per box write** | 1 seek + the page's entries + 1 seek each | ~1–3 GB | implemented |
+   | C. index entry per (app, round) with packed names | same as B | ~0.8–2 GB | small saving, the backfill must group names |
+   | D. re-key boxes round-major | good for this endpoint | 0 | breaks one-seek `?round=` box reads and listings |
+   | E. values in the index | saves a ~5 µs seek per entry | +~1.8 GB | not worth it |
+
+Not done: the `tools/ttlab versions` measurements (hot app params, accounts with 1k and 10k holdings, warm and cold), and the box index's size and page latency on fnet after `ttimport -index-boxes`.
 
 ## Later, if needed
 
 - `include=state-delta` on app and local-state versions: global/local state changes against the previous version in the `EvalDelta` format clients already decode (action 1/2/3), with a flag when anything else (programs, schema) changed. The server already holds both adjacent values. Plus `key=` to keep only versions where a given global key changed.
-- A per-account change index (`L` addr round → changed constituent keys, written in `AddRound`, backfilled by one pass over the store) if composite pages for accounts with very many resources prove too slow. Costs an extra record per touched account per round.
+- A per-account change index, if composite pages for accounts with very many resources prove too slow: the box index's pattern (`L` addr round → changed constituent keys, written blind in `AddRound`, entries checked against the records on read, rebuilt by one pass over the store, a meta record saying from which round it is complete). Costs an extra record per touched account per round.
 
 ## Non-goals
 

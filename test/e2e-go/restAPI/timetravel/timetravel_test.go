@@ -173,6 +173,14 @@ int 1`)
 		resp, err := c.ApplicationBoxVersions(app, "str:b", p)
 		return anys(resp.Versions), resp.NextToken, err
 	}
+	boxesVersions := func(p client.VersionsParams) ([]any, *string, error) {
+		resp, err := c.ApplicationBoxesVersions(app, p)
+		for _, v := range resp.Versions {
+			a.Len(v.Boxes, 1, "the app has one box")
+			a.Equal([]byte("b"), v.Boxes[0].Name)
+		}
+		return anys(resp.Versions), resp.NextToken, err
+	}
 	assetVersions := func(p client.VersionsParams) ([]any, *string, error) {
 		resp, err := c.AssetVersions(asa, p)
 		return anys(resp.Versions), resp.NextToken, err
@@ -180,6 +188,7 @@ int 1`)
 	appRounds := append([]basics.Round{created.round}, callRounds...)
 	a.Equal(appRounds, rounds(allPages(appVersions, client.VersionsParams{Limit: 2, Values: true})))
 	a.Equal(callRounds, rounds(allPages(boxVersions, client.VersionsParams{Limit: 4, Values: true})))
+	a.Equal(callRounds, rounds(allPages(boxesVersions, client.VersionsParams{Limit: 3, Values: true})))
 	a.Equal(append([]basics.Round{assetCreated.round}, configRounds...), rounds(allPages(assetVersions, client.VersionsParams{Values: true})))
 	desc := rounds(allPages(appVersions, client.VersionsParams{Desc: true, Limit: 3}))
 	a.Equal(callRounds[len(callRounds)-1], desc[0])

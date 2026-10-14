@@ -41,6 +41,8 @@ type object struct {
 	app   uint64               // box: the app
 	box   string               // box: the name
 	ct    basics.CreatableType // creator index entry
+	// appBoxes: every box of app, for versions (boxes:APP); kind is KindKv
+	appBoxes bool
 }
 
 const specHelp = `objects:
@@ -228,6 +230,9 @@ func (o object) String() string {
 	case timetravel.KindAppParams:
 		return fmt.Sprintf("app:%d", o.id)
 	case timetravel.KindKv:
+		if o.appBoxes {
+			return fmt.Sprintf("boxes:%d", o.app)
+		}
 		if o.boxed {
 			return fmt.Sprintf("box:%d:%s", o.app, ttview.AppCallBytes([]byte(o.box)))
 		}

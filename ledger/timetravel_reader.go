@@ -190,6 +190,14 @@ func (r *HistoryReader) KvVersions(key string, vr VersionRange) (VersionPage, er
 	return r.objectVersions(timetravel.KvKey(key), vr)
 }
 
+// AppBoxVersions is Ledger.AppBoxVersions.
+func (r *HistoryReader) AppBoxVersions(app basics.AppIndex, vr VersionRange) (VersionPage, error) {
+	if err := r.checkRange(vr); err != nil {
+		return VersionPage{}, err
+	}
+	return histAppBoxVersions(r.h, app, vr)
+}
+
 func (r *HistoryReader) objectVersions(obj []byte, vr VersionRange) (VersionPage, error) {
 	if err := r.checkRange(vr); err != nil {
 		return VersionPage{}, err

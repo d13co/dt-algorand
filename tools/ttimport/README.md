@@ -96,7 +96,19 @@ removed 50291820 records in 22s; compacting
 compacted in 59s: 3.21 GiB -> 2.94 GiB
 ```
 
-Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it.
+Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it. `-dedup` also rebuilds the box index (next section), so a store that needs both needs only `-dedup`; after a Ctrl-C the index covers only the rounds added since, until a rerun.
+
+## Building the box index
+
+`/v2/applications/{id}/boxes/versions` reads the store's [box index](../../ledger/timetravel/README.md#box-index). Stores that held boxes before a build with the index first opened them have it only from that round on, and the endpoint answers 503 for earlier ranges (`ttdump info` shows where the index starts). With the node stopped, build it:
+
+```sh
+goal node stop -d ~/tt
+ttimport -index-boxes -d ~/tt
+goal node start -d ~/tt
+```
+
+It scans the box records once and writes an entry per box version, then compacts the index; a rerun rebuilds it again. Ctrl-C is safe: the index then covers only the rounds added after it, until a rerun. A store that holds no box yet needs nothing: the index is complete from genesis. On mainnet boxes arrived with v36, around round 25 M, so an import that has not reached that round can switch to a build with the index and skip this.
 
 ## Flags
 
@@ -104,7 +116,8 @@ Reads and `/versions` answer the same afterwards. The one difference: objects cr
 |---|---|
 | `-blocks` | the archive's block database; the file must be named `ledger.block.sqlite` |
 | `-d` | the data directory to build: `genesis.json`, and `config.json` with `EnableTimeTravel` and without `Archival` |
-| `-dedup` | instead of importing, remove the no-op records from the time travel store of `-d` (no `-blocks`) |
+| `-dedup` | instead of importing, remove the no-op records from the time travel store of `-d` (no `-blocks`), and rebuild its box index |
+| `-index-boxes` | instead of importing, build the box index of the time travel store of `-d` (no `-blocks`) |
 | `-v` | also print the ledger's info log |
 | `-cpuprofile <file>` | CPU profile of the run, kept on Ctrl-C |
 | `-memprofile <file>` | heap profile, rewritten whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps) and on Ctrl-C, so that one survives an OOM kill |
