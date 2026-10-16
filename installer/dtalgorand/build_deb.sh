@@ -37,7 +37,7 @@ if [ "${ARCH}" != "$(go env GOARCH)" ]; then
 fi
 
 if [ -z "${BUILDNUMBER}" ] || [ -z "${DEB_VERSION}" ]; then
-    # The upstream release this is based on. d13co/go-algorand doesn't carry upstream's tags.
+    # The upstream release this is based on. d13co/dt-algorand doesn't carry upstream's tags.
     BASE=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*-stable' 2>/dev/null) || {
         echo "no upstream v*-stable tag in this checkout's history; fetch them with"
         echo "  git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'"
@@ -109,8 +109,8 @@ cat <<EOF > "${PKG_ROOT}/usr/share/doc/${PKG_NAME}/copyright"
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Algorand
 Upstream-Contact: Algorand developers <dev@algorand.com>
-Source: https://github.com/d13co/go-algorand
-Comment: The timetravel branch, a fork of https://github.com/algorand/go-algorand
+Source: https://github.com/d13co/dt-algorand
+Comment: A fork of https://github.com/algorand/go-algorand
 
 Files: *
 Copyright: Algorand developers <dev@algorand.com>

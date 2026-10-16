@@ -7,7 +7,7 @@ Depends: adduser
 Recommends: unattended-upgrades
 Section: net
 Priority: optional
-Homepage: https://github.com/d13co/go-algorand
+Homepage: https://github.com/d13co/dt-algorand
 Description: Algorand node with time travel (state at past rounds)
  A fork of the Algorand node software that keeps the value of every ledger
  object at every round, so that lookups, the REST API and simulation work at

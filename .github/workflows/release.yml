@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   release:
-    if: github.repository == 'd13co/go-algorand'
+    if: github.repository == 'd13co/dt-algorand'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -41,7 +41,7 @@ jobs:
         run: git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'
       - name: Build the .deb
         env:
-          BRANCH: timetravel # else a tag checkout stamps the branch as HEAD
+          BRANCH: dtalgorand # else a tag checkout stamps the branch as HEAD
         run: installer/dtalgorand/build_deb.sh dist
       - name: Check the versions
         run: |
@@ -70,7 +70,7 @@ jobs:
   # Separate from release so a failed publish can be re-run on its own.
   apt:
     needs: release
-    if: github.repository == 'd13co/go-algorand'
+    if: github.repository == 'd13co/dt-algorand'
     environment: apt # holds the signing and R2 secrets; v* tags only, needs approval
     runs-on: ubuntu-latest
     timeout-minutes: 30

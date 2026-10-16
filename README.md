@@ -1,5 +1,22 @@
+# dt-algorand
 
-# go-algorand
+An experimental fork of [go-algorand](https://github.com/algorand/go-algorand) that adds **time travel**: a node that keeps the value of every account, asset, app and box at every round since genesis, and serves the REST API and transaction simulation **at any past round**. It is meant to replace an archival node for historical state queries: on mainnet the history takes ≈65 GB, against ≈3.5 TB of archived blocks.
+
+It changes no consensus rule, but it is not an official Algorand release: the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](ledger/timetravel/README.md#limitations)). Releases follow upstream's stable releases: `v5.0.3-dt1` is upstream `5.0.3` plus fork revision 1. Development happens on the `dtalgorand` branch.
+
+- **Install**: the `dtalgorand` Debian package, from apt.d13.co, installs alongside the stock `algorand` package. See [Installing](installer/dtalgorand/README.md#installing), then [Starting the node](installer/dtalgorand/README.md#starting-the-node): a time travel node syncs from genesis, and fast catchup is refused. Builds are on the [releases page](https://github.com/d13co/dt-algorand/releases).
+- **Use**: [ledger/timetravel/README.md](ledger/timetravel/README.md) covers the configuration (`EnableTimeTravel`), the REST endpoints that take `?round=`, simulation at a past round, the design, and the mainnet size estimates. [VERSIONS.md](ledger/timetravel/VERSIONS.md) describes the API that lists the rounds at which an object changed.
+- **goal**: read commands take `--round`, and `versions` subcommands list an object's changes. See [cmd/goal/README.md](cmd/goal/README.md#past-rounds-and-versions-time-travel).
+- **Tools**:
+  - [ttimport](tools/ttimport/README.md) builds a time travel node from an archival node's blocks instead of syncing from the network, which takes weeks on mainnet.
+  - [ttdump](tools/ttdump/README.md) explores the history store of a stopped node.
+  - [ttlab](tools/ttlab/README.md) benchmarks storage designs against mainnet state deltas.
+
+The rest of this README is upstream's.
+
+---
+
+# go-algorand (upstream)
 | **Branch**      | **Build Status** |
 | --------------- | ---------------- |
 | **rel/stable**  | [![Nightly Tests](https://github.com/algorand/go-algorand/actions/workflows/ci-nightly.yml/badge.svg?branch=rel%2Fstable)](https://github.com/algorand/go-algorand/actions/workflows/ci-nightly.yml) |
