@@ -96,7 +96,7 @@ removed 50291820 records in 22s; compacting
 compacted in 59s: 3.21 GiB -> 2.94 GiB
 ```
 
-Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it. `-dedup` also rebuilds the box index (next section), so a store that needs both needs only `-dedup`; after a Ctrl-C the index covers only the rounds added since, until a rerun.
+Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it. The compaction at the end rewrites the store in consecutive key ranges, deleting each range's old files when it finishes, so it needs free disk on the store's partition for a range rather than for a second copy of the store: 1.9 GiB at the peak on an 8.7 GiB test store, where one compaction of the whole store took 6.8 GiB. On mainnet (~65 GB) expect roughly 3–8 GiB per range, and up to ~15 GiB with Pebble's own compactions running alongside. `-dedup` also rebuilds the box index (next section), so a store that needs both needs only `-dedup`; after a Ctrl-C the index covers only the rounds added since, until a rerun.
 
 ## Building the box index
 
@@ -108,7 +108,7 @@ ttimport -index-boxes -d ~/tt
 goal node start -d ~/tt
 ```
 
-It scans the box records once and writes an entry per box version, then compacts the index; a rerun rebuilds it again. Ctrl-C is safe: the index then covers only the rounds added after it, until a rerun. A store that holds no box yet needs nothing: the index is complete from genesis. On mainnet boxes arrived with v36, around round 25 M, so an import that has not reached that round can switch to a build with the index and skip this.
+It scans the box records once and writes an entry per box version, then compacts the index range by range, as `-dedup` does; a rerun rebuilds it again. Ctrl-C is safe: the index then covers only the rounds added after it, until a rerun. A store that holds no box yet needs nothing: the index is complete from genesis. On mainnet boxes arrived with v36, around round 25 M, so an import that has not reached that round can switch to a build with the index and skip this.
 
 ## Flags
 

@@ -881,7 +881,7 @@ func (s *Store) CompactCheckpoints(ctx context.Context) error {
 		return ErrReadOnly
 	}
 	// the box index precedes the checkpoints
-	return s.db.Compact(ctx, []byte{pfxBoxIndex}, []byte{pfxCheckpoint + 1}, true)
+	return s.compactRange(ctx, []byte{pfxBoxIndex}, []byte{pfxCheckpoint + 1})
 }
 
 // CompactBoxIndex rewrites the box index, dropping the entries that
@@ -894,7 +894,50 @@ func (s *Store) CompactBoxIndex(ctx context.Context) error {
 	if s.readOnly {
 		return ErrReadOnly
 	}
-	return s.db.Compact(ctx, []byte{pfxBoxIndex}, []byte{pfxBoxIndex + 1}, true)
+	return s.compactRange(ctx, []byte{pfxBoxIndex}, []byte{pfxBoxIndex + 1})
+}
+
+// compactChunk is the bytes of sstables, counted in key order across levels,
+// after which compactRange starts a new step; tests lower it.
+var compactChunk uint64 = 1 << 30
+
+// compactStep compacts one step of compactRange; tests record the steps.
+var compactStep = func(ctx context.Context, db *pebble.DB, start, end []byte) error {
+	return db.Compact(ctx, start, end, true)
+}
+
+// compactRange compacts [start, end) in consecutive steps. A manual
+// compaction deletes its input sstables only when it finishes, and Pebble
+// compacts all of a level's sstables that overlap the range together: over
+// keys written all over the keyspace (accounts are keyed by address) that is
+// every sstable of the bottom level, so compacting the range at once needs as
+// much free disk as the range takes. A step needs about the sstables of the
+// level above the bottom that overlap it, usually one or two, and the bottom
+// level beneath them: ~2 GiB on an 8.7 GiB store, more on larger ones, whose
+// upper levels have larger sstables.
+func (s *Store) compactRange(ctx context.Context, start, end []byte) error {
+	levels, err := s.db.SSTables(pebble.WithKeyRangeFilter(start, end))
+	if err != nil {
+		return err
+	}
+	var tables []pebble.SSTableInfo
+	for _, l := range levels {
+		tables = append(tables, l...)
+	}
+	slices.SortFunc(tables, func(a, b pebble.SSTableInfo) int {
+		return bytes.Compare(a.Smallest.UserKey, b.Smallest.UserKey)
+	})
+	var size uint64
+	for _, t := range tables {
+		if size >= compactChunk && bytes.Compare(t.Smallest.UserKey, start) > 0 {
+			if err = compactStep(ctx, s.db, start, t.Smallest.UserKey); err != nil {
+				return err
+			}
+			start, size = t.Smallest.UserKey, 0
+		}
+		size += t.Size
+	}
+	return compactStep(ctx, s.db, start, end)
 }
 
 // BoxChanges calls fn, in round order (newest first if desc), for every

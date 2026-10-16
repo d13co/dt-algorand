@@ -693,6 +693,70 @@ func TestStoreFailedCommit(t *testing.T) {
 	require.Len(t, keys, 3, "x at 0 and 1, the totals at 0")
 }
 
+func TestStoreCompactInSteps(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	defer func(n uint64) { compactChunk = n }(compactChunk)
+	compactChunk = 1
+	defer func(f func(context.Context, *pebble.DB, []byte, []byte) error) { compactStep = f }(compactStep)
+	var steps [][2][]byte
+	compactStep = func(ctx context.Context, db *pebble.DB, start, end []byte) error {
+		steps = append(steps, [2][]byte{slices.Clone(start), slices.Clone(end)})
+		return db.Compact(ctx, start, end, true)
+	}
+
+	// flushes over separate keys, then tombstones over all of them; automatic
+	// compactions may merge the tables, but several remain
+	const tables, objs = 4, 100
+	obj := func(i, j int) []byte { return KvKey(fmt.Sprintf("%d-%03d", i, j)) }
+	for i := 0; i < tables; i++ {
+		b := s.db.NewBatch()
+		for j := 0; j < objs; j++ {
+			require.NoError(t, b.Set(verKey(pfxCheckpoint, obj(i, j), 0), []byte("v"), nil))
+		}
+		require.NoError(t, b.Commit(pebble.NoSync))
+		require.NoError(t, s.db.Flush())
+	}
+	b := s.db.NewBatch()
+	for i := 0; i < tables; i++ {
+		for j := 0; j < objs; j += 2 {
+			require.NoError(t, b.Delete(verKey(pfxCheckpoint, obj(i, j), 0), nil))
+		}
+	}
+	require.NoError(t, b.Commit(pebble.NoSync))
+	require.NoError(t, s.db.Flush())
+
+	require.NoError(t, s.CompactCheckpoints(context.Background()))
+	require.Greater(t, len(steps), 1)
+	require.Equal(t, []byte{pfxBoxIndex}, steps[0][0])
+	for i := 1; i < len(steps); i++ {
+		require.Equal(t, steps[i-1][1], steps[i][0], "step %d starts where step %d ends", i, i-1)
+	}
+	require.Equal(t, []byte{pfxCheckpoint + 1}, steps[len(steps)-1][1])
+	levels, err := s.db.SSTables(pebble.WithProperties())
+	require.NoError(t, err)
+	var entries uint64
+	for l, ts := range levels {
+		for _, tb := range ts {
+			require.Equal(t, len(levels)-1, l, "table %d is above the bottom level", tb.FileNum)
+			require.Zero(t, tb.Properties.NumDeletions, "table %d keeps tombstones", tb.FileNum)
+			entries += tb.Properties.NumEntries
+		}
+	}
+	keys, _ := rawRecords(t, s)
+	require.Len(t, keys, tables*objs/2)
+	it, err := s.db.NewIter(nil)
+	require.NoError(t, err)
+	var live uint64
+	for it.First(); it.Valid(); it.Next() {
+		live++
+	}
+	require.NoError(t, it.Close())
+	require.Equal(t, live, entries, "the tables hold only live records")
+}
+
 func TestStoreRemoveNoops(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
