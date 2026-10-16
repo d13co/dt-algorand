@@ -19,6 +19,7 @@ package test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,6 +74,10 @@ func (l *versionsLedger) AppVersions(aidx basics.AppIndex, r ledger.VersionRange
 }
 func (l *versionsLedger) KvVersions(key string, r ledger.VersionRange) (ledger.VersionPage, error) {
 	l.call, l.r = "kv "+key, r
+	return l.page, l.err
+}
+func (l *versionsLedger) AppBoxVersions(app basics.AppIndex, r ledger.VersionRange) (ledger.VersionPage, error) {
+	l.call, l.r = fmt.Sprintf("boxes %d", app), r
 	return l.page, l.err
 }
 
@@ -259,4 +264,34 @@ func TestVersionsResponses(t *testing.T) {
 	ctx := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
 	require.NoError(t, h.ApplicationBoxVersions(ctx, 9, model.ApplicationBoxVersionsParams{Name: "nope"}))
 	require.Equal(t, http.StatusBadRequest, rec.Code, "bad box name")
+
+	vl.page = ledger.VersionPage{More: true, Next: 12, Versions: []ledger.Version{
+		{Round: 10, Timestamp: 1, Boxes: []ledger.BoxChange{{Name: []byte("a"), Value: []byte("v1")}, {Name: []byte("b"), Deleted: true}}},
+		{Round: 11, Timestamp: 2, Boxes: []ledger.BoxChange{{Name: []byte("a"), Value: []byte{}}}},
+	}}
+	boxesValues := &[]model.ApplicationBoxesVersionsParamsInclude{model.ApplicationBoxesVersionsParamsIncludeValues}
+	var feed model.BoxesVersionsResponse
+	call(func(ctx echo.Context) error {
+		return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Include: boxesValues})
+	}, &feed)
+	require.Equal(t, "boxes 9", vl.call)
+	require.True(t, vl.r.Values)
+	require.Equal(t, "12", *feed.NextToken)
+	v1, empty := []byte("v1"), []byte{}
+	require.Equal(t, []model.BoxesVersion{
+		{Round: 10, Timestamp: 1, Boxes: []model.BoxChange{{Name: []byte("a"), Value: &v1}, {Name: []byte("b"), Deleted: true}}},
+		{Round: 11, Timestamp: 2, Boxes: []model.BoxChange{{Name: []byte("a"), Value: &empty}}},
+	}, feed.Versions, "an empty value is not a deletion")
+	var rounds model.BoxesVersionsResponse
+	call(func(ctx echo.Context) error {
+		return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{})
+	}, &rounds)
+	require.Nil(t, rounds.Versions[0].Boxes[0].Value, "no values unless included")
+
+	vl.err = fmt.Errorf("lookup: %w before round 7", ledger.ErrNoBoxIndex)
+	rec = httptest.NewRecorder()
+	ctx = echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+	require.NoError(t, h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{}))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "ttimport -index-boxes")
 }

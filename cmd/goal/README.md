@@ -160,6 +160,7 @@ goal app info --app-id ${APPID} --round 1000
 
 # every change of the box, of the app's params and global state, and of an account
 goal app box versions --app-id ${APPID} --name "str:greatBox"
+goal app box versions --app-id ${APPID} --min-round 1000   # every box of the app (no --name)
 goal app versions --app-id ${APPID} --min-round 1000 --all
 goal account versions --address ${ACCOUNT} --exclude all
 

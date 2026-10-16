@@ -19,9 +19,12 @@ package ledger
 import (
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -29,9 +32,11 @@ import (
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/txntest"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
+	"github.com/algorand/go-algorand/ledger/timetravel"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
@@ -380,4 +385,283 @@ func TestTimeTravelVersions(t *testing.T) {
 			check()
 		})
 	}
+}
+
+// boxChurnApp puts arg 1 in box arg 0 and, given arg 2, deletes that box.
+var boxChurnApp = main(`
+	txna ApplicationArgs 0; txna ApplicationArgs 1; box_put
+	txn NumAppArgs; int 3; <; bnz end
+	txna ApplicationArgs 2; box_del; pop
+`)
+
+// TestTimeTravelAppBoxVersions checks the changes of an app's boxes against
+// the boxes at every round: boxes created and deleted in adjacent rounds and
+// within a round, and rewritten unchanged.
+func TestTimeTravelAppBoxVersions(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	for _, n := range []uint64{1, 3} {
+		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
+			genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+			cfg := config.GetDefaultLocal()
+			cfg.EnableTimeTravel = true
+			cfg.TimeTravelCheckpointInterval = n
+			cfg.MaxAcctLookback = 4
+			dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, simpleLedgerNotArchival())
+			defer dl.Close()
+			l := dl.validator
+
+			app := dl.createApp(addrs[2], boxChurnApp)
+			other := dl.createApp(addrs[2], counterApp, basics.StateSchema{NumUint: 1})
+			for _, a := range []basics.AppIndex{app, other} {
+				dl.fullBlock(&txntest.Txn{Type: "pay", Sender: addrs[2], Receiver: a.Address(), Amount: 10_000_000})
+			}
+			names := map[string]bool{}
+			put := func(i int, name string, val uint64, del string) *txntest.Txn {
+				names[name] = true
+				tx := &txntest.Txn{Type: "appl", Sender: addrs[1], ApplicationID: app,
+					ApplicationArgs: [][]byte{[]byte(name), binary.BigEndian.AppendUint64(nil, val)}, Boxes: []transactions.BoxRef{{Name: []byte(name)}}}
+				if del != "" {
+					names[del] = true
+					tx.ApplicationArgs = append(tx.ApplicationArgs, []byte(del))
+					tx.Boxes = append(tx.Boxes, transactions.BoxRef{Name: []byte(del)})
+				}
+				return tx
+			}
+			for i := 0; i < 32; i++ {
+				// "s" changes every 10 rounds: the writes in between are no-ops
+				txs := []*txntest.Txn{put(i, "s", uint64(i/10), "")}
+				if i%2 == 0 { // a new box every other round, deleted two rounds later
+					txs = append(txs, put(i, fmt.Sprintf("c%02d", i), uint64(i), fmt.Sprintf("c%02d", i-2)))
+				}
+				if i%5 == 0 { // created and deleted within the round
+					tn := fmt.Sprintf("t%02d", i)
+					txs = append(txs, put(i, tn, 1, tn))
+				}
+				if i == 9 { // "s" deleted, recreated next round
+					txs = append(txs, put(i, "x", 9, "s"))
+				}
+				if i%4 == 0 {
+					txs = append(txs, &txntest.Txn{Type: "appl", Sender: addrs[3], ApplicationID: other,
+						ApplicationArgs: [][]byte{binary.BigEndian.AppendUint64(nil, uint64(i))}, Boxes: []transactions.BoxRef{{Name: []byte("b")}}})
+				}
+				for j := range txs { // identical transactions recur
+					tx := *txs[j]
+					tx.Note = []byte{byte(i), byte(j)}
+					txs[j] = &tx
+				}
+				dl.fullBlock(txs...)
+				if i == 16 {
+					commitRoundLookback(4, l)
+				}
+			}
+			sorted := slices.Sorted(maps.Keys(names))
+
+			// the oracle: the rounds at which any of the app's boxes differs from the round before
+			oracle := func(values bool) []Version {
+				var out []Version
+				prev := map[string][]byte{}
+				for r := basics.Round(0); r <= l.Latest(); r++ {
+					var v *Version
+					for _, name := range sorted {
+						b, err := l.LookupKv(r, apps.MakeBoxKey(uint64(app), name))
+						require.NoError(t, err)
+						p, had := prev[name]
+						if (b != nil) == had && (b == nil || slices.Equal(b, p)) {
+							continue
+						}
+						if b == nil {
+							delete(prev, name)
+						} else {
+							prev[name] = b
+						}
+						if v == nil {
+							hdr, err := l.BlockHdr(r)
+							require.NoError(t, err)
+							out = append(out, Version{Round: r, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol})
+							v = &out[len(out)-1]
+						}
+						bc := BoxChange{Name: []byte(name), Deleted: b == nil}
+						if values {
+							bc.Value = b
+						}
+						v.Boxes = append(v.Boxes, bc)
+					}
+				}
+				return out
+			}
+			lookup := func(r VersionRange) (VersionPage, error) { return l.AppBoxVersions(app, r) }
+
+			check := func() {
+				latest := l.Latest()
+				for _, values := range []bool{false, true} {
+					want := oracle(values)
+					require.Greater(t, len(want), 15)
+					var multi bool
+					for _, v := range want {
+						multi = multi || len(v.Boxes) > 2
+					}
+					require.True(t, multi, "some rounds change several boxes")
+					all := VersionRange{Max: latest, Limit: 1000, Values: values}
+					p, err := lookup(all)
+					require.NoError(t, err)
+					require.False(t, p.More)
+					require.Equal(t, want, p.Versions, "values=%v", values)
+
+					desc := slices.Clone(want)
+					slices.Reverse(desc)
+					var mid []Version
+					lo, hi := want[0].Round+1, want[len(want)-1].Round-1
+					for _, v := range want {
+						if v.Round >= lo && v.Round <= hi {
+							mid = append(mid, v)
+						}
+					}
+					for _, limit := range []uint64{1, 2, 3} {
+						r := all
+						r.Limit = limit
+						require.Equal(t, want, ttPages(t, lookup, r), "limit %d", limit)
+						r.Desc = true
+						require.Equal(t, desc, ttPages(t, lookup, r), "limit %d desc", limit)
+						r.Desc, r.Min, r.Max = false, lo, hi
+						require.Equal(t, mid, ttPages(t, lookup, r), "limit %d mid", limit)
+					}
+					if values {
+						r := all
+						r.MaxBytes = 1
+						require.Equal(t, want, ttPages(t, lookup, r), "byte budget")
+						p, err := lookup(r)
+						require.NoError(t, err)
+						require.Len(t, p.Versions, 1)
+					}
+				}
+				p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
+				require.NoError(t, err)
+				require.Empty(t, p.Versions, "an app without boxes")
+				_, err = l.AppBoxVersions(app, VersionRange{Max: latest + 1, Limit: 10})
+				require.ErrorIs(t, err, errHistoryUnavailable)
+			}
+
+			last, _ := l.history.store.Last()
+			require.Less(t, basics.Round(last), l.Latest()-10, "the last rounds are in memory only")
+			check()
+
+			for range 8 {
+				dl.fullBlock()
+			}
+			commitRoundLookback(4, l)
+			last, _ = l.history.store.Last()
+			require.Greater(t, basics.Round(last), l.Latest()-10, "the rounds reached the store")
+			check()
+		})
+	}
+}
+
+// TestTimeTravelAppBoxVersionsClose checks that closing the store while box
+// pages are read does not hang: a page reads headers only once the store's
+// scan is done, since a reader that takes the store's lock again behind a
+// waiting Close deadlocks.
+func TestTimeTravelAppBoxVersionsClose(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	s, err := timetravel.Open(t.TempDir(), timetravel.Options{})
+	require.NoError(t, err)
+	const rounds = 2000
+	for r := uint64(0); r < rounds; r++ {
+		hdr := protocol.Encode(&bookkeeping.BlockHeader{Round: basics.Round(r), TimeStamp: int64(r)})
+		var chs []timetravel.Change
+		for _, name := range []string{"a", fmt.Sprint(r)} {
+			chs = append(chs, timetravel.Change{Key: timetravel.KvKey(apps.MakeBoxKey(1, name)), Value: binary.BigEndian.AppendUint64(nil, r)})
+		}
+		require.NoError(t, s.AddRound(r, chs, hdr, nil))
+	}
+	h := &histView{store: s, last: rounds - 1}
+	p, err := histAppBoxVersions(h, 1, VersionRange{Max: rounds - 1, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, p.Versions, 10)
+	require.Len(t, p.Versions[1].Boxes, 2)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				if _, err := histAppBoxVersions(h, 1, VersionRange{Max: rounds - 1, Limit: 1000, Desc: true}); err != nil {
+					require.ErrorIs(t, err, timetravel.ErrClosed)
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	closed := make(chan error)
+	go func() {
+		closed <- s.Close()
+		wg.Wait()
+		close(closed)
+	}()
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+		<-closed
+	case <-time.After(20 * time.Second):
+		t.Fatal("Close hangs while box pages are read")
+	}
+}
+
+// TestTimeTravelAppBoxVersionsPartialIndex checks box pages on a store whose
+// box index starts after its first round: descending pages list the changes
+// since, then fail; ascending ones fail at once.
+func TestTimeTravelAppBoxVersionsPartialIndex(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	dir := t.TempDir()
+	s, err := timetravel.Open(dir, timetravel.Options{})
+	require.NoError(t, err)
+	round := func(r uint64) {
+		hdr := protocol.Encode(&bookkeeping.BlockHeader{Round: basics.Round(r), TimeStamp: int64(r)})
+		ch := timetravel.Change{Key: timetravel.KvKey(apps.MakeBoxKey(1, "a")), Value: binary.BigEndian.AppendUint64(nil, r)}
+		require.NoError(t, s.AddRound(r, []timetravel.Change{ch}, hdr, nil))
+	}
+	for r := uint64(0); r < 10; r++ {
+		round(r)
+	}
+	// as a build without the index leaves the store
+	require.NoError(t, s.DB().DeleteRange([]byte{'b'}, []byte{'c'}, nil))
+	require.NoError(t, s.DB().Delete([]byte("mb"), nil))
+	require.NoError(t, s.Close())
+	s, err = timetravel.Open(dir, timetravel.Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	from, _ := s.BoxIndexFrom()
+	require.EqualValues(t, 10, from)
+	for r := uint64(10); r < 20; r++ {
+		round(r)
+	}
+	h := &histView{store: s, last: 19}
+
+	r := VersionRange{Max: 19, Limit: 4, Desc: true}
+	var got []basics.Round
+	for {
+		p, err := histAppBoxVersions(h, 1, r)
+		if err != nil {
+			require.ErrorIs(t, err, ErrNoBoxIndex)
+			break
+		}
+		for _, v := range p.Versions {
+			got = append(got, v.Round)
+		}
+		require.True(t, p.More, "rounds before the index may hold changes")
+		r.Max = p.Next
+	}
+	require.Equal(t, []basics.Round{19, 18, 17, 16, 15, 14, 13, 12, 11, 10}, got)
+	_, err = histAppBoxVersions(h, 1, VersionRange{Max: 19, Limit: 4})
+	require.ErrorIs(t, err, ErrNoBoxIndex)
+	p, err := histAppBoxVersions(h, 1, VersionRange{Min: 10, Max: 19, Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, p.Versions, 10)
 }

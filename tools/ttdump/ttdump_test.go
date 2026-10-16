@@ -123,6 +123,7 @@ func testStore(t *testing.T, o timetravel.Options) string {
 	}
 	asaParams := basics.AssetParams{Total: 1000, UnitName: "x", Manager: addrA}
 	box := timetravel.KvKey(apps.MakeBoxKey(uint64(app), "b"))
+	box2 := timetravel.KvKey(apps.MakeBoxKey(uint64(app), "c"))
 	rounds := [][]timetravel.Change{
 		{totals(100), acct(addrA, 60, 0, 0), acct(addrB, 40, 0, 0)},
 		{totals(100), acct(addrA, 59, 0, 0),
@@ -131,9 +132,9 @@ func testStore(t *testing.T, o timetravel.Options) string {
 		{totals(100), acct(addrB, 39, 1, 0), {Key: timetravel.HoldingKey(addrB, asa), Value: protocol.Encode(&basics.AssetHolding{Amount: 0})}},
 		{totals(100), appParams(1), {Key: timetravel.CreatedKey(addrA, basics.AppCreatable, basics.CreatableIndex(app)), Value: []byte{}},
 			{Key: box, Value: []byte("v1")}},
-		{totals(100), appParams(2), {Key: box, Value: []byte("v2")},
+		{totals(100), appParams(2), {Key: box, Value: []byte("v2")}, {Key: box2, Value: []byte("c1")},
 			{Key: timetravel.LocalKey(addrB, app), Value: protocol.Encode(&basics.AppLocalState{Schema: basics.StateSchema{NumUint: 1}})}},
-		{totals(100), {Key: box, Deleted: true}, {Key: timetravel.HoldingKey(addrB, asa), Value: protocol.Encode(&basics.AssetHolding{Amount: 5})}},
+		{totals(100), {Key: box, Deleted: true}, {Key: box2, Deleted: true}, {Key: timetravel.HoldingKey(addrB, asa), Value: protocol.Encode(&basics.AssetHolding{Amount: 5})}},
 		{totals(99), {Key: timetravel.HoldingKey(addrB, asa), Deleted: true}, acct(addrB, 39, 0, 1)},
 	}
 	for rnd, changes := range rounds {
@@ -248,6 +249,26 @@ func TestCommands(t *testing.T) {
 			vs = stj("versions", "totals")
 			require.Len(t, vs, 2)
 			require.EqualValues(t, 6, vs[1]["round"])
+			// every box of the app
+			feed := fmt.Sprintf("boxes:%d", app)
+			vs = stj("versions", feed)
+			require.Len(t, vs, 3)
+			require.EqualValues(t, 4, vs[1]["round"])
+			require.Len(t, vs[1]["boxes"], 2)
+			require.Equal(t, map[string]any{"name": "Yw==", "deleted": false, "value": "YzE="}, vs[1]["boxes"].([]any)[1]) // "c", "c1"
+			require.Equal(t, map[string]any{"name": "Yw==", "deleted": true}, vs[2]["boxes"].([]any)[1])
+			text = st("versions", feed, "-from", "4")
+			require.Contains(t, text, "value str:v1 -> str:v2")
+			require.Contains(t, text, fmt.Sprintf("box:%d:str:c created", app))
+			require.Contains(t, text, fmt.Sprintf("box:%d:str:c deleted", app))
+			require.Len(t, stj("versions", feed, "-desc", "-n", "1"), 1)
+			require.Error(t, ttdumpErr(t, "-store", dir, "versions", "boxes:x"))
+			require.EqualValues(t, 0, info["box-index-from"])
+			require.Contains(t, st("info"), "box index complete")
+			idx := stj("raw", "-prefix", "b")
+			require.Len(t, idx, 5, "an entry per box write")
+			require.Equal(t, boxSpec, idx[0]["object"])
+			require.EqualValues(t, 3, idx[0]["round"])
 
 			// account: the REST account with its resources
 			acct := stj("account", addrB.String(), "-r", "5")[0]
@@ -264,7 +285,7 @@ func TestCommands(t *testing.T) {
 			require.Contains(t, st("ls", "boxes", fmt.Sprint(app), "-r", "4"), "str:v2")
 			require.Contains(t, st("ls", "boxes", fmt.Sprint(app)), "nothing at round 6")
 			ever := stj("ls", "boxes", fmt.Sprint(app), "-ever")
-			require.Len(t, ever, 1)
+			require.Len(t, ever, 2)
 			require.Equal(t, boxSpec, ever[0]["object"])
 			require.EqualValues(t, 3, ever[0]["first-round"])
 			lastRecord := 5

@@ -30,7 +30,10 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/algorand/avm-abi/apps"
+
 	"github.com/algorand/go-algorand/cmd/util/ttview"
+	"github.com/algorand/go-algorand/ledger/timetravel"
 )
 
 // The store's record layout (ledger/timetravel/store.go): versioned records
@@ -234,7 +237,7 @@ type rawOut struct {
 
 func cmdRaw(e *env, args []string) error {
 	fs := e.newFlags("raw")
-	prefixFlag := fs.String("prefix", "", "an object, a keyspace (c p r H E m) or hex:PREFIX")
+	prefixFlag := fs.String("prefix", "", "an object, a keyspace (b c p r H E m) or hex:PREFIX")
 	after := fs.String("after", "", "start after this record key (hex, as printed)")
 	n := fs.Uint64("n", 100, "at most this many records (0: all)")
 	if _, err := parse(fs, args, 0, 0); err != nil {
@@ -245,7 +248,7 @@ func cmdRaw(e *env, args []string) error {
 	switch p := *prefixFlag; {
 	case p == "":
 		ranges = [][]byte{nil}
-	case len(p) == 1 && strings.Contains("cprHEm", p):
+	case len(p) == 1 && strings.Contains("bcprHEm", p):
 		ranges = [][]byte{[]byte(p)}
 	case strings.HasPrefix(p, "hex:"):
 		b, err := hex.DecodeString(p[4:])
@@ -336,6 +339,16 @@ func rawRecord(k, v []byte) rawOut {
 		if len(k) == 9 {
 			rnd := binary.BigEndian.Uint64(k[1:])
 			out.Round = &rnd
+		}
+	case 'b': // app, round, name
+		if len(k) >= 1+8+8 {
+			app, rnd := binary.BigEndian.Uint64(k[1:]), binary.BigEndian.Uint64(k[9:])
+			o := object{kind: timetravel.KindKv, kv: apps.MakeBoxKey(app, string(k[17:]))}
+			o.splitBox()
+			out.Object, out.Round = o.String(), &rnd
+		}
+		if len(v) > 0 {
+			out.Tag, out.Value = string(v[:1]), v[1:]
 		}
 	}
 	return out

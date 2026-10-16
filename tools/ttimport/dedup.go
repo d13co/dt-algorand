@@ -31,34 +31,45 @@ import (
 	"github.com/algorand/go-algorand/logging"
 )
 
-// removeNoops removes the records that change nothing from the time travel
-// store of a data directory whose algod is stopped: stores written before
-// the ledger skipped them hold one for the totals and the rewards pool in
-// nearly every round (timetravel.Store.RemoveNoops).
-func removeNoops(dataDir string) error {
+// openStore opens the time travel store of a data directory whose algod is
+// stopped, and returns its path and size.
+func openStore(dataDir string) (*timetravel.Store, string, int64, error) {
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(dataDir, config.GenesisJSONFile))
 	if err != nil {
-		return err
+		return nil, "", 0, err
 	}
 	cfg, err := config.LoadConfigFromDisk(dataDir)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, "", 0, err
 	}
 	dirs, err := cfg.EnsureAndResolveGenesisDirs(dataDir, genesis.ID(), logging.Base())
 	if err != nil {
-		return err
+		return nil, "", 0, err
 	}
 	path := ledger.TimeTravelPath(ledger.DirsAndPrefix{DBFilePrefix: config.LedgerFilenamePrefix, ResolvedGenesisDirs: dirs})
 	if _, err = os.Stat(path); err != nil {
-		return fmt.Errorf("no time travel store: %w", err)
+		return nil, "", 0, fmt.Errorf("no time travel store: %w", err)
 	}
-	before, err := dirSize(path)
+	size, err := dirSize(path)
 	if err != nil {
-		return err
+		return nil, "", 0, err
 	}
 	s, err := timetravel.Open(path, timetravel.Options{})
 	if err != nil {
-		return fmt.Errorf("%w (is algod running on %s?)", err, dataDir)
+		return nil, "", 0, fmt.Errorf("%w (is algod running on %s?)", err, dataDir)
+	}
+	return s, path, size, nil
+}
+
+// removeNoops removes the records that change nothing from the time travel
+// store of a data directory whose algod is stopped: stores written before
+// the ledger skipped them hold one for the totals and the rewards pool in
+// nearly every round (timetravel.Store.RemoveNoops). It rebuilds the box
+// index in the same pass.
+func removeNoops(dataDir string) error {
+	s, path, before, err := openStore(dataDir)
+	if err != nil {
+		return err
 	}
 	defer s.Close()
 	last, _ := s.Last()
@@ -77,6 +88,47 @@ func removeNoops(dataDir string) error {
 	fmt.Printf("removed %d records in %v; compacting\n", removed, time.Since(start).Round(time.Second))
 	start = time.Now()
 	if err = s.CompactCheckpoints(context.Background()); err != nil {
+		return err
+	}
+	if err = s.Close(); err != nil {
+		return err
+	}
+	after, err := dirSize(path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("compacted in %v: %.2f GiB -> %.2f GiB\n", time.Since(start).Round(time.Second), gib(uint64(before)), gib(uint64(after)))
+	return nil
+}
+
+// buildBoxIndex builds the box index of the time travel store of a data
+// directory whose algod is stopped (timetravel.Store.IndexBoxes).
+func buildBoxIndex(dataDir string) error {
+	s, path, before, err := openStore(dataDir)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	last, _ := s.Last()
+	if from, ok := s.BoxIndexFrom(); ok {
+		fmt.Printf("the box index of %s (rounds 0..%d, %.2f GiB) starts at round %d; rebuilding it\n", path, last, gib(uint64(before)), from)
+	} else {
+		fmt.Printf("rebuilding the box index of %s (rounds 0..%d, %.2f GiB)\n", path, last, gib(uint64(before)))
+	}
+
+	start, printed := time.Now(), time.Now()
+	indexed, err := s.IndexBoxes(context.Background(), func(scanned, indexed uint64) {
+		if time.Since(printed) >= progressInterval {
+			printed = time.Now()
+			fmt.Printf("scanned %d, indexed %d box versions\n", scanned, indexed)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("indexed %d box versions in %v; compacting\n", indexed, time.Since(start).Round(time.Second))
+	start = time.Now()
+	if err = s.CompactBoxIndex(context.Background()); err != nil {
 		return err
 	}
 	if err = s.Close(); err != nil {

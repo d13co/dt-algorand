@@ -164,6 +164,17 @@ const (
 	GetApplicationBoxesParamsIncludeValues GetApplicationBoxesParamsInclude = "values"
 )
 
+// Defines values for ApplicationBoxesVersionsParamsOrder.
+const (
+	ApplicationBoxesVersionsParamsOrderAsc  ApplicationBoxesVersionsParamsOrder = "asc"
+	ApplicationBoxesVersionsParamsOrderDesc ApplicationBoxesVersionsParamsOrder = "desc"
+)
+
+// Defines values for ApplicationBoxesVersionsParamsInclude.
+const (
+	ApplicationBoxesVersionsParamsIncludeValues ApplicationBoxesVersionsParamsInclude = "values"
+)
+
 // Defines values for ApplicationVersionsParamsOrder.
 const (
 	ApplicationVersionsParamsOrderAsc  ApplicationVersionsParamsOrder = "asc"
@@ -758,6 +769,18 @@ type Box struct {
 	Value []byte `json:"value"`
 }
 
+// BoxChange A change of a box.
+type BoxChange struct {
+	// Deleted Whether the change is the deletion of the box.
+	Deleted bool `json:"deleted"`
+
+	// Name The box name, base64 encoded.
+	Name []byte `json:"name"`
+
+	// Value With `include=values`, the new box value, base64 encoded.
+	Value *[]byte `json:"value,omitempty"`
+}
+
 // BoxDescriptor Box descriptor describes a Box.
 type BoxDescriptor struct {
 	// Name Base64 encoded box name
@@ -789,6 +812,18 @@ type BoxVersion struct {
 
 	// Value With `include=values`, the new box value, base64 encoded.
 	Value *[]byte `json:"value,omitempty"`
+}
+
+// BoxesVersion The changes of an application's boxes in a round.
+type BoxesVersion struct {
+	// Boxes The boxes that changed, in name order.
+	Boxes []BoxChange `json:"boxes"`
+
+	// Round The round of the version.
+	Round basics.Round `json:"round"`
+
+	// Timestamp The timestamp of the version's block, in seconds since the epoch.
+	Timestamp int64 `json:"timestamp"`
 }
 
 // BuildVersion defines model for BuildVersion.
@@ -1497,6 +1532,16 @@ type BoxesResponse struct {
 	Round *basics.Round `json:"round,omitempty"`
 }
 
+// BoxesVersionsResponse defines model for BoxesVersionsResponse.
+type BoxesVersionsResponse struct {
+	// NextToken Present if more versions remain: provide it as the next parameter to get them.
+	NextToken *string `json:"next-token,omitempty"`
+
+	// Round The last round of the range: `max-round`, or the latest round.
+	Round    basics.Round   `json:"round"`
+	Versions []BoxesVersion `json:"versions"`
+}
+
 // CatchpointAbortResponse An catchpoint abort response.
 type CatchpointAbortResponse struct {
 	// CatchupMessage Catchup abort response string
@@ -1979,6 +2024,33 @@ type GetApplicationBoxesParams struct {
 
 // GetApplicationBoxesParamsInclude defines parameters for GetApplicationBoxes.
 type GetApplicationBoxesParamsInclude string
+
+// ApplicationBoxesVersionsParams defines parameters for ApplicationBoxesVersions.
+type ApplicationBoxesVersionsParams struct {
+	// MinRound Include versions at this round or later. Defaults to 0.
+	MinRound *basics.Round `form:"min-round,omitempty" json:"min-round,omitempty"`
+
+	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
+	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
+
+	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
+	Order *ApplicationBoxesVersionsParamsOrder `form:"order,omitempty" json:"order,omitempty"`
+
+	// Limit Maximum number of results to return.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	Include *[]ApplicationBoxesVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// ApplicationBoxesVersionsParamsOrder defines parameters for ApplicationBoxesVersions.
+type ApplicationBoxesVersionsParamsOrder string
+
+// ApplicationBoxesVersionsParamsInclude defines parameters for ApplicationBoxesVersions.
+type ApplicationBoxesVersionsParamsInclude string
 
 // ApplicationVersionsParams defines parameters for ApplicationVersions.
 type ApplicationVersionsParams struct {

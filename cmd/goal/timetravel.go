@@ -17,6 +17,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,8 +84,7 @@ func init() {
 	assetVersionsCmd.MarkFlagRequired("assetid")
 	appVersionsCmd.Flags().Uint64Var((*uint64)(&appIdx), "app-id", 0, "Application ID (required)")
 	appVersionsCmd.MarkFlagRequired("app-id")
-	appBoxVersionsCmd.Flags().StringVarP(&boxName, "name", "n", "", "Application box name, in the same form as app-arg (required)")
-	appBoxVersionsCmd.MarkFlagRequired("name")
+	appBoxVersionsCmd.Flags().StringVarP(&boxName, "name", "n", "", "Application box name, in the same form as app-arg (default: every box of the application)")
 }
 
 // withRound returns client pinned to --round, if cmd has it, once the node
@@ -198,36 +198,53 @@ var appVersionsCmd = &cobra.Command{
 
 var appBoxVersionsCmd = &cobra.Command{
 	Use:   "versions",
-	Short: "List the versions of an application box (time travel)",
-	Long:  `List the rounds at which an application box was created, written or deleted, with its values. Needs a node with EnableTimeTravel.`,
+	Short: "List the versions of an application's boxes (time travel)",
+	Long:  `List the rounds at which an application box was created, written or deleted, with its values. Without --name, list the changes of every box of the application, round by round. Needs a node with EnableTimeTravel.`,
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, _ []string) {
 		client := ensureAlgodClient(datadir.EnsureSingleDataDir())
+		if boxName == "" {
+			listVersions(cmd, client, func(p apiclient.VersionsParams) (any, *string, []versionEntry, error) {
+				resp, err := client.ApplicationBoxesVersions(appIdx, p)
+				var ens []versionEntry
+				for _, v := range resp.Versions {
+					for _, b := range v.Boxes {
+						ens = append(ens, boxVersionEntry(v.Round, v.Timestamp, b.Name, b.Deleted, b.Value))
+					}
+				}
+				return resp, resp.NextToken, ens, err
+			})
+			return
+		}
 		name, err := newAppCallBytes(boxName).Raw()
 		if err != nil {
 			reportErrorf(errorInvalidBoxName, boxName, err)
-		}
-		label := fmt.Sprintf("box:%d:%s", appIdx, ttview.AppCallBytes(name))
-		baseline := func(c libgoal.Client) (any, error) {
-			box, err := c.GetApplicationBoxByName(appIdx, boxName)
-			if err != nil {
-				return nil, err
-			}
-			return model.Box{Name: box.Name, Value: box.Value}, nil
 		}
 		listVersions(cmd, client, func(p apiclient.VersionsParams) (any, *string, []versionEntry, error) {
 			resp, err := client.ApplicationBoxVersions(appIdx, boxName, p)
 			var ens []versionEntry
 			for _, v := range resp.Versions {
-				var val any
-				if v.Value != nil {
-					val = model.Box{Name: name, Value: *v.Value}
-				}
-				ens = append(ens, versionEntry{v.Round, v.Timestamp, label, v.Deleted, val, baseline})
+				ens = append(ens, boxVersionEntry(v.Round, v.Timestamp, name, v.Deleted, v.Value))
 			}
 			return resp, resp.NextToken, ens, err
 		})
 	},
+}
+
+// boxVersionEntry is a change of box name of the --app-id app.
+func boxVersionEntry(rnd basics.Round, ts int64, name []byte, deleted bool, value *[]byte) versionEntry {
+	var val any
+	if value != nil {
+		val = model.Box{Name: name, Value: *value}
+	}
+	baseline := func(c libgoal.Client) (any, error) {
+		box, err := c.GetApplicationBoxByName(appIdx, "b64:"+base64.StdEncoding.EncodeToString(name))
+		if err != nil {
+			return nil, err
+		}
+		return model.Box{Name: box.Name, Value: box.Value}, nil
+	}
+	return versionEntry{rnd, ts, fmt.Sprintf("box:%d:%s", appIdx, ttview.AppCallBytes(name)), deleted, val, baseline}
 }
 
 // versionEntry is one object's change in a version.

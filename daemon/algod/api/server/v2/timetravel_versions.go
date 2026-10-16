@@ -41,6 +41,7 @@ type versionsLedger interface {
 	AssetVersions(aidx basics.AssetIndex, r ledger.VersionRange) (ledger.VersionPage, error)
 	AppVersions(aidx basics.AppIndex, r ledger.VersionRange) (ledger.VersionPage, error)
 	KvVersions(key string, r ledger.VersionRange) (ledger.VersionPage, error)
+	AppBoxVersions(app basics.AppIndex, r ledger.VersionRange) (ledger.VersionPage, error)
 }
 
 const (
@@ -147,6 +148,9 @@ func nextToken(page ledger.VersionPage) *string {
 func (v2 *Handlers) versionsError(ctx echo.Context, err error) error {
 	if errors.Is(err, ledger.ErrTooManyVersionObjects) {
 		return badRequest(ctx, err, err.Error()+": use exclude or the per-resource versions endpoints", v2.Log)
+	}
+	if errors.Is(err, ledger.ErrNoBoxIndex) {
+		return serviceUnavailable(ctx, err, err.Error()+": build it with ttimport -index-boxes while the node is stopped", v2.Log)
 	}
 	return internalError(ctx, err, errFailedLookingUpLedger, v2.Log)
 }
@@ -418,4 +422,35 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 		out = append(out, mv)
 	}
 	return ctx.JSON(http.StatusOK, model.BoxVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+}
+
+// BoxesVersionToModel is the REST form of a version from the ledger's
+// AppBoxVersions, with the values if values is set.
+func BoxesVersionToModel(v ledger.Version, values bool) model.BoxesVersion {
+	mv := model.BoxesVersion{Round: v.Round, Timestamp: v.Timestamp, Boxes: make([]model.BoxChange, len(v.Boxes))}
+	for i, b := range v.Boxes {
+		mv.Boxes[i] = model.BoxChange{Name: b.Name, Deleted: b.Deleted}
+		if values && !b.Deleted {
+			mv.Boxes[i].Value = &v.Boxes[i].Value
+		}
+	}
+	return mv
+}
+
+// ApplicationBoxesVersions lists the changes of an application's boxes.
+// (GET /v2/applications/{application-id}/boxes/versions)
+func (v2 *Handlers) ApplicationBoxesVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationBoxesVersionsParams) error {
+	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include)})
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
+	page, err := vl.AppBoxVersions(applicationID, r)
+	if err != nil {
+		return v2.versionsError(ctx, err)
+	}
+	out := make([]model.BoxesVersion, 0, len(page.Versions))
+	for _, v := range page.Versions {
+		out = append(out, BoxesVersionToModel(v, r.Values))
+	}
+	return ctx.JSON(http.StatusOK, model.BoxesVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }

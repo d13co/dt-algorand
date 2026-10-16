@@ -88,6 +88,16 @@ func (c *Client) ApplicationVersions(appID basics.AppIndex, p algodclient.Versio
 	return
 }
 
+// ApplicationBoxesVersions lists the changes of an application's boxes
+// (time travel).
+func (c *Client) ApplicationBoxesVersions(appID basics.AppIndex, p algodclient.VersionsParams) (resp model.BoxesVersionsResponse, err error) {
+	algod, err := c.ensureAlgodClient()
+	if err == nil {
+		resp, err = algod.ApplicationBoxesVersions(appID, p)
+	}
+	return
+}
+
 // ApplicationBoxVersions lists the versions of a box, name in goal's app call
 // argument form (time travel).
 func (c *Client) ApplicationBoxVersions(appID basics.AppIndex, name string, p algodclient.VersionsParams) (resp model.BoxVersionsResponse, err error) {

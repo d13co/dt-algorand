@@ -69,6 +69,7 @@ var keyspaces = []struct {
 }{
 	{'E', "expired online stake", false},
 	{'H', "headers and digests", false},
+	{'b', "box index", false},
 	{'c', "checkpoints (versions)", true},
 	{'p', "patches", true},
 	{'r', "round index", false},
@@ -90,6 +91,7 @@ type infoOut struct {
 	CheckpointInterval uint64     `json:"checkpoint-interval"`
 	Incremental        bool       `json:"incremental"`
 	DiskBytes          int64      `json:"disk-bytes"`
+	BoxIndexFrom       *uint64    `json:"box-index-from,omitempty"` // absent while it is rebuilt
 	Estimates          []estimate `json:"estimates"`
 }
 
@@ -99,6 +101,9 @@ func cmdInfo(e *env, args []string) error {
 	}
 	out := infoOut{Path: e.path, First: uint64(e.first), Last: uint64(e.last),
 		CheckpointInterval: e.store.CheckpointInterval(), Incremental: e.store.Incremental()}
+	if from, ok := e.store.BoxIndexFrom(); ok {
+		out.BoxIndexFrom = &from
+	}
 	if hdr, err := e.header(e.first); err == nil {
 		out.FirstTimestamp = hdr.TimeStamp
 	}
@@ -138,7 +143,15 @@ func cmdInfo(e *env, args []string) error {
 	if out.Incremental {
 		fmt.Fprint(e.out, ", incremental patches")
 	}
-	fmt.Fprintf(e.out, "\ndisk         %s\n\n", sizeString(uint64(out.DiskBytes)))
+	fmt.Fprintf(e.out, "\ndisk         %s\n", sizeString(uint64(out.DiskBytes)))
+	switch from := out.BoxIndexFrom; {
+	case from == nil:
+		fmt.Fprint(e.out, "box index    being rebuilt (ttimport -index-boxes)\n\n")
+	case *from > out.First:
+		fmt.Fprintf(e.out, "box index    from round %d (ttimport -index-boxes builds the rest)\n\n", *from)
+	default:
+		fmt.Fprint(e.out, "box index    complete\n\n")
+	}
 	rows := make([][]string, 0, len(out.Estimates))
 	for _, est := range out.Estimates {
 		rows = append(rows, []string{est.Keyspace, est.Kind, est.Name, sizeString(est.Bytes)})
@@ -369,8 +382,13 @@ func cmdVersions(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	o, err := parseSpec(pos[0])
-	if err != nil {
+	var o object
+	if a, ok := strings.CutPrefix(pos[0], "boxes:"); ok {
+		o = object{kind: timetravel.KindKv, appBoxes: true}
+		if o.app, err = strconv.ParseUint(a, 10, 64); err != nil {
+			return usagef("bad object %q: expected boxes:APP", pos[0])
+		}
+	} else if o, err = parseSpec(pos[0]); err != nil {
 		return usageError{err}
 	}
 	ex, err := parseExclude(*exclude)
@@ -472,6 +490,11 @@ func cmdVersions(e *env, args []string) error {
 		}
 	case timetravel.KindKv:
 		page = func(r ledger.VersionRange) (ledger.VersionPage, error) { return reader.KvVersions(o.kv, r) }
+		if o.appBoxes {
+			page = func(r ledger.VersionRange) (ledger.VersionPage, error) {
+				return reader.AppBoxVersions(basics.AppIndex(o.app), r)
+			}
+		}
 	}
 	vr := ledger.VersionRange{Min: lo, Max: hi, Desc: *desc, Limit: versionsPage, Values: true}
 	for more() {
@@ -555,6 +578,25 @@ func (e *env) version(o object, v ledger.Version, add func(basics.Round, int64, 
 		}
 		return add(v.Round, v.Timestamp, versionEntry{o, mv.Deleted, ptrAny(mv.Application)})
 	case timetravel.KindKv:
+		if o.appBoxes {
+			mv := v2.BoxesVersionToModel(v, true)
+			if e.json {
+				return e.emit(mv)
+			}
+			for _, b := range mv.Boxes {
+				ob := object{kind: timetravel.KindKv, kv: apps.MakeBoxKey(o.app, string(b.Name))}
+				ob.key = timetravel.KvKey(ob.kv)
+				ob.splitBox()
+				var val any
+				if b.Value != nil {
+					val = model.Box{Name: b.Name, Round: v.Round, Value: *b.Value}
+				}
+				if err := add(v.Round, v.Timestamp, versionEntry{ob, b.Deleted, val}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 		mv, err := v2.BoxVersionToModel(v, true)
 		if err != nil || e.json {
 			return errOr(err, e.emit, mv)

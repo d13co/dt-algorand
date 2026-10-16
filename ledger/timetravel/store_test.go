@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -77,13 +78,124 @@ func TestKvKeyOrder(t *testing.T) {
 	}
 }
 
-// modelObjects returns the totals and 30 kv keys, some of them prefixes of others.
+// modelApps are the apps of the boxes of modelObjects, and one without any.
+// Their ids have zero bytes, which kv keys escape.
+var modelApps = []uint64{1, 1<<56 | 1, 2}
+
+// modelObjects returns the totals, 30 kv keys too short to be boxes, some of
+// them prefixes of others, and the boxes of two apps.
 func modelObjects() [][]byte {
 	objs := [][]byte{TotalsKey}
 	for i := 0; i < 30; i++ {
 		objs = append(objs, KvKey(fmt.Sprintf("bx:\x00\x01%c", 'a'+i%5)+string(make([]byte, i%3))))
 	}
+	for _, app := range modelApps[:2] {
+		for _, name := range []string{"", "\x00", "a", "a\x00b", "b", "a"} {
+			objs = append(objs, boxObject(app, []byte(name)))
+		}
+	}
 	return objs
+}
+
+// boxChange is a change BoxChanges reports.
+type boxChange struct {
+	rnd  uint64
+	name string
+	val  []byte
+	ok   bool
+}
+
+// modelBoxChanges returns the changes of the boxes of app in [lo, hi]: the
+// rounds at which a box's state differs from the round before.
+func modelBoxChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uint64, desc bool) []boxChange {
+	var names []string
+	for _, obj := range objs {
+		if a, name, ok := BoxOf(obj); ok && a == app {
+			names = append(names, string(name))
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	var out []boxChange
+	for r := lo; r <= hi && r < uint64(len(history)); r++ {
+		for _, name := range names {
+			k := string(boxObject(app, []byte(name)))
+			v, ok := history[r][k]
+			var pv []byte
+			var pok bool
+			if r > 0 {
+				pv, pok = history[r-1][k]
+			}
+			if ok != pok || (ok && !bytes.Equal(v, pv)) {
+				out = append(out, boxChange{r, name, v, ok})
+			}
+		}
+	}
+	if desc {
+		slices.Reverse(out)
+	}
+	return out
+}
+
+// boxChanges returns what BoxChanges reports, up to limit changes (0: all).
+func boxChanges(t *testing.T, s *Store, app, lo, hi uint64, desc bool, limit int) []boxChange {
+	var out []boxChange
+	require.NoError(t, s.BoxChanges(app, lo, hi, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		out = append(out, boxChange{rnd, string(name), val, ok})
+		return limit == 0 || len(out) < limit
+	}))
+	return out
+}
+
+// checkBoxChanges compares BoxChanges with the model over random ranges.
+func checkBoxChanges(t *testing.T, s *Store, objs [][]byte, history []map[string][]byte, rng *rand.Rand) {
+	rounds := uint64(len(history))
+	ranges := [][2]uint64{{0, rounds}, {0, 0}, {rounds - 1, rounds - 1}, {5, 4}}
+	for i := 0; i < 20; i++ {
+		lo := uint64(rng.Intn(int(rounds)))
+		ranges = append(ranges, [2]uint64{lo, lo + uint64(rng.Intn(int(rounds)))})
+	}
+	for _, app := range modelApps {
+		for _, rg := range ranges {
+			for _, desc := range []bool{false, true} {
+				want := modelBoxChanges(objs, history, app, rg[0], rg[1], desc)
+				require.Equal(t, want, boxChanges(t, s, app, rg[0], rg[1], desc, 0), "app %d range %v desc %v", app, rg, desc)
+				if len(want) > 2 {
+					require.Equal(t, want[:2], boxChanges(t, s, app, rg[0], rg[1], desc, 2))
+				}
+			}
+		}
+		if app != modelApps[2] {
+			require.NotEmpty(t, modelBoxChanges(objs, history, app, 0, rounds, false))
+		}
+	}
+}
+
+// boxIndexEntries returns the number of entries in the box index.
+func boxIndexEntries(t *testing.T, s *Store) int {
+	it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: []byte{pfxBoxIndex}, UpperBound: []byte{pfxBoxIndex + 1}})
+	require.NoError(t, err)
+	defer it.Close()
+	n := 0
+	for it.First(); it.Valid(); it.Next() {
+		n++
+	}
+	require.NoError(t, it.Error())
+	return n
+}
+
+// boxVersions returns the number of versions of the boxes in objs.
+func boxVersions(t *testing.T, s *Store, objs [][]byte) int {
+	n := 0
+	seen := map[string]bool{}
+	for _, obj := range objs {
+		if _, _, ok := BoxOf(obj); !ok || seen[string(obj)] {
+			continue
+		}
+		seen[string(obj)] = true
+		require.NoError(t, s.Versions(obj, 0, ^uint64(0)-1, false, func(uint64, []byte, bool) bool { n++; return true }))
+	}
+	return n
 }
 
 // modelRounds returns rounds of random changes to objs, a tenth of them
@@ -348,8 +460,157 @@ func TestStoreModel(t *testing.T) {
 					}
 				}
 			}
+
+			from, ok := s.BoxIndexFrom()
+			require.True(t, ok)
+			require.Zero(t, from, "a new store indexes its boxes from the start")
+			checkBoxChanges(t, s, objs, history, rng)
 		})
 	}
+}
+
+// TestStoreIndexBoxes checks that a store written without the box index
+// serves box changes once IndexBoxes builds it, and from the rounds added
+// since meanwhile.
+func TestStoreIndexBoxes(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
+	removeNoopsBatchOps = 3 // commit while scanning
+
+	objs := modelObjects()
+	const rounds = 40
+	changes, history := modelRounds(4, objs, rounds)
+	for _, o := range []Options{{CheckpointInterval: 1}, {CheckpointInterval: 1, DedupEntries: -1}, {CheckpointInterval: 4}, {CheckpointInterval: 4, Incremental: true}} {
+		t.Run(fmt.Sprintf("N=%d/inc=%v/dedup=%d", o.CheckpointInterval, o.Incremental, o.DedupEntries), func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := Open(dir, o)
+			require.NoError(t, err)
+			for r := uint64(0); r < rounds/2; r++ {
+				require.NoError(t, s.AddRound(r, changes[r], nil, nil))
+			}
+			// as a build without the index leaves it
+			require.NoError(t, s.DB().DeleteRange([]byte{pfxBoxIndex}, []byte{pfxBoxIndex + 1}, nil))
+			require.NoError(t, s.DB().Delete(keyBoxIndexMeta, nil))
+			require.NoError(t, s.Close())
+
+			s, err = Open(dir, o)
+			require.NoError(t, err)
+			from, ok := s.BoxIndexFrom()
+			require.True(t, ok)
+			require.EqualValues(t, rounds/2, from, "the index starts with the next round")
+			for r := uint64(rounds / 2); r < rounds; r++ {
+				require.NoError(t, s.AddRound(r, changes[r], nil, nil))
+				if r == rounds*3/4 {
+					// a build without the index adds a round
+					require.NoError(t, s.DB().Set(keyBoxIndexMeta, boxIndexMeta(from, r), nil))
+					require.NoError(t, s.Close())
+					s, err = Open(dir, o)
+					require.NoError(t, err)
+					from, _ = s.BoxIndexFrom()
+					require.EqualValues(t, r+1, from, "rounds a build without the index added are not indexed")
+				}
+			}
+			err = s.BoxChanges(modelApps[0], from-1, rounds, false, func(uint64, []byte, []byte, bool) bool { return true })
+			require.ErrorIs(t, err, ErrNoBoxIndex)
+			for _, desc := range []bool{false, true} {
+				require.Equal(t, modelBoxChanges(objs, history, modelApps[0], from, rounds, desc), boxChanges(t, s, modelApps[0], from, rounds, desc, 0))
+			}
+			// descending, the changes since the index starts come first
+			want := modelBoxChanges(objs, history, modelApps[0], from, rounds, true)
+			require.NotEmpty(t, want)
+			var got []boxChange
+			err = s.BoxChanges(modelApps[0], 0, rounds, true, func(rnd uint64, name, val []byte, ok bool) bool {
+				got = append(got, boxChange{rnd, string(name), val, ok})
+				return true
+			})
+			require.ErrorIs(t, err, ErrNoBoxIndex)
+			require.Equal(t, want, got)
+			require.Equal(t, want[:1], boxChanges(t, s, modelApps[0], 0, rounds, true, 1), "a page that stops before the start needs no more")
+			// read-only, the start is the same and nothing is written
+			require.NoError(t, s.Close())
+			s, err = Open(dir, Options{ReadOnly: true})
+			require.NoError(t, err)
+			roFrom, ok := s.BoxIndexFrom()
+			require.True(t, ok)
+			require.Equal(t, from, roFrom)
+			require.NoError(t, s.Close())
+			s, err = Open(dir, o)
+			require.NoError(t, err)
+
+			var calls int
+			indexed, err := s.IndexBoxes(context.Background(), func(scanned, indexed uint64) { calls++ })
+			require.NoError(t, err)
+			require.Greater(t, calls, 1)
+			require.EqualValues(t, boxVersions(t, s, objs), indexed, "an entry per version")
+			require.EqualValues(t, indexed, boxIndexEntries(t, s))
+			require.NoError(t, s.CompactBoxIndex(context.Background()))
+			from, ok = s.BoxIndexFrom()
+			require.True(t, ok)
+			require.Zero(t, from)
+			checkBoxChanges(t, s, objs, history, rand.New(rand.NewSource(4)))
+
+			// it lasts
+			require.NoError(t, s.Close())
+			s, err = Open(dir, o)
+			require.NoError(t, err)
+			defer s.Close()
+			from, _ = s.BoxIndexFrom()
+			require.Zero(t, from)
+			again, err := s.IndexBoxes(context.Background(), nil)
+			require.NoError(t, err)
+			require.Equal(t, indexed, again, "idempotent")
+			checkBoxChanges(t, s, objs, history, rand.New(rand.NewSource(5)))
+		})
+	}
+
+	// a store without the index opened read-only: nothing to build it with
+	roDir := t.TempDir()
+	ro, err := Open(roDir, Options{})
+	require.NoError(t, err)
+	for r := uint64(0); r < 10; r++ {
+		require.NoError(t, ro.AddRound(r, changes[r], nil, nil))
+	}
+	require.NoError(t, ro.DB().Delete(keyBoxIndexMeta, nil))
+	require.NoError(t, ro.Close())
+	ro, err = Open(roDir, Options{ReadOnly: true})
+	require.NoError(t, err)
+	roFrom, _ := ro.BoxIndexFrom()
+	require.EqualValues(t, 10, roFrom)
+	require.NoError(t, ro.Close())
+	ro, err = Open(roDir, Options{})
+	require.NoError(t, err)
+	_, closer, err := ro.DB().Get(keyBoxIndexMeta)
+	require.NoError(t, err, "the writable open records it")
+	closer.Close()
+	require.NoError(t, ro.Close())
+
+	// an interrupted rebuild leaves the index complete from the next round
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := uint64(0); r < 10; r++ {
+		require.NoError(t, s.AddRound(r, changes[r], nil, nil))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = s.IndexBoxes(ctx, nil)
+	require.ErrorIs(t, err, context.Canceled)
+	from, ok := s.BoxIndexFrom()
+	require.True(t, ok)
+	require.EqualValues(t, 10, from)
+
+	// a store without boxes needs no rebuild
+	dir := t.TempDir()
+	s2, err := Open(dir, Options{})
+	require.NoError(t, err)
+	require.NoError(t, s2.AddRound(0, []Change{{Key: TotalsKey, Value: []byte("t")}}, nil, nil))
+	require.NoError(t, s2.DB().Delete(keyBoxIndexMeta, nil))
+	require.NoError(t, s2.Close())
+	s2, err = Open(dir, Options{})
+	require.NoError(t, err)
+	defer s2.Close()
+	from, _ = s2.BoxIndexFrom()
+	require.Zero(t, from)
 }
 
 func TestLastWritten(t *testing.T) {
@@ -432,6 +693,70 @@ func TestStoreFailedCommit(t *testing.T) {
 	require.Len(t, keys, 3, "x at 0 and 1, the totals at 0")
 }
 
+func TestStoreCompactInSteps(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	defer func(n uint64) { compactChunk = n }(compactChunk)
+	compactChunk = 1
+	defer func(f func(context.Context, *pebble.DB, []byte, []byte) error) { compactStep = f }(compactStep)
+	var steps [][2][]byte
+	compactStep = func(ctx context.Context, db *pebble.DB, start, end []byte) error {
+		steps = append(steps, [2][]byte{slices.Clone(start), slices.Clone(end)})
+		return db.Compact(ctx, start, end, true)
+	}
+
+	// flushes over separate keys, then tombstones over all of them; automatic
+	// compactions may merge the tables, but several remain
+	const tables, objs = 4, 100
+	obj := func(i, j int) []byte { return KvKey(fmt.Sprintf("%d-%03d", i, j)) }
+	for i := 0; i < tables; i++ {
+		b := s.db.NewBatch()
+		for j := 0; j < objs; j++ {
+			require.NoError(t, b.Set(verKey(pfxCheckpoint, obj(i, j), 0), []byte("v"), nil))
+		}
+		require.NoError(t, b.Commit(pebble.NoSync))
+		require.NoError(t, s.db.Flush())
+	}
+	b := s.db.NewBatch()
+	for i := 0; i < tables; i++ {
+		for j := 0; j < objs; j += 2 {
+			require.NoError(t, b.Delete(verKey(pfxCheckpoint, obj(i, j), 0), nil))
+		}
+	}
+	require.NoError(t, b.Commit(pebble.NoSync))
+	require.NoError(t, s.db.Flush())
+
+	require.NoError(t, s.CompactCheckpoints(context.Background()))
+	require.Greater(t, len(steps), 1)
+	require.Equal(t, []byte{pfxBoxIndex}, steps[0][0])
+	for i := 1; i < len(steps); i++ {
+		require.Equal(t, steps[i-1][1], steps[i][0], "step %d starts where step %d ends", i, i-1)
+	}
+	require.Equal(t, []byte{pfxCheckpoint + 1}, steps[len(steps)-1][1])
+	levels, err := s.db.SSTables(pebble.WithProperties())
+	require.NoError(t, err)
+	var entries uint64
+	for l, ts := range levels {
+		for _, tb := range ts {
+			require.Equal(t, len(levels)-1, l, "table %d is above the bottom level", tb.FileNum)
+			require.Zero(t, tb.Properties.NumDeletions, "table %d keeps tombstones", tb.FileNum)
+			entries += tb.Properties.NumEntries
+		}
+	}
+	keys, _ := rawRecords(t, s)
+	require.Len(t, keys, tables*objs/2)
+	it, err := s.db.NewIter(nil)
+	require.NoError(t, err)
+	var live uint64
+	for it.First(); it.Valid(); it.Next() {
+		live++
+	}
+	require.NoError(t, it.Close())
+	require.Equal(t, live, entries, "the tables hold only live records")
+}
+
 func TestStoreRemoveNoops(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
@@ -484,6 +809,11 @@ func TestStoreRemoveNoops(t *testing.T) {
 				return true
 			}))
 		}
+		for _, app := range modelApps {
+			want := modelBoxChanges(objs, history, app, 0, rounds, false)
+			require.Equal(t, want, boxChanges(t, s, app, 0, rounds, false, 0))
+			out = append(out, fmt.Sprint(want))
+		}
 		return out, versions / 2
 	}
 	objects := func(s *Store) (out []string) {
@@ -512,6 +842,7 @@ func TestStoreRemoveNoops(t *testing.T) {
 	defer s.Close()
 	got, _ := answers(s)
 	require.Equal(t, want, got)
+	require.Equal(t, boxVersions(t, s, objs), boxIndexEntries(t, s), "RemoveNoops rebuilt the box index")
 	require.Equal(t, slices.DeleteFunc(wantObjs, func(o string) bool { return o == string(phantom) }), objects(s))
 	keys, vals := rawRecords(t, s)
 	require.Len(t, keys, versions, "every record is a version")
@@ -585,4 +916,98 @@ func TestStoreReadOnly(t *testing.T) {
 
 	_, err = Open(path, Options{ReadOnly: true})
 	require.Error(t, err, "the store is locked while open")
+}
+
+// TestStoreIndexBoxesConcurrent checks that readers running while the box
+// index is rebuilt get either every change or ErrNoBoxIndex.
+func TestStoreIndexBoxesConcurrent(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
+	removeNoopsBatchOps = 2
+
+	objs := modelObjects()
+	const rounds = 40
+	changes, history := modelRounds(6, objs, rounds)
+	s, err := Open(t.TempDir(), Options{DedupEntries: -1})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := uint64(0); r < rounds; r++ {
+		require.NoError(t, s.AddRound(r, changes[r], nil, nil))
+	}
+	want := map[bool][]boxChange{}
+	for _, desc := range []bool{false, true} {
+		want[desc] = modelBoxChanges(objs, history, modelApps[0], 0, rounds, desc)
+	}
+	done := make(chan struct{})
+	rebuilt := make(chan error, 1)
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			var err error
+			if i%2 == 0 {
+				_, err = s.IndexBoxes(context.Background(), nil)
+			} else {
+				_, err = s.RemoveNoops(context.Background(), nil)
+			}
+			if err != nil {
+				rebuilt <- err
+				return
+			}
+		}
+	}()
+	var answered, refused int
+	for running := true; running; {
+		select {
+		case <-done:
+			running = false
+		default:
+		}
+		desc := (answered+refused)%2 == 1
+		var got []boxChange
+		err := s.BoxChanges(modelApps[0], 0, rounds, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+			got = append(got, boxChange{rnd, string(name), val, ok})
+			return true
+		})
+		if errors.Is(err, ErrNoBoxIndex) {
+			refused++
+			continue
+		}
+		require.NoError(t, err)
+		require.Equal(t, want[desc], got)
+		answered++
+	}
+	select {
+	case err := <-rebuilt:
+		require.NoError(t, err)
+	default:
+	}
+	require.Positive(t, answered)
+	t.Logf("%d answered, %d refused during rebuilds", answered, refused)
+
+	// a reader whose iterators open mid-rebuild, and that checks the index
+	// once it is complete again
+	started, opened, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	errc := make(chan error, 1)
+	defer func() { boxChangesOpened = nil }()
+	boxChangesOpened = func() {
+		close(opened)
+		<-finished
+	}
+	go func() {
+		var once sync.Once
+		_, err := s.IndexBoxes(context.Background(), func(uint64, uint64) {
+			once.Do(func() {
+				close(started)
+				<-opened
+			})
+		})
+		errc <- err
+		close(finished)
+	}()
+	<-started
+	err = s.BoxChanges(modelApps[0], 0, rounds, false, func(uint64, []byte, []byte, bool) bool { return true })
+	require.ErrorIs(t, err, ErrNoBoxIndex, "the iterators may lack the rebuild's last entries")
+	require.NoError(t, <-errc)
+	boxChangesOpened = nil
+	require.Equal(t, want[false], boxChanges(t, s, modelApps[0], 0, rounds, false, 0))
 }
