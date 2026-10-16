@@ -346,9 +346,9 @@ func boxIndexError(from uint64) error {
 
 type quietLogger struct{}
 
-func (quietLogger) Infof(string, ...interface{})         {}
-func (quietLogger) Errorf(f string, args ...interface{}) { pebble.DefaultLogger.Errorf(f, args...) }
-func (quietLogger) Fatalf(f string, args ...interface{}) { pebble.DefaultLogger.Fatalf(f, args...) }
+func (quietLogger) Infof(string, ...any)         {}
+func (quietLogger) Errorf(f string, args ...any) { pebble.DefaultLogger.Errorf(f, args...) }
+func (quietLogger) Fatalf(f string, args ...any) { pebble.DefaultLogger.Fatalf(f, args...) }
 
 // Close closes the store, waiting for in-flight operations.
 func (s *Store) Close() error {
@@ -1120,7 +1120,9 @@ func (s *Store) get(obj []byte, rnd uint64) (val []byte, ok bool, err error) {
 		return
 	}
 	if !s.incremental {
-		rec, found, err := s.latest(pfxPatch, obj, c+1, rnd)
+		var rec []byte
+		var found bool
+		rec, found, err = s.latest(pfxPatch, obj, c+1, rnd)
 		if err != nil || !found {
 			return val, ok, err
 		}
