@@ -8,9 +8,13 @@ The Debian package of this fork ([time travel](../../ledger/timetravel/README.md
 installer/dtalgorand/build_deb.sh tmp/dtalgorand
 ```
 
-The script builds the binaries into `tmp/dtalgorand/<arch>/bin`, not `$GOPATH/bin`, and writes `dtalgorand_<version>_<arch>.deb` to the given directory. It builds for the host's architecture only (cgo), so build the arm64 package on an arm64 host. Pass the same `BUILDNUMBER` to both builds to give them the same version.
+The script builds the binaries into `tmp/dtalgorand/<arch>/bin`, not `$GOPATH/bin`, and writes `dtalgorand_<version>_<arch>.deb` to the given directory. It builds for the host's architecture only (cgo), so build the arm64 package on an arm64 host. Pass the same `DEB_VERSION` to both builds to give them the same version.
 
-By default the version is `<VersionMajor>.<VersionMinor>.<build number>` from `config/version.go` and `scripts/buildnumber.py` (days since 2018-05-25, then the hour), so later builds sort higher. Set `DEB_VERSION` to pin the package version instead — the release workflow sets it from the git tag, and `BUILDNUMBER` to its last part so the binaries report the same version, e.g. `DEB_VERSION=5.0.3050 BUILDNUMBER=3050 installer/dtalgorand/build_deb.sh tmp/dtalgorand`.
+The version is the upstream stable release the fork is based on plus a fork revision, `<x.y.z>-dt<n>`, e.g. `5.0.2-dt1`. The script takes `x.y.z` from the nearest upstream `v<x.y.z>-stable` tag in git history, and the binaries report it as their version (`algod -v` says `5.0.2`, as upstream's does). d13co/go-algorand doesn't carry upstream's tags, so fetch them first: `git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'`. If HEAD has a `v<x.y.z>-dt<n>` tag, that is the package version; otherwise it is a dev build, `<x.y.z>-dt<n>+dev<build number>` with `n` the last release on that base (0 if none) and the build number from `scripts/buildnumber.py` (days since 2018-05-25, then the hour), so it sorts after that release and before the next. Set `DEB_VERSION` to pin the package version, e.g. `DEB_VERSION=5.0.2-dt1+dev306622 installer/dtalgorand/build_deb.sh tmp/dtalgorand`.
+
+## Releasing
+
+Push a `v<x.y.z>-dt<n>` tag on `timetravel` and the release workflow builds the .deb, attaches it to a GitHub release and, once approved, publishes it to apt.d13.co. Number the fork revisions from 1 on each upstream base: after merging upstream's `v5.0.3-stable`, the next release is `v5.0.3-dt1`; a fork-only fix on top of it is `v5.0.3-dt2`. The workflow fails if the tag's `x.y.z` isn't the upstream release `timetravel` is based on.
 
 ## Layout
 

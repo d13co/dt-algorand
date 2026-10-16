@@ -46,6 +46,7 @@ jobs:
       - name: Build the .deb
         env:
           DEB_VERSION: 0.0.0
+          BUILDNUMBER: 0 # else build_deb.sh needs upstream's tags
         run: installer/dtalgorand/build_deb.sh dist
       - name: Check the .deb
         run: |

@@ -3,18 +3,20 @@ name: release
 # Version tags publish a GitHub release with the dtalgorand .deb and push it
 # to https://apt.d13.co.
 #
-# The tag is the package version: v<major>.<minor>.<build number>, e.g.
-# v5.0.3021. The workflow strips the leading v and passes it as DEB_VERSION,
-# and the build number as BUILDNUMBER, so the .deb and the binaries in it both
-# carry the tag's version; the check below fails if either disagrees, e.g. when
-# the tag's major.minor isn't config/version.go's. Only such tags match, not
-# the upstream ones (v5.0.2-stable, ...) a clone of go-algorand also has.
+# The tag is v<x.y.z>-dt<n>: the upstream stable release the fork is based on
+# (x.y.z) plus a fork revision (n, from 1 on each new base), e.g. v5.0.2-dt1.
+# The .deb's version is the tag without the leading v, and the binaries report
+# the upstream version (algod -v says 5.0.2). build_deb.sh works both out from
+# git: the nearest upstream v*-stable tag and the dt tag at HEAD. The check
+# below fails if either disagrees with the tag, e.g. when v5.0.3-dt1 is tagged
+# before upstream's v5.0.3-stable is merged. Upstream's own tags
+# (v5.0.2-stable, ...) don't match.
 #
 # The .deb is built on the runner (cgo, host architecture only), so this
 # publishes amd64 for now. Build arm64 on an arm64 host/runner to add it.
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+-dt[0-9]+"]
 
 permissions:
   contents: read
@@ -35,17 +37,16 @@ jobs:
         with:
           cache-prefix: buildsrc
       - uses: ./.github/actions/setup-test
+      - name: Fetch upstream's release tags
+        run: git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'
       - name: Build the .deb
         env:
           BRANCH: timetravel # else a tag checkout stamps the branch as HEAD
-        run: |
-          # The package version is the tag without the leading v, and the
-          # binaries' build number is its last part.
-          v=${GITHUB_REF_NAME#v}
-          DEB_VERSION=$v BUILDNUMBER=${v##*.} installer/dtalgorand/build_deb.sh dist
+        run: installer/dtalgorand/build_deb.sh dist
       - name: Check the versions
         run: |
           v=${GITHUB_REF_NAME#v}
+          base=${v%-dt*}
           d=$(dpkg-deb -f dist/*.deb Version)
           a=$(dpkg-deb -f dist/*.deb Architecture)
           [ "$d" = "$v" ] || { echo "the .deb says $d, tag is $GITHUB_REF_NAME"; exit 1; }
@@ -53,7 +54,7 @@ jobs:
           # algod -v prints <major>.<minor>.<build number>.<channel> on its second line
           dpkg-deb -x dist/*.deb "$RUNNER_TEMP/deb"
           b=$("$RUNNER_TEMP/deb/usr/lib/dtalgorand/bin/algod" -v | sed -n 2p)
-          case "$b" in "$v".*) ;; *) echo "algod says $b, tag is $GITHUB_REF_NAME"; exit 1 ;; esac
+          case "$b" in "$base".*) ;; *) echo "algod says $b, tag is $GITHUB_REF_NAME"; exit 1 ;; esac
           (cd dist && sha256sum ./*.deb > checksums.txt && cat checksums.txt)
       - name: Publish the release
         env:
