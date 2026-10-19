@@ -1047,7 +1047,7 @@ type ScratchChange struct {
 
 // SimulateInitialStates Initial states of resources that were accessed during simulation.
 type SimulateInitialStates struct {
-	// AppInitialStates The initial states of accessed application before simulation. The order of this array is arbitrary.
+	// AppInitialStates The initial states of accessed application before simulation. The order of this array is arbitrary. With several transaction groups, these are the states before the first group, recorded the first time any group accessed them. Apps created during the simulation are left out; with parallel-groups, several groups may create the same app ID.
 	AppInitialStates *[]ApplicationInitialStates `json:"app-initial-states,omitempty"`
 }
 
@@ -1065,16 +1065,19 @@ type SimulateRequest struct {
 	// ExecTraceConfig An object that configures simulation execution trace.
 	ExecTraceConfig *SimulateTraceConfig `json:"exec-trace-config,omitempty"`
 
-	// ExtraOpcodeBudget Applies extra opcode budget during simulation for each transaction group.
+	// ExtraOpcodeBudget Applies extra opcode budget during simulation for each transaction group. With several groups, every group gets this extra budget.
 	ExtraOpcodeBudget *int `json:"extra-opcode-budget,omitempty"`
 
 	// FixSigners If true, signers for transactions that are missing signatures will be fixed during evaluation.
 	FixSigners *bool `json:"fix-signers,omitempty"`
 
+	// ParallelGroups If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.
+	ParallelGroups *bool `json:"parallel-groups,omitempty"`
+
 	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.
 	Round *basics.Round `json:"round,omitempty"`
 
-	// TxnGroups The transaction groups to simulate.
+	// TxnGroups The transaction groups to simulate. The node config value MaxAPISimulateGroups limits how many; more than one group is a non-standard fork feature. By default the groups run in order as consecutive groups of one simulated block: each group sees the effects of the groups before it, a transaction or lease used by an earlier group is a duplicate, and the groups share the block's byte limit, so a group that does not fit fails while a smaller later group may still fit. A group that fails is rolled back and the later groups still run, except after a failed post-evaluation check (placeholder PQ signatures with fix-signers), which runs once the group is applied, or after a group left the evaluator state corrupted: every later group is then reported as not simulated, with the index of the group that stopped them. Group indexes in these messages and failed-at paths are 0-based. A request with a StateProof transaction is rejected as a whole. With parallel-groups, every group is simulated alone against the state at the start round: groups do not see each other's effects, duplicate transactions and leases are not detected across groups, and several groups may create the same app or asset ID.
 	TxnGroups []SimulateRequestTransactionGroup `json:"txn-groups"`
 }
 
@@ -1193,6 +1196,9 @@ type SimulationEvalOverrides struct {
 
 	// MaxLogSize The maximum byte number to log during simulation
 	MaxLogSize *int `json:"max-log-size,omitempty"`
+
+	// ParallelGroups If true, every transaction group was simulated alone against the state at the start round, instead of as consecutive groups of one block.
+	ParallelGroups *bool `json:"parallel-groups,omitempty"`
 }
 
 // SimulationOpcodeTraceUnit The set of trace information and effect from evaluating a single opcode.

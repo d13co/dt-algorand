@@ -8,6 +8,7 @@ It changes no consensus rule, but it is not an official Algorand release: the no
 - **Use**: [ledger/timetravel/README.md](ledger/timetravel/README.md) covers the configuration (`EnableTimeTravel`), the REST endpoints that take `?round=`, simulation at a past round, the design, and the mainnet size estimates. [VERSIONS.md](ledger/timetravel/VERSIONS.md) describes the API that lists the rounds at which an object changed.
 - **goal**: read commands take `--round`, and `versions` subcommands list an object's changes. See [cmd/goal/README.md](cmd/goal/README.md#past-rounds-and-versions-time-travel).
 - **Simulate limits**: `SimulateResourceLimitMultiplier` lets an operator raise the limits simulate puts on unnamed resources, for read-only calls that touch many accounts or boxes. See [Unnamed-resource limits in simulation](ledger/timetravel/README.md#unnamed-resource-limits-in-simulation).
+- **Simulate groups**: one simulate request can hold several transaction groups, run in order as one block or (`parallel-groups`) each alone against the start state. See [Several transaction groups in one simulation](ledger/timetravel/README.md#several-transaction-groups-in-one-simulation).
 - **Tools**:
   - [ttimport](tools/ttimport/README.md) builds a time travel node from an archival node's blocks instead of syncing from the network, which takes weeks on mainnet.
   - [ttdump](tools/ttdump/README.md) explores the history store of a stopped node.

@@ -383,6 +383,30 @@ func TestLocal_SimulateResourceLimitMultiplier(t *testing.T) {
 	a.Equal(uint64(1), load(`{"Version": 38}`).SimulateResourceLimitMultiplier)
 }
 
+// TestLocal_MaxAPISimulateGroups checks that a v39 config file without MaxAPISimulateGroups loads
+// the default 16, and that an explicit 0 is kept as 0 (the simulator treats it as 1).
+func TestLocal_MaxAPISimulateGroups(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(16), GetDefaultLocal().MaxAPISimulateGroups)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	a.Equal(uint64(16), load(`{"Version": 39}`).MaxAPISimulateGroups)
+	a.Equal(uint64(0), load(`{"Version": 39, "MaxAPISimulateGroups": 0}`).MaxAPISimulateGroups)
+	a.Equal(uint64(300), load(`{"Version": 39, "MaxAPISimulateGroups": 300}`).MaxAPISimulateGroups)
+	// an older file never has the field, and keeps the default
+	a.Equal(uint64(16), load(`{"Version": 38}`).MaxAPISimulateGroups)
+}
+
 // Verify that nobody is changing the shipping default configurations
 func TestLocal_ConfigInvariant(t *testing.T) {
 	partitiontest.PartitionTest(t)

@@ -122,6 +122,11 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			"SimulateResourceLimitMultiplier %d exceeds the maximum %d; simulate uses %d",
 			cfg.SimulateResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier)
 	}
+	if cfg.MaxAPISimulateGroups > simulation.MaxSimulateGroups {
+		s.log.Warnf(
+			"MaxAPISimulateGroups %d exceeds the maximum %d; simulate uses %d",
+			cfg.MaxAPISimulateGroups, simulation.MaxSimulateGroups, simulation.MaxSimulateGroups)
+	}
 	if cfg.IncomingConnectionsLimit < 0 {
 		return fmt.Errorf(
 			"Initialize() IncomingConnectionsLimit %d must be non-negative",

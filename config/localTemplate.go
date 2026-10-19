@@ -598,6 +598,10 @@ type Local struct {
 	// Non-standard fork feature.
 	SimulateResourceLimitMultiplier uint64 `version[39]:"1"`
 
+	// MaxAPISimulateGroups is the most transaction groups one simulate request may hold. Values
+	// below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
+	MaxAPISimulateGroups uint64 `version[39]:"16"`
+
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation
 	// and SHOULD NOT be used for other reasons than testing.

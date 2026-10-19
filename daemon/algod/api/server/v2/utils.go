@@ -599,6 +599,7 @@ func convertSimulationResult(result simulation.Result) PreEncodedSimulateRespons
 			MaxLogCalls:           result.EvalOverrides.MaxLogCalls,
 			ExtraOpcodeBudget:     omitEmpty(result.EvalOverrides.ExtraOpcodeBudget),
 			FixSigners:            omitEmpty(result.EvalOverrides.FixSigners),
+			ParallelGroups:        omitEmpty(result.EvalOverrides.ParallelGroups),
 		}
 	}
 
@@ -626,6 +627,7 @@ func convertSimulationRequest(request PreEncodedSimulateRequest) simulation.Requ
 		ExtraOpcodeBudget:     request.ExtraOpcodeBudget,
 		TraceConfig:           request.ExecTraceConfig,
 		FixSigners:            request.FixSigners,
+		ParallelGroups:        request.ParallelGroups,
 	}
 }
 

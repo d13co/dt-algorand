@@ -99,12 +99,14 @@ type ResultEvalOverrides struct {
 	MaxLogSize            *int
 	ExtraOpcodeBudget     int
 	FixSigners            bool
+	ParallelGroups        bool
 }
 
 // LogBytesLimit hardcode limit of how much bytes one can log per transaction during simulation (with AllowMoreLogging)
 const LogBytesLimit = 65536
 
-// MaxExtraOpcodeBudget hardcode limit of how much extra budget one can add to one transaction group (which is group-size * logic-sig-budget)
+// MaxExtraOpcodeBudget hardcode limit of how much extra budget one can add to one transaction group (which is group-size * logic-sig-budget).
+// In a request with several groups, each group gets up to this much.
 const MaxExtraOpcodeBudget = 20000 * 16
 
 // AllowMoreLogging method modify the log limits from lift option:
@@ -146,8 +148,10 @@ type ExecTraceConfig struct {
 type Result struct {
 	Version       uint64
 	LastRound     basics.Round
-	TxnGroups     []TxnGroupResult // this is a list so that supporting multiple in the future is not breaking
+	TxnGroups     []TxnGroupResult // one result per request group, in request order
 	EvalOverrides ResultEvalOverrides
+	// Block is the simulated block holding the groups that succeeded. It is nil when no group
+	// succeeded, after a post-evaluation check failure, and with ParallelGroups.
 	Block         *ledgercore.ValidatedBlock
 	TraceConfig   ExecTraceConfig
 	InitialStates *ResourcesInitialStates
@@ -190,7 +194,7 @@ func populateFeeUsage(result *Result, proto config.ConsensusParams) {
 
 // ReturnTrace reads from Result object and decides if simulation returns PC.
 // It only reads Enable for any option combination must contain Enable field, or it won't make sense.
-// The other invalid options would be eliminated in validateSimulateRequest early.
+// The other invalid options would be eliminated in validateSimulateRequest (Request.Validate) early.
 func (r Result) ReturnTrace() bool { return r.TraceConfig.Enable }
 
 // ReturnStackChange reads from Result object and decides if simulation return stack changes.
@@ -239,7 +243,7 @@ func validateSimulateRequest(request Request, developerAPI bool) error {
 	return nil
 }
 
-func makeSimulationResult(lastRound basics.Round, request Request, developerAPI bool) (Result, error) {
+func makeSimulationResult(lastRound basics.Round, request Request) Result {
 	groups := make([]TxnGroupResult, len(request.TxnGroups))
 
 	for i, txgroup := range request.TxnGroups {
@@ -251,11 +255,8 @@ func makeSimulationResult(lastRound basics.Round, request Request, developerAPI 
 		ExtraOpcodeBudget:     request.ExtraOpcodeBudget,
 		AllowUnnamedResources: request.AllowUnnamedResources,
 		FixSigners:            request.FixSigners,
+		ParallelGroups:        request.ParallelGroups,
 	}.AllowMoreLogging(request.AllowMoreLogging)
-
-	if err := validateSimulateRequest(request, developerAPI); err != nil {
-		return Result{}, err
-	}
 
 	return Result{
 		Version:       ResultLatestVersion,
@@ -264,7 +265,7 @@ func makeSimulationResult(lastRound basics.Round, request Request, developerAPI 
 		EvalOverrides: resultEvalConstants,
 		TraceConfig:   request.TraceConfig,
 		InitialStates: newResourcesInitialStates(request),
-	}, nil
+	}
 }
 
 // ScratchChange represents a write operation into a scratch slot

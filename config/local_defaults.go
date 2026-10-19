@@ -112,6 +112,7 @@ var defaultLocal = Local{
 	LogSizeLimit:                               1073741824,
 	MaxAPIBoxPerApplication:                    100000,
 	MaxAPIResourcesPerAccount:                  100000,
+	MaxAPISimulateGroups:                       16,
 	MaxAcctLookback:                            4,
 	MaxBlockHistoryLookback:                    0,
 	MaxCatchpointDownloadDuration:              43200000000000,

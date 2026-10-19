@@ -43,7 +43,13 @@ type SingleAppInitialStates struct {
 // AppsInitialStates maintains a map from basics.AppIndex to SingleAppInitialStates
 type AppsInitialStates map[basics.AppIndex]SingleAppInitialStates
 
-// ResourcesInitialStates gathers all initial states of resources that were accessed during simulation
+// ResourcesInitialStates gathers all initial states of resources that were accessed during simulation.
+//
+// With several groups, these are the states before the first group runs, not before each group: a
+// state is recorded the first time any group accesses it. Known limits: a state deleted without an
+// opcode (closeout, app delete) is not recorded, and entries recorded by a group that then failed
+// are kept. With ParallelGroups, the states of all groups are merged (see merge). Only app state is
+// tracked: asset initial states are neither recorded nor merged.
 type ResourcesInitialStates struct {
 	// AllAppsInitialStates gathers all initial states of apps that were touched (but not created) during simulation
 	AllAppsInitialStates AppsInitialStates
@@ -176,4 +182,64 @@ func (is *ResourcesInitialStates) increment(cx *logic.EvalContext) {
 		is.AllAppsInitialStates.increment(cx)
 	}
 	// TODO asset?
+}
+
+// merge adds the entries of other that it does not hold yet. Both must have been read from the same
+// start state, as the groups of a ParallelGroups request are. Merging the groups in ascending index
+// makes the lowest group win, so the result does not depend on the order the groups ran in.
+//
+// Every parallel group allocates new IDs from the same counter, so several groups can create the
+// same app ID. A created ID never clashes with an existing app, so the union of CreatedApp is
+// still right.
+//
+// It covers app state only: asset initial states are not tracked, so there is nothing to merge.
+func (is *ResourcesInitialStates) merge(other *ResourcesInitialStates) {
+	if is == nil || other == nil {
+		return
+	}
+	for appID := range other.CreatedApp {
+		is.CreatedApp.Add(appID)
+	}
+	for appID, otherApp := range other.AllAppsInitialStates {
+		app, ok := is.AllAppsInitialStates[appID]
+		if !ok {
+			is.AllAppsInitialStates[appID] = otherApp
+			continue
+		}
+		app.mergeKVs(logic.BoxState, basics.Address{}, otherApp.AppBoxes, otherApp.CreatedBoxes)
+		app.mergeKVs(logic.GlobalState, basics.Address{}, otherApp.AppGlobals, otherApp.CreatedGlobals)
+		for addr, kvs := range otherApp.AppLocals {
+			app.mergeKVs(logic.LocalState, addr, kvs, nil)
+		}
+		for addr, created := range otherApp.CreatedLocals {
+			app.mergeKVs(logic.LocalState, addr, nil, created)
+		}
+	}
+}
+
+// mergeKVs adds the recorded values and created keys of one app state that appIS does not know
+// about yet, so a key stays either recorded or created, never both.
+func (appIS SingleAppInitialStates) mergeKVs(state logic.AppStateEnum, addr basics.Address, kvs AppKVPairs, created util.Set[string]) {
+	for key, tv := range kvs {
+		if appIS.hasBeenRecorded(state, key, addr) || appIS.hasBeenCreated(state, key, addr) {
+			continue
+		}
+		switch state {
+		case logic.BoxState:
+			appIS.AppBoxes[key] = tv
+		case logic.GlobalState:
+			appIS.AppGlobals[key] = tv
+		case logic.LocalState:
+			if appIS.AppLocals[addr] == nil {
+				appIS.AppLocals[addr] = make(AppKVPairs)
+			}
+			appIS.AppLocals[addr][key] = tv
+		}
+	}
+	for key := range created {
+		if appIS.hasBeenRecorded(state, key, addr) || appIS.hasBeenCreated(state, key, addr) {
+			continue
+		}
+		appIS.recordCreation(state, key, addr)
+	}
 }

@@ -16,5 +16,44 @@
 
 package simulation
 
+import (
+	"context"
+)
+
 // EffectiveMultiplier exposes effectiveMultiplier to the external simulation_test package.
 var EffectiveMultiplier = effectiveMultiplier
+
+// WithParallelGroupHook returns a copy of r that runs hook in the worker before each parallel
+// group. An error from hook is a fatal error of the request.
+func WithParallelGroupHook(r Request, hook func(g int) error) Request {
+	r.hooks = withHooks(r.hooks)
+	r.hooks.parallelGroup = hook
+	return r
+}
+
+// WithAfterGroupHook returns a copy of r that runs hook at the end of the tracer's AfterTxnGroup
+// for each top-level group, inside the evaluator's TransactionGroup. A panic in hook after a
+// successful group happens during the commit, and leaves the evaluator corrupted.
+func WithAfterGroupHook(r Request, hook func(g int, evalError error)) Request {
+	r.hooks = withHooks(r.hooks)
+	r.hooks.afterGroup = hook
+	return r
+}
+
+func withHooks(h *testHooks) *testHooks {
+	if h == nil {
+		return &testHooks{}
+	}
+	c := *h
+	return &c
+}
+
+// AcquireAllParallelGroupSlots waits until every parallel group slot is free, then frees them again.
+func AcquireAllParallelGroupSlots(ctx context.Context) error {
+	n := int64(parallelGroupSlotCount)
+	if err := parallelGroupSlots.Acquire(ctx, n); err != nil {
+		return err
+	}
+	parallelGroupSlots.Release(n)
+	return nil
+}

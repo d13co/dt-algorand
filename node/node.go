@@ -669,6 +669,7 @@ func (node *AlgorandFullNode) broadcastSignedTxGroup(txgroup []transactions.Sign
 func (node *AlgorandFullNode) Simulate(request simulation.Request) (result simulation.Result, err error) {
 	simulator := simulation.MakeSimulator(node.ledger, node.config.EnableDeveloperAPI)
 	request.ResourceLimitMultiplier = node.config.SimulateResourceLimitMultiplier
+	request.MaxGroups = node.config.MaxAPISimulateGroups
 	return simulator.Simulate(request)
 }
 

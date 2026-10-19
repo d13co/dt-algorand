@@ -57,6 +57,14 @@ With `allow-unnamed-resources`, simulate caps the unnamed resources a group may 
 
 High values have a cost. The opcode budget (including `extra-opcode-budget`) bounds the work a call can do, but the multiplier bounds how many resources simulate records, and so the memory it uses and the size of the response: near the ceiling, one response can list hundreds of thousands of `unnamed-resources-accessed` entries (a full group at 1024× allows about 131,000 boxes or accounts). Raise it only as far as the reads you need.
 
+### Several transaction groups in one simulation
+
+`txn-groups` may hold up to `MaxAPISimulateGroups` groups (node config, default 16; values below 1 count as 1, values above 256 count as 256, with a startup warning). By default they run in order as consecutive groups of one simulated block, so a later group sees the effects of the earlier ones, a transaction or lease seen in an earlier group is a duplicate, and the groups share the block's byte limit. Each group reports its own `failure-message` and `failed-at`: a failed group is rolled back and the later groups still run. The exceptions are the placeholder PQ signature check with `fix-signers`, which runs after its group is applied, and a group that leaves the evaluator state corrupted (a panic while it is committed): then every later group is reported as not simulated, with the index of the group that stopped them, and no block is made. Group indexes in these messages and `failed-at` paths are 0-based. A request with a StateProof transaction is rejected as a whole (400). A verification failure that can't be blamed on one transaction (a bad signature found by the batch verifier, a LogicSig args pool overflow) fails only its group, with no `failed-at`, but stays a 400 when the request has only that group.
+
+With `parallel-groups: true`, every group is simulated alone against the state at the start round, on up to one evaluator per CPU shared by all simulate requests of the node. Groups don't see each other's effects, duplicates and leases are not detected across groups, and several groups may create the same app or asset ID. `initial-states` merges the groups' states, lowest group first.
+
+`extra-opcode-budget` applies to each group, as it does to a lone group. `goal clerk simulate -t` splits its file into groups on changes of the Group field, as `goal clerk rawsend` does, and `--parallel-groups` sets the flag.
+
 ## Design
 
 ### Objects and keys

@@ -2233,31 +2233,85 @@ func TestSimulateTransactionMultipleGroups(t *testing.T) {
 	stxn1 := txn1.Txn().Sign(sender.Secrets())
 	stxn2 := txn2.Txn().Sign(sender.Secrets())
 
-	// build request body
-	request := v2.PreEncodedSimulateRequest{
-		TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
-			{
-				Txns: []transactions.SignedTxn{stxn1},
-			},
-			{
-				Txns: []transactions.SignedTxn{stxn2},
-			},
-		},
+	simulate := func(request v2.PreEncodedSimulateRequest) *httptest.ResponseRecorder {
+		t.Helper()
+		bodyBytes := protocol.EncodeReflect(&request)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(bodyBytes))
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		require.NoError(t, handler.SimulateTransaction(c, model.SimulateTransactionParams{}))
+		return rec
 	}
-	bodyBytes := protocol.EncodeReflect(&request)
-	body := bytes.NewReader(bodyBytes)
-	req := httptest.NewRequest(http.MethodPost, "/", body)
-	rec := httptest.NewRecorder()
 
-	e := echo.New()
-	c := e.NewContext(req, rec)
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%t", parallel), func(t *testing.T) {
+			rec := simulate(v2.PreEncodedSimulateRequest{
+				TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
+					{Txns: []transactions.SignedTxn{stxn1}},
+					{Txns: []transactions.SignedTxn{stxn2}},
+				},
+				ParallelGroups: parallel,
+			})
+			require.Equal(t, 200, rec.Code, rec.Body.String())
 
-	// simulate transaction
-	err = handler.SimulateTransaction(c, model.SimulateTransactionParams{})
-	require.NoError(t, err)
-	bodyString := rec.Body.String()
-	require.Equal(t, 400, rec.Code, bodyString)
-	require.Contains(t, bodyString, "expected 1 transaction group, got 2")
+			var response v2.PreEncodedSimulateResponse
+			require.NoError(t, codec.NewDecoderBytes(rec.Body.Bytes(), protocol.JSONStrictHandle).Decode(&response))
+			require.Len(t, response.TxnGroups, 2)
+			for i, stxn := range []transactions.SignedTxn{stxn1, stxn2} {
+				group := response.TxnGroups[i]
+				require.Nil(t, group.FailureMessage, "group %d", i)
+				require.Len(t, group.Txns, 1)
+				require.Equal(t, stxn.ID(), group.Txns[0].Txn.Txn.Txn.ID())
+			}
+			if parallel {
+				require.NotNil(t, response.EvalOverrides)
+				require.Equal(t, &parallel, response.EvalOverrides.ParallelGroups)
+			} else {
+				require.Nil(t, response.EvalOverrides)
+			}
+		})
+	}
+
+	t.Run("no groups", func(t *testing.T) {
+		rec := simulate(v2.PreEncodedSimulateRequest{TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{}})
+		require.Equal(t, 400, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "expected at least 1 transaction group, got 0")
+	})
+
+	t.Run("too many groups", func(t *testing.T) {
+		groups := make([]v2.PreEncodedSimulateRequestTransactionGroup, config.GetDefaultLocal().MaxAPISimulateGroups+1)
+		for i := range groups {
+			groups[i] = v2.PreEncodedSimulateRequestTransactionGroup{Txns: []transactions.SignedTxn{stxn1}}
+		}
+		rec := simulate(v2.PreEncodedSimulateRequest{TxnGroups: groups})
+		require.Equal(t, 400, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), fmt.Sprintf("too many transaction groups: got %d, the limit is %d", len(groups), len(groups)-1))
+	})
+
+	t.Run("MaxAPISimulateGroups 0", func(t *testing.T) {
+		cfg := config.GetDefaultLocal()
+		cfg.MaxAPISimulateGroups = 0
+		handler := v2.Handlers{
+			Node:     makeMockNodeWithConfig(mockLedger, t.Name(), nil, cannedStatusReportGolden, false, cfg),
+			Log:      logging.Base(),
+			Shutdown: make(chan struct{}),
+		}
+		simulate := func(groups ...transactions.SignedTxn) *httptest.ResponseRecorder {
+			request := v2.PreEncodedSimulateRequest{}
+			for _, stxn := range groups {
+				request.TxnGroups = append(request.TxnGroups, v2.PreEncodedSimulateRequestTransactionGroup{Txns: []transactions.SignedTxn{stxn}})
+			}
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&request)))
+			rec := httptest.NewRecorder()
+			require.NoError(t, handler.SimulateTransaction(echo.New().NewContext(req, rec), model.SimulateTransactionParams{}))
+			return rec
+		}
+		rec := simulate(stxn1)
+		require.Equal(t, 200, rec.Code, rec.Body.String())
+		rec = simulate(stxn1, stxn2)
+		require.Equal(t, 400, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "too many transaction groups: got 2, the limit is 1")
+	})
 }
 
 func startCatchupTest(t *testing.T, catchpoint string, nodeError error, expectedCode int) {

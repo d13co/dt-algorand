@@ -86,6 +86,7 @@ var (
 	simulateScratchChange         bool
 	simulateAppStateChange        bool
 	simulateAllowUnnamedResources bool
+	simulateParallelGroups        bool
 )
 
 func init() {
@@ -154,7 +155,7 @@ func init() {
 	compileCmd.Flags().StringVarP(&outFilename, "outfile", "o", "", "Filename to write program bytes or signed LogicSig to")
 	compileCmd.Flags().StringVarP(&account, "account", "a", "", "Account address to sign the program (If not specified, uses default account)")
 
-	simulateCmd.Flags().StringVarP(&txFilename, "txfile", "t", "", "Transaction or transaction-group to test. Mutually exclusive with --request")
+	simulateCmd.Flags().StringVarP(&txFilename, "txfile", "t", "", "Transactions to test. They are split into groups on changes of the Group field, so ungrouped transactions are groups of their own, and interleaved or incomplete groups are reported as failing groups when there are several. A file of several ungrouped transactions is therefore sent as several groups, which nodes without multi-group simulate reject with a 400. Mutually exclusive with --request")
 	simulateCmd.Flags().StringVar(&requestFilename, "request", "", "Simulate request object to run. Mutually exclusive with --txfile")
 	simulateCmd.Flags().StringVar(&requestOutFilename, "request-only-out", "", "Filename for writing simulate request object. If provided, the command will only write the request object and exit. No simulation will happen")
 	simulateCmd.Flags().StringVarP(&outFilename, "result-out", "o", "", "Filename for writing simulation result")
@@ -170,6 +171,7 @@ func init() {
 	simulateCmd.Flags().BoolVar(&simulateScratchChange, "scratch", false, "Report scratch change during simulation time")
 	simulateCmd.Flags().BoolVar(&simulateAppStateChange, "state", false, "Report application state changes during simulation time")
 	simulateCmd.Flags().BoolVar(&simulateAllowUnnamedResources, "allow-unnamed-resources", false, "Allow access to unnamed resources during simulation")
+	simulateCmd.Flags().BoolVar(&simulateParallelGroups, "parallel-groups", false, "Simulate every transaction group of --txfile alone against the start state, concurrently, instead of in order as groups of one block")
 }
 
 var clerkCmd = &cobra.Command{
@@ -1149,6 +1151,10 @@ var simulateCmd = &cobra.Command{
 			reportErrorf("exactly one of --txfile or --request must be provided")
 		}
 
+		if requestProvided && cmd.Flags().Changed("parallel-groups") {
+			reportErrorf("--parallel-groups and --request are mutually exclusive")
+		}
+
 		extraBudgetProvided := cmd.Flags().Changed("extra-opcode-budget")
 		if simulateAllowMoreOpcodeBudget && extraBudgetProvided {
 			reportErrorf("--allow-extra-opcode-budget and --extra-opcode-budget are mutually exclusive")
@@ -1169,20 +1175,7 @@ var simulateCmd = &cobra.Command{
 			if requestProvided {
 				reportErrorf("--request-only-out and --request are mutually exclusive")
 			}
-			txgroup := decodeTxnsFromFile(txFilename)
-			simulateRequest := v2.PreEncodedSimulateRequest{
-				TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
-					{
-						Txns: txgroup,
-					},
-				},
-				Round:                 simulateStartRound,
-				AllowEmptySignatures:  simulateAllowEmptySignatures,
-				AllowMoreLogging:      simulateAllowMoreLogging,
-				AllowUnnamedResources: simulateAllowUnnamedResources,
-				ExtraOpcodeBudget:     simulateExtraOpcodeBudget,
-				ExecTraceConfig:       traceCmdOptionToSimulateTraceConfigModel(),
-			}
+			simulateRequest := makeSimulateRequest(decodeTxnsFromFile(txFilename))
 			err := writeFile(requestOutFilename, protocol.EncodeJSON(simulateRequest), 0600)
 			if err != nil {
 				reportErrorf("write file error: %s", err.Error())
@@ -1195,20 +1188,7 @@ var simulateCmd = &cobra.Command{
 		var simulateResponse v2.PreEncodedSimulateResponse
 		var responseErr error
 		if txProvided {
-			txgroup := decodeTxnsFromFile(txFilename)
-			simulateRequest := v2.PreEncodedSimulateRequest{
-				TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
-					{
-						Txns: txgroup,
-					},
-				},
-				Round:                 simulateStartRound,
-				AllowEmptySignatures:  simulateAllowEmptySignatures,
-				AllowMoreLogging:      simulateAllowMoreLogging,
-				AllowUnnamedResources: simulateAllowUnnamedResources,
-				ExtraOpcodeBudget:     simulateExtraOpcodeBudget,
-				ExecTraceConfig:       traceCmdOptionToSimulateTraceConfigModel(),
-			}
+			simulateRequest := makeSimulateRequest(decodeTxnsFromFile(txFilename))
 			simulateResponse, responseErr = client.SimulateTransactions(simulateRequest)
 		} else {
 			data, err := readFile(requestFilename)
@@ -1232,6 +1212,29 @@ var simulateCmd = &cobra.Command{
 			fmt.Println(string(encodedResponse))
 		}
 	},
+}
+
+// makeSimulateRequest builds a simulate request from the command's flags. The txns are split into
+// groups the way rawsend splits them.
+func makeSimulateRequest(txns []transactions.SignedTxn) v2.PreEncodedSimulateRequest {
+	if len(txns) == 0 {
+		reportErrorf("%s: no transactions to simulate", txFilename)
+	}
+	txgroups := bookkeeping.SignedTxnsToGroups(txns)
+	requestGroups := make([]v2.PreEncodedSimulateRequestTransactionGroup, len(txgroups))
+	for i, txgroup := range txgroups {
+		requestGroups[i] = v2.PreEncodedSimulateRequestTransactionGroup{Txns: txgroup}
+	}
+	return v2.PreEncodedSimulateRequest{
+		TxnGroups:             requestGroups,
+		Round:                 simulateStartRound,
+		AllowEmptySignatures:  simulateAllowEmptySignatures,
+		AllowMoreLogging:      simulateAllowMoreLogging,
+		AllowUnnamedResources: simulateAllowUnnamedResources,
+		ExtraOpcodeBudget:     simulateExtraOpcodeBudget,
+		ExecTraceConfig:       traceCmdOptionToSimulateTraceConfigModel(),
+		ParallelGroups:        simulateParallelGroups,
+	}
 }
 
 func decodeTxnsFromFile(file string) []transactions.SignedTxn {

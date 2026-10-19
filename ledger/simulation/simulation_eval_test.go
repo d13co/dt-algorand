@@ -104,23 +104,32 @@ func normalizeEvalDeltas(t *testing.T, actual, expected *transactions.EvalDelta)
 func validateSimulationResult(t *testing.T, result simulation.Result) {
 	t.Helper()
 
+	// The block holds the groups that succeeded, in order. Parallel groups make no block, and
+	// neither does a request whose groups were stopped early (the later ones not simulated).
+	var committed []simulation.TxnGroupResult
+	stopped := false
 	for _, groupResult := range result.TxnGroups {
-		if len(groupResult.FailureMessage) != 0 {
-			// The only reason for no block is an eval error.
-			assert.Nil(t, result.Block)
-			return
+		if len(groupResult.FailureMessage) == 0 {
+			committed = append(committed, groupResult)
 		}
+		if strings.HasPrefix(groupResult.FailureMessage, "not simulated: ") {
+			stopped = true
+		}
+	}
+	if len(committed) == 0 || result.EvalOverrides.ParallelGroups || stopped {
+		assert.Nil(t, result.Block)
+		return
 	}
 	require.NotNil(t, result.Block)
 
 	blockGroups, err := result.Block.Block().DecodePaysetGroups()
 	require.NoError(t, err)
 
-	if !assert.Equal(t, len(blockGroups), len(result.TxnGroups)) {
+	if !assert.Equal(t, len(blockGroups), len(committed)) {
 		return
 	}
 
-	for i, groupResult := range result.TxnGroups {
+	for i, groupResult := range committed {
 		if i == len(blockGroups) {
 			break
 		}

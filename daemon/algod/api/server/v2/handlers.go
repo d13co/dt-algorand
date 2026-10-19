@@ -1570,6 +1570,7 @@ type PreEncodedSimulateRequest struct {
 	ExtraOpcodeBudget     int                                         `codec:"extra-opcode-budget,omitempty"`
 	ExecTraceConfig       simulation.ExecTraceConfig                  `codec:"exec-trace-config,omitempty"`
 	FixSigners            bool                                        `codec:"fix-signers,omitempty"`
+	ParallelGroups        bool                                        `codec:"parallel-groups,omitempty"`
 }
 
 // SimulateTransaction simulates broadcasting a raw transaction to the network, returning relevant simulation results.
