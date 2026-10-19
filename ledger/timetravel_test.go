@@ -69,7 +69,7 @@ type ttSnapshot struct {
 	circ    basics.MicroAlgos
 }
 
-func ttSnap(t *testing.T, l *Ledger, r basics.Round, addrs []basics.Address, asa basics.AssetIndex, app basics.AppIndex) ttSnapshot {
+func ttSnap(t require.TestingT, l *Ledger, r basics.Round, addrs []basics.Address, asa basics.AssetIndex, app basics.AppIndex) ttSnapshot {
 	var s ttSnapshot
 	var err error
 	s.acct, _, err = l.LookupWithoutRewards(r, addrs[4])
@@ -821,7 +821,7 @@ type ttListings struct {
 }
 
 // ttList records the listings at the latest round, from the trackers.
-func ttList(t *testing.T, l *Ledger, addrs []basics.Address) ttListings {
+func ttList(t require.TestingT, l *Ledger, addrs []basics.Address) ttListings {
 	var ls ttListings
 	for _, a := range addrs[:5] {
 		ad, _, _, err := l.LookupLatest(a)
@@ -836,7 +836,7 @@ func ttList(t *testing.T, l *Ledger, addrs []basics.Address) ttListings {
 }
 
 // ttListAt is ttList at round r, through the time travel lookups.
-func ttListAt(t *testing.T, l *Ledger, r basics.Round, addrs []basics.Address) ttListings {
+func ttListAt(t require.TestingT, l *Ledger, r basics.Round, addrs []basics.Address) ttListings {
 	var ls ttListings
 	for _, a := range addrs[:5] {
 		ad, rnd, _, err := l.LookupLatestAt(r, a)
