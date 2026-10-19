@@ -40,6 +40,7 @@ import (
 	"github.com/algorand/go-algorand/daemon/algod/api/server/lib"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/logging/telemetryspec"
 	"github.com/algorand/go-algorand/network"
@@ -115,6 +116,11 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			"RestConnectionsSoftLimit %d exceeds RestConnectionsHardLimit %d",
 			cfg.RestConnectionsSoftLimit, cfg.RestConnectionsHardLimit)
 		cfg.RestConnectionsSoftLimit = cfg.RestConnectionsHardLimit
+	}
+	if cfg.SimulateResourceLimitMultiplier > simulation.MaxResourceLimitMultiplier {
+		s.log.Warnf(
+			"SimulateResourceLimitMultiplier %d exceeds the maximum %d; simulate uses %d",
+			cfg.SimulateResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier)
 	}
 	if cfg.IncomingConnectionsLimit < 0 {
 		return fmt.Errorf(

@@ -358,6 +358,31 @@ func TestLocal_ConfigMigrateFromDisk(t *testing.T) {
 	a.Error(err)
 }
 
+// TestLocal_SimulateResourceLimitMultiplier checks that a v39 config file without
+// SimulateResourceLimitMultiplier loads the default 1, and that an explicit 0 is kept as 0
+// (the simulator treats it as 1).
+func TestLocal_SimulateResourceLimitMultiplier(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(1), GetDefaultLocal().SimulateResourceLimitMultiplier)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	a.Equal(uint64(1), load(`{"Version": 39}`).SimulateResourceLimitMultiplier)
+	a.Equal(uint64(0), load(`{"Version": 39, "SimulateResourceLimitMultiplier": 0}`).SimulateResourceLimitMultiplier)
+	a.Equal(uint64(2), load(`{"Version": 39, "SimulateResourceLimitMultiplier": 2}`).SimulateResourceLimitMultiplier)
+	// an older file never has the field, and keeps the default
+	a.Equal(uint64(1), load(`{"Version": 38}`).SimulateResourceLimitMultiplier)
+}
+
 // Verify that nobody is changing the shipping default configurations
 func TestLocal_ConfigInvariant(t *testing.T) {
 	partitiontest.PartitionTest(t)

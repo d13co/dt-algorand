@@ -100,6 +100,10 @@ type evalTracer struct {
 	scratchSlots []int
 
 	groups [][]transactions.SignedTxnWithAD
+
+	// resourceLimitMultiplier is Request.ResourceLimitMultiplier. It is kept here rather than in
+	// result.EvalOverrides so that it is not reported in the result.
+	resourceLimitMultiplier uint64
 }
 
 func makeEvalTracer(lastRound basics.Round, group []transactions.SignedTxnWithAD, request Request, developerAPI bool) (*evalTracer, error) {
@@ -107,7 +111,11 @@ func makeEvalTracer(lastRound basics.Round, group []transactions.SignedTxnWithAD
 	if err != nil {
 		return nil, err
 	}
-	return &evalTracer{result: &result, groups: [][]transactions.SignedTxnWithAD{group}}, nil
+	return &evalTracer{
+		result:                  &result,
+		groups:                  [][]transactions.SignedTxnWithAD{group},
+		resourceLimitMultiplier: request.ResourceLimitMultiplier,
+	}, nil
 }
 
 // handleError is responsible for setting the failedAt field properly.
@@ -172,7 +180,7 @@ func (tracer *evalTracer) BeforeTxnGroup(ep *logic.EvalParams) {
 		// Override runtime related constraints against ep, before entering txn group
 		ep.EvalConstants = tracer.result.EvalOverrides.LogicEvalConstants()
 		if tracer.result.EvalOverrides.AllowUnnamedResources {
-			tracer.unnamedResourcePolicy = newResourcePolicy(ep, &tracer.result.TxnGroups[0])
+			tracer.unnamedResourcePolicy = newResourcePolicy(ep, &tracer.result.TxnGroups[0], tracer.resourceLimitMultiplier)
 			ep.EvalConstants.UnnamedResources = tracer.unnamedResourcePolicy
 		}
 	}

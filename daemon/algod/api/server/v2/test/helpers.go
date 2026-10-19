@@ -175,6 +175,7 @@ func (m *mockNode) AsyncBroadcastSignedTxGroup(txgroup []transactions.SignedTxn)
 
 func (m *mockNode) Simulate(request simulation.Request) (simulation.Result, error) {
 	simulator := simulation.MakeSimulator(m.ledger.(*data.Ledger), m.config.EnableDeveloperAPI)
+	request.ResourceLimitMultiplier = m.config.SimulateResourceLimitMultiplier
 	return simulator.Simulate(request)
 }
 

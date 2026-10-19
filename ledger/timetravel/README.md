@@ -49,6 +49,14 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 
 `Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. The cost is the archival block DB (~3.5 TB) plus the history (~65 GB, of which ~12 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
 
+### Unnamed-resource limits in simulation
+
+With `allow-unnamed-resources`, simulate caps the unnamed resources a group may touch at what the group could legally reference under the consensus rules: each app call's account, asset, app, box and total reference limits (plus those of the empty slots of a group shorter than 16), the limit on holdings and local states, and the box I/O budget those box refs bring. That aims to keep the reported `unnamed-resources-accessed` sized for a real group (a txn that uses an `access` list can still get more than fits, an existing upstream limitation), but it blocks read-only uses such as reading many boxes or accounts in one call.
+
+`SimulateResourceLimitMultiplier` (node config, default 1) multiplies all of those limits, and with them the box I/O budget. Values below 1 count as 1; values above 1024 count as 1024, and the node logs a warning at startup. Clients cannot set it, and responses do not report it. Above 1, the reported resources may no longer fit in a submittable group. The limits on the submitted transactions themselves (foreign arrays, `access` list, app args, group size) and the I/O budget of the box refs they list do not change. The setting is independent of time travel and works on any node.
+
+High values have a cost. The opcode budget (including `extra-opcode-budget`) bounds the work a call can do, but the multiplier bounds how many resources simulate records, and so the memory it uses and the size of the response: near the ceiling, one response can list hundreds of thousands of `unnamed-resources-accessed` entries (a full group at 1024× allows about 131,000 boxes or accounts). Raise it only as far as the reads you need.
+
 ## Design
 
 ### Objects and keys

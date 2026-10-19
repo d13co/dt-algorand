@@ -587,6 +587,17 @@ type Local struct {
 	// guarantees in terms of functionality or future support.
 	EnableExperimentalAPI bool `version[26]:"false"`
 
+	// SimulateResourceLimitMultiplier scales the limits simulate places on unnamed resources
+	// (allow-unnamed-resources): accounts, assets, apps, boxes, holdings, locals and the box I/O budget
+	// they bring. 1 keeps the consensus limits, which size the reported resources for a real group.
+	// Larger values let simulate read more state per call, but the resources it reports may no longer
+	// fit in a submittable group. Values below 1 count as 1; values above 1024 count as 1024.
+	// The opcode budget bounds the work a call can do, but the multiplier bounds how many resources
+	// simulate records: at high values one response can list hundreds of thousands of
+	// unnamed-resources-accessed entries, with the memory and response size that brings.
+	// Non-standard fork feature.
+	SimulateResourceLimitMultiplier uint64 `version[39]:"1"`
+
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation
 	// and SHOULD NOT be used for other reasons than testing.

@@ -8439,9 +8439,14 @@ type boxOperation struct {
 	otherRefCount int
 	withBoxRefs   int  // Add this many box refs to the generated transaction
 	duringCreate  bool // If true, instantiate `boxDuringCreateProgram` to execute the op
+
+	rawArgs [][]byte // If set, the app args to use instead of those derived from op and name
 }
 
 func (o boxOperation) appArgs() [][]byte {
+	if o.rawArgs != nil {
+		return o.rawArgs
+	}
 	switch o.op {
 	case logic.BoxCreateOperation:
 		return [][]byte{
@@ -8486,6 +8491,13 @@ type boxTestResult struct {
 // calling `app` with arguments meant to effect the boxOps.  The results must
 // match `expected`.
 func testUnnamedBoxOperations(t *testing.T, env simulationtesting.Environment, app basics.AppIndex, boxOps []boxOperation, expected boxTestResult) {
+	t.Helper()
+	testUnnamedBoxOperationsWithMultiplier(t, env, app, boxOps, 0, expected)
+}
+
+// testUnnamedBoxOperationsWithMultiplier is testUnnamedBoxOperations with
+// Request.ResourceLimitMultiplier set to multiplier.
+func testUnnamedBoxOperationsWithMultiplier(t *testing.T, env simulationtesting.Environment, app basics.AppIndex, boxOps []boxOperation, multiplier uint64, expected boxTestResult) {
 	t.Helper()
 
 	maxGroupSize := env.TxnInfo.CurrentProtocolParams().MaxTxGroupSize
@@ -8548,16 +8560,18 @@ func testUnnamedBoxOperations(t *testing.T, env simulationtesting.Environment, a
 	}
 
 	proto := env.TxnInfo.CurrentProtocolParams()
+	// The consensus limits are scaled by the multiplier before the listed refs are subtracted.
+	m := simulation.EffectiveMultiplier(multiplier)
 	expectedUnnamedResources := &simulation.ResourceTracker{
-		MaxAccounts:  len(boxOps) * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
-		MaxAssets:    len(boxOps)*proto.MaxAppTxnForeignAssets - otherAssets,
-		MaxApps:      len(boxOps) * proto.MaxAppTxnForeignApps,
-		MaxBoxes:     len(boxOps)*proto.MaxAppBoxReferences - boxRefs,
-		MaxTotalRefs: len(boxOps)*proto.MaxAppTotalTxnReferences - otherAssets - boxRefs,
+		MaxAccounts:  m * len(boxOps) * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
+		MaxAssets:    m*len(boxOps)*proto.MaxAppTxnForeignAssets - otherAssets,
+		MaxApps:      m * len(boxOps) * proto.MaxAppTxnForeignApps,
+		MaxBoxes:     m*len(boxOps)*proto.MaxAppBoxReferences - boxRefs,
+		MaxTotalRefs: m*len(boxOps)*proto.MaxAppTotalTxnReferences - otherAssets - boxRefs,
 
 		NumEmptyBoxRefs: expected.NumEmptyBoxRefs,
 
-		MaxCrossProductReferences: len(boxOps) * proto.MaxAppTxnForeignApps * (proto.MaxAppTxnForeignApps + 2),
+		MaxCrossProductReferences: m * len(boxOps) * proto.MaxAppTxnForeignApps * (proto.MaxAppTxnForeignApps + 2),
 	}
 	if expected.Boxes != nil {
 		expectedUnnamedResources.Boxes = make(map[basics.BoxRef]simulation.BoxStat, len(expected.Boxes))
@@ -8572,8 +8586,9 @@ func testUnnamedBoxOperations(t *testing.T, env simulationtesting.Environment, a
 
 	testCase := simulationTestCase{
 		input: simulation.Request{
-			TxnGroups:             [][]transactions.SignedTxn{stxns},
-			AllowUnnamedResources: true,
+			TxnGroups:               [][]transactions.SignedTxn{stxns},
+			AllowUnnamedResources:   true,
+			ResourceLimitMultiplier: multiplier,
 		},
 		expectedError: expected.FailureMessage,
 		expected: simulation.Result{
@@ -9572,6 +9587,126 @@ func (resources unnamedResourceArguments) addToTxn(txn *txntest.Txn) {
 	txn.Note = note
 }
 
+// packedResourceLimitsTestProgram is like resourceLimitsTestProgram for accounts and boxes only, but
+// each app arg holds several of them, so that a test can reference more resources than there are
+// app args. Arg encoding (see addToTxnPacked): 6 followed by 32-byte addresses, or 7 followed by
+// (1-byte length, name) pairs. Accounts must have a non-zero balance; boxes must not exist.
+const packedResourceLimitsTestProgram = verPragma + bailOnCreate + `
+int 0
+store 0
+args_loop:
+load 0
+txn NumAppArgs
+<
+bz end
+load 0
+txnas ApplicationArgs
+dup
+int 0
+getbyte
+store 1
+extract 1 0
+store 2
+load 1
+int 6
+==
+bnz accounts_loop
+load 1
+int 7
+==
+assert
+boxes_loop:
+load 2
+len
+bz step
+load 2
+int 0
+getbyte
+store 3
+load 2
+int 1
+load 3
+extract3
+box_len
+!
+assert
+!
+assert
+load 2
+load 3
+int 1
++
+load 2
+len
+load 3
+int 1
++
+-
+extract3
+store 2
+b boxes_loop
+accounts_loop:
+load 2
+len
+bz step
+load 2
+extract 0 32
+balance
+assert
+load 2
+extract 32 0
+store 2
+b accounts_loop
+step:
+load 0
+int 1
++
+store 0
+b args_loop
+end:
+int 1
+`
+
+// addToTxnPacked is addToTxn for packedResourceLimitsTestProgram: it packs runs of accounts or
+// boxes into one app arg each, at most packedResourcesPerArg per arg. Only accounts and boxes are
+// supported.
+func (resources unnamedResourceArguments) addToTxnPacked(txn *txntest.Txn) {
+	const packedResourcesPerArg = 8
+	var args [][]byte
+	var current []byte
+	var currentType byte
+	count := 0
+	flush := func() {
+		if current != nil {
+			args = append(args, current)
+		}
+		current, currentType, count = nil, 0, 0
+	}
+	for i, resource := range resources {
+		var typ byte
+		var encoding []byte
+		switch {
+		case !resource.account.IsZero() && resource.asset == 0 && resource.app == 0 && resource.box == "":
+			typ, encoding = 6, resource.account[:]
+		case resource.box != "" && resource.account.IsZero():
+			if len(resource.box) > 255 {
+				panic(fmt.Sprintf("box name too long at index %d", i))
+			}
+			typ, encoding = 7, append([]byte{byte(len(resource.box))}, resource.box...)
+		default:
+			panic(fmt.Sprintf("unsupported packed resource at index %d", i))
+		}
+		if typ != currentType || count == packedResourcesPerArg {
+			flush()
+			current, currentType = []byte{typ}, typ
+		}
+		current = append(current, encoding...)
+		count++
+	}
+	flush()
+	txn.ApplicationArgs = args
+}
+
 func mapWithKeys[K comparable, V any](keys []K, defaultValue V) map[K]V {
 	if keys == nil {
 		return nil
@@ -9601,6 +9736,14 @@ func boxNamesToRefs(app basics.AppIndex, names []string) []basics.BoxRef {
 
 func testUnnamedResourceLimits(t *testing.T, env simulationtesting.Environment, appVersion int, app basics.AppIndex, resources unnamedResourceArguments, otherTxns []txntest.Txn, extraBudget int, expectedError string) {
 	t.Helper()
+	testUnnamedResourceLimitsWithMultiplier(t, env, appVersion, app, resources, otherTxns, extraBudget, 0, false, expectedError)
+}
+
+// testUnnamedResourceLimitsWithMultiplier is testUnnamedResourceLimits with
+// Request.ResourceLimitMultiplier set to multiplier. With packed, the resources are encoded with
+// addToTxnPacked, for an app running packedResourceLimitsTestProgram.
+func testUnnamedResourceLimitsWithMultiplier(t *testing.T, env simulationtesting.Environment, appVersion int, app basics.AppIndex, resources unnamedResourceArguments, otherTxns []txntest.Txn, extraBudget int, multiplier uint64, packed bool, expectedError string) {
+	t.Helper()
 	maxGroupSize := env.TxnInfo.CurrentProtocolParams().MaxTxGroupSize
 	txns := make([]*txntest.Txn, maxGroupSize)
 	appCall := env.TxnInfo.NewTxn(txntest.Txn{
@@ -9608,7 +9751,11 @@ func testUnnamedResourceLimits(t *testing.T, env simulationtesting.Environment, 
 		Sender:        env.Accounts[0].Addr,
 		ApplicationID: app,
 	})
-	resources.addToTxn(&appCall)
+	if packed {
+		resources.addToTxnPacked(&appCall)
+	} else {
+		resources.addToTxn(&appCall)
+	}
 	txns[0] = &appCall
 	for i := range otherTxns {
 		txn := env.TxnInfo.NewTxn(otherTxns[i])
@@ -9643,17 +9790,26 @@ func testUnnamedResourceLimits(t *testing.T, env simulationtesting.Environment, 
 	}
 
 	proto := env.TxnInfo.CurrentProtocolParams()
+	// The group is padded to MaxTxGroupSize, so its limits are the sum of those of its app calls
+	// (assumed to list no refs), scaled by the multiplier.
+	m := simulation.EffectiveMultiplier(multiplier)
+	appCalls := 1
+	for i := range otherTxns {
+		if otherTxns[i].Type == protocol.ApplicationCallTx {
+			appCalls++
+		}
+	}
 
 	expectedGroupResources := &simulation.ResourceTracker{
-		MaxAccounts:  proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps,
-		MaxAssets:    proto.MaxAppTxnForeignAssets,
-		MaxApps:      proto.MaxAppTxnForeignApps,
-		MaxBoxes:     proto.MaxAppBoxReferences,
-		MaxTotalRefs: proto.MaxAppTotalTxnReferences,
+		MaxAccounts:  appCalls * m * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
+		MaxAssets:    appCalls * m * proto.MaxAppTxnForeignAssets,
+		MaxApps:      appCalls * m * proto.MaxAppTxnForeignApps,
+		MaxBoxes:     appCalls * m * proto.MaxAppBoxReferences,
+		MaxTotalRefs: appCalls * m * proto.MaxAppTotalTxnReferences,
 
 		Boxes: mapWithKeys(boxNamesToRefs(app, resources.boxes()), simulation.BoxStat{}),
 
-		MaxCrossProductReferences: proto.MaxAppTxnForeignApps * (proto.MaxAppTxnForeignApps + 2),
+		MaxCrossProductReferences: appCalls * m * proto.MaxAppTxnForeignApps * (proto.MaxAppTxnForeignApps + 2),
 	}
 	expectedAccounts := mapWithKeys(resources.accounts(), struct{}{})
 	// If present, delete the sender, since it's accessible normally.
@@ -9676,11 +9832,11 @@ func testUnnamedResourceLimits(t *testing.T, env simulationtesting.Environment, 
 	if appVersion < 9 {
 		// No shared resources
 		localResources := simulation.ResourceTracker{
-			MaxAccounts:  proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps,
-			MaxAssets:    proto.MaxAppTxnForeignAssets,
-			MaxApps:      proto.MaxAppTxnForeignApps,
-			MaxBoxes:     proto.MaxAppBoxReferences,
-			MaxTotalRefs: proto.MaxAppTotalTxnReferences,
+			MaxAccounts:  m * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
+			MaxAssets:    m * proto.MaxAppTxnForeignAssets,
+			MaxApps:      m * proto.MaxAppTxnForeignApps,
+			MaxBoxes:     m * proto.MaxAppBoxReferences,
+			MaxTotalRefs: m * proto.MaxAppTotalTxnReferences,
 
 			Accounts: expectedAccounts,
 			Assets:   expectedAssets,
@@ -9708,9 +9864,10 @@ func testUnnamedResourceLimits(t *testing.T, env simulationtesting.Environment, 
 
 	testCase := simulationTestCase{
 		input: simulation.Request{
-			TxnGroups:             [][]transactions.SignedTxn{stxns},
-			AllowUnnamedResources: true,
-			ExtraOpcodeBudget:     extraBudget,
+			TxnGroups:               [][]transactions.SignedTxn{stxns},
+			AllowUnnamedResources:   true,
+			ExtraOpcodeBudget:       extraBudget,
+			ResourceLimitMultiplier: multiplier,
 		},
 		expectedError: expectedError,
 		expected: simulation.Result{
@@ -10050,6 +10207,312 @@ func TestUnnamedResourcesCrossProductLimits(t *testing.T) {
 					markLimitExceeded(),
 				fmt.Sprintf("logic eval error: unavailable Local State %d+%s", appID, otherAccounts[0]),
 			)
+		})
+	}
+}
+
+// boxIOMultiplierTestProgram creates a box (args "create", name, size) or reads every box named in
+// its args, so that one app call can read more box bytes than one box ref allows.
+const boxIOMultiplierTestProgram = verPragma + bailOnCreate + `
+txn ApplicationArgs 0
+byte "create"
+==
+bz read
+txn ApplicationArgs 1
+txn ApplicationArgs 2
+btoi
+box_create
+assert
+b end
+
+read:
+int 0
+store 0
+read_loop:
+load 0
+txn NumAppArgs
+<
+bz end
+load 0
+txnas ApplicationArgs
+box_len
+assert
+pop
+load 0
+int 1
++
+store 0
+b read_loop
+
+end:
+int 1
+`
+
+// TestUnnamedResourcesLimitMultiplier checks that Request.ResourceLimitMultiplier scales the limits
+// on unnamed resources: a group just over the consensus limits fails with a multiplier of 0 or 1 and
+// succeeds with 2, and with 2 the limits are exactly twice the consensus ones.
+func TestUnnamedResourcesLimitMultiplier(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+	// Start with v8, since that introduces boxes.
+	for v := 8; v <= logic.LogicVersion; v++ {
+		t.Run(fmt.Sprintf("v%d", v), func(t *testing.T) {
+			t.Parallel()
+			env := simulationtesting.PrepareSimulatorTest(t)
+			defer env.Close()
+
+			proto := env.TxnInfo.CurrentProtocolParams()
+			if v > int(proto.LogicSigVersion) {
+				t.Skip("not testing in unsupported proto")
+				return
+			}
+
+			sender := env.Accounts[0]
+			appID := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+				ApprovalProgram:   resourceLimitsTestProgram(v),
+				ClearStateProgram: fmt.Sprintf("#pragma version %d\n int 1", v),
+			})
+			// packedAppID reads several accounts or boxes per app arg, so tests can reference more
+			// of them than there are app args.
+			packedAppID := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+				ApprovalProgram:   fmt.Sprintf(packedResourceLimitsTestProgram, v),
+				ClearStateProgram: fmt.Sprintf("#pragma version %d\n int 1", v),
+			})
+
+			// testPacked runs resources (accounts or boxes only) against packedAppID
+			testPacked := func(t *testing.T, multiplier uint64, resources unnamedResourceArguments, expectedError string) {
+				t.Helper()
+				// extra budget, since the program loops over up to three times as many resources as at 1x
+				testUnnamedResourceLimitsWithMultiplier(t, env, v, packedAppID, resources, nil, 1000, multiplier, true, expectedError)
+			}
+
+			t.Run("accounts", func(t *testing.T) {
+				// accounts are bounded by both MaxAccounts and MaxTotalRefs
+				limit := min(proto.MaxAppTxnAccounts+proto.MaxAppTxnForeignApps, proto.MaxAppTotalTxnReferences)
+				// The program asserts a non-zero balance, so fund new accounts when the
+				// environment has too few.
+				otherAccounts := make([]basics.Address, 2*limit+1)
+				for i := range otherAccounts {
+					if i+1 < len(env.Accounts) {
+						otherAccounts[i] = env.Accounts[i+1].Addr
+						continue
+					}
+					otherAccounts[i] = basics.Address{0xaa, byte(i)}
+					env.TransferAlgos(sender.Addr, otherAccounts[i], proto.MinBalance)
+				}
+
+				overOne := unnamedResourceArguments{}.addAccounts(otherAccounts[:limit+1]...)
+				for _, m := range []uint64{0, 1} {
+					testPacked(t, m, overOne.markLimitExceeded(),
+						fmt.Sprintf("logic eval error: unavailable Account %s", otherAccounts[limit]))
+				}
+				testPacked(t, 2, overOne, "")
+				// exactly at the 2x limit
+				testPacked(t, 2, unnamedResourceArguments{}.addAccounts(otherAccounts[:2*limit]...), "")
+				// just over the 2x limit: the 2x limit is enforced
+				overTwo := unnamedResourceArguments{}.addAccounts(otherAccounts...)
+				testPacked(t, 2, overTwo.markLimitExceeded(),
+					fmt.Sprintf("logic eval error: unavailable Account %s", otherAccounts[2*limit]))
+				testPacked(t, 3, overTwo, "")
+			})
+
+			t.Run("boxes", func(t *testing.T) {
+				limit := min(proto.MaxAppBoxReferences, proto.MaxAppTotalTxnReferences)
+				boxes := make([]string, 2*limit+1)
+				for i := range boxes {
+					boxes[i] = fmt.Sprintf("box%d", i)
+				}
+
+				overOne := unnamedResourceArguments{}.addBoxes(boxes[:limit+1]...)
+				for _, m := range []uint64{0, 1} {
+					testPacked(t, m, overOne.markLimitExceeded(),
+						fmt.Sprintf("logic eval error: invalid Box reference %#x", boxes[limit]))
+				}
+				testPacked(t, 2, overOne, "")
+				// exactly at the 2x limit
+				testPacked(t, 2, unnamedResourceArguments{}.addBoxes(boxes[:2*limit]...), "")
+				// just over the 2x limit: the 2x limit is enforced
+				overTwo := unnamedResourceArguments{}.addBoxes(boxes...)
+				testPacked(t, 2, overTwo.markLimitExceeded(),
+					fmt.Sprintf("logic eval error: invalid Box reference %#x", boxes[2*limit]))
+				testPacked(t, 3, overTwo, "")
+			})
+
+			t.Run("cross products", func(t *testing.T) {
+				if v < 9 {
+					t.Skip("cross-product references are tracked from v9")
+				}
+				// Same setup as TestUnnamedResourcesCrossProductLimits: the other txns of the group
+				// are asset transfers that make the accounts and assets available, so only the
+				// cross-product limit applies.
+				otherAccounts := make([]basics.Address, proto.MaxTxGroupSize)
+				for i := range otherAccounts {
+					otherAccounts[i][0] = byte(i + 1)
+				}
+				otherAccounts[len(otherAccounts)-1] = appID.Address()
+				assets := make([]basics.AssetIndex, proto.MaxTxGroupSize-1)
+				for i := range assets {
+					assets[i] = env.CreateAsset(sender.Addr, basics.AssetParams{Total: 100})
+				}
+				assetFillingTxns := make([]txntest.Txn, proto.MaxTxGroupSize-1)
+				for i := range assetFillingTxns {
+					assetFillingTxns[i] = txntest.Txn{
+						Type:          protocol.AssetTransferTx,
+						XferAsset:     assets[i],
+						Sender:        sender.Addr,
+						AssetReceiver: otherAccounts[i],
+					}
+				}
+				otherApps := make([]basics.AppIndex, proto.MaxAppTxnForeignApps)
+				for i := range otherApps {
+					otherApps[i] = env.CreateApp(sender.Addr, simulationtesting.AppParams{
+						ApprovalProgram:   "#pragma version 8\nint 1",
+						ClearStateProgram: "#pragma version 8\nint 1",
+					})
+				}
+
+				// One app call among MaxTxGroupSize-1 asset transfers: the 1x limit is the
+				// cross-product limit of one app call.
+				maxCrossProducts := proto.MaxAppTxnForeignApps * (proto.MaxAppTxnForeignApps + 2)
+
+				var atAssetHoldingLimit unnamedResourceArguments
+				var assetHoldingLimitIndex int
+				for i := range assets {
+					accounts := excludingIndex(otherAccounts, i)
+					end := false
+					if (i+1)*(proto.MaxTxGroupSize-1) >= maxCrossProducts {
+						accounts = accounts[:maxCrossProducts-i*(proto.MaxTxGroupSize-1)]
+						assetHoldingLimitIndex = i + 1
+						end = true
+					}
+					atAssetHoldingLimit = atAssetHoldingLimit.addAssetHoldings(assets[i], accounts...)
+					if end {
+						break
+					}
+				}
+				overHoldings := atAssetHoldingLimit.addAssetHoldings(assets[assetHoldingLimitIndex], otherAccounts[0])
+
+				otherAppAccounts := make([]basics.Address, len(otherApps))
+				for i := range otherAppAccounts {
+					otherAppAccounts[i] = otherApps[i].Address()
+				}
+				var atAppLocalLimit unnamedResourceArguments
+				for i := range otherApps {
+					accounts := []basics.Address{sender.Addr, appID.Address()}
+					accounts = append(accounts, excludingIndex(otherAppAccounts, i)...)
+					atAppLocalLimit = atAppLocalLimit.addAppLocals(otherApps[i], accounts...)
+				}
+				atAppLocalLimit = atAppLocalLimit.addAppLocals(appID, otherAppAccounts...)
+				overLocals := atAppLocalLimit.addAppLocals(appID, otherAccounts[0])
+
+				test := func(t *testing.T, multiplier uint64, resources unnamedResourceArguments, expectedError string) {
+					t.Helper()
+					testUnnamedResourceLimitsWithMultiplier(t, env, v, appID, resources, assetFillingTxns, 2000, multiplier, false, expectedError)
+				}
+				for _, m := range []uint64{0, 1} {
+					test(t, m, overHoldings.markLimitExceeded(),
+						fmt.Sprintf("logic eval error: unavailable Holding %d+%s", assets[assetHoldingLimitIndex], otherAccounts[0]))
+					test(t, m, overLocals.markLimitExceeded(),
+						fmt.Sprintf("logic eval error: unavailable Local State %d+%s", appID, otherAccounts[0]))
+				}
+				test(t, 2, overHoldings, "")
+				test(t, 2, overLocals, "")
+			})
+		})
+	}
+}
+
+// TestUnnamedResourcesBoxIOMultiplier checks that Request.ResourceLimitMultiplier scales the box
+// I/O budget that unnamed box refs bring, for reads and for writes.
+func TestUnnamedResourcesBoxIOMultiplier(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+	// Boxes introduced in v8
+	for v := 8; v <= logic.LogicVersion; v++ {
+		t.Run(fmt.Sprintf("v%d", v), func(t *testing.T) {
+			t.Parallel()
+			env := simulationtesting.PrepareSimulatorTest(t)
+			defer env.Close()
+
+			proto := env.TxnInfo.CurrentProtocolParams()
+			if v > int(proto.LogicSigVersion) {
+				t.Skip("not testing in unsupported proto")
+			}
+
+			sender := env.Accounts[0]
+			appID := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+				ApprovalProgram:   fmt.Sprintf(boxIOMultiplierTestProgram, v),
+				ClearStateProgram: fmt.Sprintf("#pragma version %d\n int 1", v),
+			})
+			// MBR is needed for boxes.
+			transferable := env.Accounts[1].AcctData.MicroAlgos.Raw - proto.MinBalance - 2*proto.MinTxnFee
+			env.TransferAlgos(env.Accounts[1].Addr, appID.Address(), transferable)
+
+			// The app call is the only one in a full group, so with multiplier m it can have
+			// m*limit box refs, and as much I/O budget.
+			limit := min(proto.MaxAppBoxReferences, proto.MaxAppTotalTxnReferences)
+			bpr := proto.BytesPerBoxReference
+
+			// A fills a whole 1x I/O budget, B is one more byte.
+			bigSize := uint64(limit) * bpr
+			env.Txn(env.TxnInfo.NewTxn(txntest.Txn{
+				Type:            protocol.ApplicationCallTx,
+				Sender:          sender.Addr,
+				ApplicationID:   appID,
+				ApplicationArgs: [][]byte{[]byte("create"), []byte("A"), uint64ToBytes(bigSize)},
+				Boxes:           append([]transactions.BoxRef{{Name: []byte("A")}}, make([]transactions.BoxRef, limit-1)...),
+			}).SignedTxn())
+			env.Txn(env.TxnInfo.NewTxn(txntest.Txn{
+				Type:            protocol.ApplicationCallTx,
+				Sender:          sender.Addr,
+				ApplicationID:   appID,
+				ApplicationArgs: [][]byte{[]byte("create"), []byte("B"), uint64ToBytes(1)},
+				Boxes:           []transactions.BoxRef{{Name: []byte("B")}},
+			}).SignedTxn())
+
+			testReads := func(multiplier uint64, names []string, expected boxTestResult) {
+				t.Helper()
+				args := make([][]byte, len(names))
+				for i, name := range names {
+					args[i] = []byte(name)
+				}
+				testUnnamedBoxOperationsWithMultiplier(t, env, appID, []boxOperation{{rawArgs: args}}, multiplier, expected)
+			}
+
+			// Reading A alone fits the 1x budget: A's own ref plus limit-1 empty refs.
+			testReads(1, []string{"A"}, boxTestResult{
+				Boxes:           map[basics.BoxRef]uint64{{App: appID, Name: "A"}: bigSize},
+				NumEmptyBoxRefs: limit - 1,
+			})
+			// Reading A and B needs limit+1 refs: over 1x, within 2x.
+			for _, m := range []uint64{0, 1} {
+				testReads(m, []string{"A", "B"}, boxTestResult{
+					Boxes:           map[basics.BoxRef]uint64{{App: appID, Name: "A"}: bigSize},
+					NumEmptyBoxRefs: limit - 1,
+					FailureMessage:  fmt.Sprintf("logic eval error: invalid Box reference %#x", "B"),
+				})
+			}
+			testReads(2, []string{"A", "B"}, boxTestResult{
+				Boxes: map[basics.BoxRef]uint64{
+					{App: appID, Name: "A"}: bigSize,
+					{App: appID, Name: "B"}: 1,
+				},
+				NumEmptyBoxRefs: limit - 1,
+			})
+
+			// Creating a box one ref larger than the 1x write budget.
+			newSize := uint64(limit+1) * bpr
+			create := []boxOperation{{op: logic.BoxCreateOperation, name: "N", createSize: newSize}}
+			for _, m := range []uint64{0, 1} {
+				testUnnamedBoxOperationsWithMultiplier(t, env, appID, create, m, boxTestResult{
+					Boxes:          map[basics.BoxRef]uint64{{App: appID, Name: "N"}: 0},
+					FailureMessage: fmt.Sprintf("write budget exceeded (%d > %d) while creating box %#x", newSize, bigSize, "N"),
+				})
+			}
+			testUnnamedBoxOperationsWithMultiplier(t, env, appID, create, 2, boxTestResult{
+				Boxes:           map[basics.BoxRef]uint64{{App: appID, Name: "N"}: 0},
+				NumEmptyBoxRefs: limit,
+			})
 		})
 	}
 }

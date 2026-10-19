@@ -43,6 +43,12 @@ type Request struct {
 	ExtraOpcodeBudget     int
 	TraceConfig           ExecTraceConfig
 	FixSigners            bool
+
+	// ResourceLimitMultiplier scales the limits on unnamed resources (AllowUnnamedResources).
+	// Values below 1 count as 1 (the consensus limits) and values above MaxResourceLimitMultiplier
+	// are clamped to it. It is set by the node from its config (SimulateResourceLimitMultiplier),
+	// never by API clients, and is not echoed in the result. Non-standard fork feature.
+	ResourceLimitMultiplier uint64
 }
 
 // simulatorLedger patches the ledger interface to use a constant latest round.
