@@ -18,6 +18,7 @@ package ledger
 
 import (
 	"fmt"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -137,9 +138,7 @@ func TestFillTimeTravelGap(t *testing.T) {
 	// deltas that do not reproduce a stored round add nothing
 	src := fillSource{deltas: deltas, l: dl.generator}
 	bad := fillSource{deltas: map[basics.Round]ledgercore.StateDelta{}, l: dl.generator}
-	for r, sd := range deltas {
-		bad.deltas[r] = sd
-	}
+	maps.Copy(bad.deltas, deltas)
 	sd := bad.deltas[last-3]
 	sd.Totals.RewardsLevel++
 	bad.deltas[last-3] = sd
