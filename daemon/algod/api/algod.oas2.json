@@ -4058,9 +4058,17 @@
           }
         },
         "round": {
-          "description": "If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.",
+          "description": "If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round. A non-zero round cannot be combined with rounds; 0 is the same as omitting it.",
           "type": "integer",
           "x-go-type": "basics.Round"
+        },
+        "rounds": {
+          "description": "If provided and not empty, the request is simulated once per listed round, each entry meaning what round means, and the results are returned in round-results, one per entry in this order, while the top-level last-round is 0 and txn-groups is empty. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a single-round request (round 0 or no round) uses, which is resolved when its own simulation starts. A round listed several times is simulated once. The node config value MaxAPISimulateRounds limits how many entries a request may list, duplicates included (0 disables rounds; at most 256). Problems with the request as a whole fail the whole request, while a round that cannot be simulated (not available, or a group that is invalid under that round's protocol) is reported in that entry's error, where a single-round request would fail. Non-standard fork feature.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          }
         },
         "allow-empty-signatures": {
           "description": "Allows transactions without signatures to be simulated as if they had correct signatures.",
@@ -4387,6 +4395,32 @@
         },
         "unnamed-resources-accessed": {
           "$ref": "#/definitions/SimulateUnnamedResourcesAccessed"
+        }
+      }
+    },
+    "SimulateRoundResult": {
+      "description": "Simulation result for one of the rounds of a request that listed rounds. Non-standard fork feature.",
+      "type": "object",
+      "required": ["last-round"],
+      "properties": {
+        "last-round": {
+          "description": "The round immediately preceding this simulation: the requested round, with 0 resolved to the latest round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "txn-groups": {
+          "description": "A result object for each transaction group that was simulated at this round. Absent when error is present.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SimulateTransactionGroupResult"
+          }
+        },
+        "initial-states": {
+          "$ref": "#/definitions/SimulateInitialStates"
+        },
+        "error": {
+          "description": "If present, the request could not be simulated at this round, and why.",
+          "type": "string"
         }
       }
     },
@@ -5619,12 +5653,12 @@
             "x-go-type": "uint64"
           },
           "last-round": {
-            "description": "The round immediately preceding this simulation. State changes through this round were used to run this simulation.",
+            "description": "The round immediately preceding this simulation. State changes through this round were used to run this simulation. 0 when round-results is present.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },
           "txn-groups": {
-            "description": "A result object for each transaction group that was simulated.",
+            "description": "A result object for each transaction group that was simulated. Empty when round-results is present.",
             "type": "array",
             "items": {
               "$ref": "#/definitions/SimulateTransactionGroupResult"
@@ -5638,6 +5672,13 @@
           },
           "initial-states": {
             "$ref": "#/definitions/SimulateInitialStates"
+          },
+          "round-results": {
+            "description": "Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SimulateRoundResult"
+            }
           }
         }
       }

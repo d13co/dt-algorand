@@ -602,6 +602,16 @@ type Local struct {
 	// below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
 	MaxAPISimulateGroups uint64 `version[39]:"16"`
 
+	// MaxAPISimulateRounds is the most rounds one simulate request may list in "rounds", which simulates
+	// the request once per distinct listed round; duplicates count against the limit. 0 disables "rounds";
+	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
+	MaxAPISimulateRounds uint64 `version[39]:"16"`
+
+	// SimulateRoundsParallelism is the most per-round simulations of "rounds" requests that run at once,
+	// across all requests of the node. Values below 1 count as 1; values above simulation.MaxSimulateRounds
+	// (256) count as that. Non-standard fork feature.
+	SimulateRoundsParallelism int `version[39]:"4"`
+
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation
 	// and SHOULD NOT be used for other reasons than testing.

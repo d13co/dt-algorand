@@ -115,6 +115,10 @@ type Handlers struct {
 
 	// KeygenLimiter is used to limit the number of concurrent key generation requests.
 	KeygenLimiter *semaphore.Weighted
+
+	// SimulateRoundsLimiter limits the per-round simulations of simulate requests with "rounds" that
+	// run at once, across all requests (SimulateRoundsParallelism). Non-standard fork feature.
+	SimulateRoundsLimiter *semaphore.Weighted
 }
 
 // LedgerForAPI describes the Ledger methods used by the v2 API.
@@ -1553,6 +1557,7 @@ type PreEncodedSimulateResponse struct {
 	EvalOverrides   *model.SimulationEvalOverrides     `codec:"eval-overrides,omitempty"`
 	ExecTraceConfig simulation.ExecTraceConfig         `codec:"exec-trace-config,omitempty"`
 	InitialStates   *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
+	RoundResults    *[]PreEncodedSimulateRoundResult   `codec:"round-results,omitempty"`
 }
 
 // PreEncodedSimulateRequestTransactionGroup mirrors model.SimulateRequestTransactionGroup
@@ -1564,6 +1569,7 @@ type PreEncodedSimulateRequestTransactionGroup struct {
 type PreEncodedSimulateRequest struct {
 	TxnGroups             []PreEncodedSimulateRequestTransactionGroup `codec:"txn-groups"`
 	Round                 basics.Round                                `codec:"round,omitempty"`
+	Rounds                []basics.Round                              `codec:"rounds,omitempty"`
 	AllowEmptySignatures  bool                                        `codec:"allow-empty-signatures,omitempty"`
 	AllowMoreLogging      bool                                        `codec:"allow-more-logging,omitempty"`
 	AllowUnnamedResources bool                                        `codec:"allow-unnamed-resources,omitempty"`
@@ -1585,6 +1591,12 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 		return serviceUnavailable(ctx, fmt.Errorf("SimulateTransaction failed as the node was catchpoint catchuping"), errOperationNotAvailableDuringCatchup, v2.Log)
 	}
 	proto := config.Consensus[stat.LastVersion]
+
+	// Check the format before anything is simulated.
+	handle, contentType, err := getCodecHandle((*string)(params.Format))
+	if err != nil {
+		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
+	}
 
 	requestBuffer := new(bytes.Buffer)
 	requestBodyReader := http.MaxBytesReader(nil, ctx.Request().Body, MaxSimulateBytes)
@@ -1613,6 +1625,9 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 			return badRequest(ctx, err, err.Error(), v2.Log)
 		}
 	}
+	if len(simulateRequest.Rounds) > 0 {
+		return v2.simulateRounds(ctx, handle, contentType, stat, simulateRequest)
+	}
 	// Simulate transaction
 	simulationResult, err := v2.Node.Simulate(convertSimulationRequest(simulateRequest))
 	if err != nil {
@@ -1626,12 +1641,12 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 	}
 
 	response := convertSimulationResult(simulationResult)
+	return v2.writeSimulateResponse(ctx, handle, contentType, &response)
+}
 
-	handle, contentType, err := getCodecHandle((*string)(params.Format))
-	if err != nil {
-		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
-	}
-	responseData, err := encode(handle, &response)
+// writeSimulateResponse encodes response with handle and writes it with status 200.
+func (v2 *Handlers) writeSimulateResponse(ctx echo.Context, handle codec.Handle, contentType string, response *PreEncodedSimulateResponse) error {
+	responseData, err := encode(handle, response)
 	if err != nil {
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}

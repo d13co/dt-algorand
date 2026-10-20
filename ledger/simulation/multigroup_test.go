@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1248,5 +1249,77 @@ func TestRequestValidate(t *testing.T) {
 			require.ErrorAs(t, err, &invalid)
 			require.EqualError(t, err, tc.err)
 		})
+	}
+}
+
+// TestConcurrentSimulateSharedRequest checks that simulations of one request running at once on one
+// ledger, as the rounds of a REST request with "rounds" do, give the same result and leave the
+// request they share unchanged, FixSigners included.
+func TestConcurrentSimulateSharedRequest(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	defer env.Close()
+	a, b := env.Accounts[0], env.Accounts[1]
+	env.TransferAlgos(a.Addr, b.Addr, 1)
+	start := env.TxnInfo.LatestRound()
+	env.TransferAlgos(a.Addr, b.Addr, 1)
+
+	rekey := env.TxnInfo.NewTxn(txntest.Txn{
+		Type:     protocol.PaymentTx,
+		Sender:   a.Addr,
+		Receiver: a.Addr,
+		RekeyTo:  b.Addr,
+	}).Txn().Sign(a.Sk)
+	unsigned := env.TxnInfo.NewTxn(txntest.Txn{
+		Type:     protocol.PaymentTx,
+		Sender:   a.Addr,
+		Receiver: a.Addr,
+		Note:     []byte{1},
+	}).SignedTxn()
+	request := simulation.Request{
+		TxnGroups:            [][]transactions.SignedTxn{{rekey}, {unsigned}},
+		AllowEmptySignatures: true,
+		FixSigners:           true,
+		MaxGroups:            2,
+	}
+	want := [][]transactions.SignedTxn{slices.Clone(request.TxnGroups[0]), slices.Clone(request.TxnGroups[1])}
+
+	const runs = 4
+	for _, parallel := range []bool{false, true} {
+		results := make([]simulation.Result, 2*runs)
+		errs := make([]error, 2*runs)
+		var wg sync.WaitGroup
+		for i := range results {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := request
+				r.ParallelGroups = parallel
+				// Half of the simulations run at the start round, half at the latest round.
+				if i%2 == 0 {
+					r.Round = start
+				}
+				results[i], errs[i] = simulation.MakeSimulator(env.Ledger, false).Simulate(r)
+			}()
+		}
+		wg.Wait()
+
+		for i, result := range results {
+			require.NoError(t, errs[i])
+			for g := range result.TxnGroups {
+				requireGroupSucceeded(t, result, g)
+			}
+			if parallel {
+				require.Zero(t, result.TxnGroups[1].Txns[0].FixedSigner)
+			} else {
+				require.Equal(t, b.Addr, result.TxnGroups[1].Txns[0].FixedSigner)
+			}
+			require.Equal(t, results[i%2].TxnGroups, result.TxnGroups, "simulation %d", i)
+		}
+		require.Equal(t, start, results[0].LastRound)
+		require.Equal(t, start+1, results[1].LastRound)
+		require.Equal(t, want, request.TxnGroups)
 	}
 }

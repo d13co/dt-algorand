@@ -243,6 +243,17 @@ func validateSimulateRequest(request Request, developerAPI bool) error {
 	return nil
 }
 
+// EvalOverrides returns the eval overrides a result of the request reports.
+func (r Request) EvalOverrides() ResultEvalOverrides {
+	return ResultEvalOverrides{
+		AllowEmptySignatures:  r.AllowEmptySignatures,
+		ExtraOpcodeBudget:     r.ExtraOpcodeBudget,
+		AllowUnnamedResources: r.AllowUnnamedResources,
+		FixSigners:            r.FixSigners,
+		ParallelGroups:        r.ParallelGroups,
+	}.AllowMoreLogging(r.AllowMoreLogging)
+}
+
 func makeSimulationResult(lastRound basics.Round, request Request) Result {
 	groups := make([]TxnGroupResult, len(request.TxnGroups))
 
@@ -250,19 +261,11 @@ func makeSimulationResult(lastRound basics.Round, request Request) Result {
 		groups[i] = makeTxnGroupResult(txgroup)
 	}
 
-	resultEvalConstants := ResultEvalOverrides{
-		AllowEmptySignatures:  request.AllowEmptySignatures,
-		ExtraOpcodeBudget:     request.ExtraOpcodeBudget,
-		AllowUnnamedResources: request.AllowUnnamedResources,
-		FixSigners:            request.FixSigners,
-		ParallelGroups:        request.ParallelGroups,
-	}.AllowMoreLogging(request.AllowMoreLogging)
-
 	return Result{
 		Version:       ResultLatestVersion,
 		LastRound:     lastRound,
 		TxnGroups:     groups,
-		EvalOverrides: resultEvalConstants,
+		EvalOverrides: request.EvalOverrides(),
 		TraceConfig:   request.TraceConfig,
 		InitialStates: newResourcesInitialStates(request),
 	}

@@ -1074,8 +1074,11 @@ type SimulateRequest struct {
 	// ParallelGroups If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.
 	ParallelGroups *bool `json:"parallel-groups,omitempty"`
 
-	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.
+	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round. A non-zero round cannot be combined with rounds; 0 is the same as omitting it.
 	Round *basics.Round `json:"round,omitempty"`
+
+	// Rounds If provided and not empty, the request is simulated once per listed round, each entry meaning what round means, and the results are returned in round-results, one per entry in this order, while the top-level last-round is 0 and txn-groups is empty. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a single-round request (round 0 or no round) uses, which is resolved when its own simulation starts. A round listed several times is simulated once. The node config value MaxAPISimulateRounds limits how many entries a request may list, duplicates included (0 disables rounds; at most 256). Problems with the request as a whole fail the whole request, while a round that cannot be simulated (not available, or a group that is invalid under that round's protocol) is reported in that entry's error, where a single-round request would fail. Non-standard fork feature.
+	Rounds *[]basics.Round `json:"rounds,omitempty"`
 
 	// TxnGroups The transaction groups to simulate. The node config value MaxAPISimulateGroups limits how many; more than one group is a non-standard fork feature. By default the groups run in order as consecutive groups of one simulated block: each group sees the effects of the groups before it, a transaction or lease used by an earlier group is a duplicate, and the groups share the block's byte limit, so a group that does not fit fails while a smaller later group may still fit. A group that fails is rolled back and the later groups still run, except after a failed post-evaluation check (placeholder PQ signatures with fix-signers), which runs once the group is applied, or after a group left the evaluator state corrupted: every later group is then reported as not simulated, with the index of the group that stopped them. Group indexes in these messages and failed-at paths are 0-based. A request with a StateProof transaction is rejected as a whole. With parallel-groups, every group is simulated alone against the state at the start round: groups do not see each other's effects, duplicate transactions and leases are not detected across groups, and several groups may create the same app or asset ID.
 	TxnGroups []SimulateRequestTransactionGroup `json:"txn-groups"`
@@ -1085,6 +1088,21 @@ type SimulateRequest struct {
 type SimulateRequestTransactionGroup struct {
 	// Txns An atomic transaction group.
 	Txns []json.RawMessage `json:"txns"`
+}
+
+// SimulateRoundResult Simulation result for one of the rounds of a request that listed rounds. Non-standard fork feature.
+type SimulateRoundResult struct {
+	// Error If present, the request could not be simulated at this round, and why.
+	Error *string `json:"error,omitempty"`
+
+	// InitialStates Initial states of resources that were accessed during simulation.
+	InitialStates *SimulateInitialStates `json:"initial-states,omitempty"`
+
+	// LastRound The round immediately preceding this simulation: the requested round, with 0 resolved to the latest round.
+	LastRound basics.Round `json:"last-round"`
+
+	// TxnGroups A result object for each transaction group that was simulated at this round. Absent when error is present.
+	TxnGroups *[]SimulateTransactionGroupResult `json:"txn-groups,omitempty"`
 }
 
 // SimulateTraceConfig An object that configures simulation execution trace.
@@ -1726,10 +1744,13 @@ type SimulateResponse struct {
 	// InitialStates Initial states of resources that were accessed during simulation.
 	InitialStates *SimulateInitialStates `json:"initial-states,omitempty"`
 
-	// LastRound The round immediately preceding this simulation. State changes through this round were used to run this simulation.
+	// LastRound The round immediately preceding this simulation. State changes through this round were used to run this simulation. 0 when round-results is present.
 	LastRound basics.Round `json:"last-round"`
 
-	// TxnGroups A result object for each transaction group that was simulated.
+	// RoundResults Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.
+	RoundResults *[]SimulateRoundResult `json:"round-results,omitempty"`
+
+	// TxnGroups A result object for each transaction group that was simulated. Empty when round-results is present.
 	TxnGroups []SimulateTransactionGroupResult `json:"txn-groups"`
 
 	// Version The version of this response object.

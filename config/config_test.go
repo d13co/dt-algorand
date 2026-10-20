@@ -407,6 +407,44 @@ func TestLocal_MaxAPISimulateGroups(t *testing.T) {
 	a.Equal(uint64(16), load(`{"Version": 38}`).MaxAPISimulateGroups)
 }
 
+// TestLocal_SimulateRounds checks that a v39 config file without MaxAPISimulateRounds and
+// SimulateRoundsParallelism loads their defaults, and that explicit values, 0 included, are kept
+// as written (the handler disables rounds at 0, treats a parallelism below 1 as 1 and clamps the
+// round count at 256).
+func TestLocal_SimulateRounds(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(16), GetDefaultLocal().MaxAPISimulateRounds)
+	a.Equal(4, GetDefaultLocal().SimulateRoundsParallelism)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	c := load(`{"Version": 39}`)
+	a.Equal(uint64(16), c.MaxAPISimulateRounds)
+	a.Equal(4, c.SimulateRoundsParallelism)
+
+	c = load(`{"Version": 39, "MaxAPISimulateRounds": 0, "SimulateRoundsParallelism": 0}`)
+	a.Equal(uint64(0), c.MaxAPISimulateRounds)
+	a.Equal(0, c.SimulateRoundsParallelism)
+
+	c = load(`{"Version": 39, "MaxAPISimulateRounds": 300, "SimulateRoundsParallelism": -2}`)
+	a.Equal(uint64(300), c.MaxAPISimulateRounds)
+	a.Equal(-2, c.SimulateRoundsParallelism)
+
+	// an older file never has the fields, and keeps the defaults
+	c = load(`{"Version": 38}`)
+	a.Equal(uint64(16), c.MaxAPISimulateRounds)
+	a.Equal(4, c.SimulateRoundsParallelism)
+}
+
 // Verify that nobody is changing the shipping default configurations
 func TestLocal_ConfigInvariant(t *testing.T) {
 	partitiontest.PartitionTest(t)

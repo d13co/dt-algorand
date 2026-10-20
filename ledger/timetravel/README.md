@@ -65,6 +65,14 @@ With `parallel-groups: true`, every group is simulated alone against the state a
 
 `extra-opcode-budget` applies to each group, as it does to a lone group. `goal clerk simulate -t` splits its file into groups on changes of the Group field, as `goal clerk rawsend` does, and `--parallel-groups` sets the flag.
 
+### One simulation at several rounds
+
+`rounds` lists the rounds to simulate the same request at, each meaning what `round` means. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a later single-round request uses. The response then has `round-results`, one entry per listed round in request order, each with its `last-round` and either the `txn-groups` and `initial-states` of that round's simulation or an `error`. The top-level `last-round` is 0 and `txn-groups` is empty; `version`, `eval-overrides` and `exec-trace-config` come from the first entry that was simulated, or from the request when none was. A round listed several times is simulated once, but still counts against the limit below. Within each round, the groups run as described above, sequentially or with `parallel-groups`. With time travel any round since genesis can be listed; otherwise only the last `MaxAcctLookback` rounds are available, and older ones get an `error` entry.
+
+Problems with the request as a whole are a 400 before anything runs: a non-zero `round` with `rounds` (`round: 0` is the same as no `round`), more entries than `MaxAPISimulateRounds`, duplicates included (node config, default 16; 0 disables `rounds`; values above 256 count as 256, with a startup warning), a `format` other than json or msgpack, and everything a single-round request rejects whatever its round (`fix-signers` without `allow-empty-signatures`, too many groups, too much extra budget, exec traces without `EnableDeveloperAPI`, a StateProof transaction). What depends on the round is reported in that round's entry instead, including the cases where a single-round request answers 400 or 500: a round the node doesn't have, or a group that is invalid under that round's protocol.
+
+The rounds run in parallel on up to `SimulateRoundsParallelism` simulations at once (node config, default 4; values below 1 count as 1, values above 256 count as 256, with a startup warning), a limit shared by all `rounds` requests of the node. Parallel groups inside a round also take the node's per-CPU group slots. If the client goes away, rounds not yet started are skipped and no response is written; rounds already running finish. A request can do up to rounds × groups simulations, each group with up to the full extra opcode budget: both caps are operator settings. `goal clerk simulate` has no flag for `rounds` yet.
+
 ## Design
 
 ### Objects and keys
