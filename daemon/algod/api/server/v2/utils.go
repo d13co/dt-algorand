@@ -600,6 +600,8 @@ func convertSimulationResult(result simulation.Result) PreEncodedSimulateRespons
 			ExtraOpcodeBudget:     omitEmpty(result.EvalOverrides.ExtraOpcodeBudget),
 			FixSigners:            omitEmpty(result.EvalOverrides.FixSigners),
 			ParallelGroups:        omitEmpty(result.EvalOverrides.ParallelGroups),
+			SkipValidityWindow:    omitEmpty(result.EvalOverrides.SkipValidityWindow),
+			RewriteValidityWindow: omitEmpty(result.EvalOverrides.RewriteValidityWindow),
 		}
 	}
 
@@ -628,6 +630,8 @@ func convertSimulationRequest(request PreEncodedSimulateRequest) simulation.Requ
 		TraceConfig:           request.ExecTraceConfig,
 		FixSigners:            request.FixSigners,
 		ParallelGroups:        request.ParallelGroups,
+		SkipValidityWindow:    request.SkipValidityWindow,
+		RewriteValidityWindow: request.RewriteValidityWindow,
 	}
 }
 

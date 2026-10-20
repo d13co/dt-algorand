@@ -1074,11 +1074,17 @@ type SimulateRequest struct {
 	// ParallelGroups If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.
 	ParallelGroups *bool `json:"parallel-groups,omitempty"`
 
+	// RewriteValidityWindow If true, at every round each top-level transaction's window is moved to the simulated block, keeping its width: first-valid becomes the round after the start round and last-valid first-valid plus the original last-valid minus first-valid. Valid group IDs are recomputed. Transaction IDs change, so the signatures over every changed transaction (sig, msig, the PQ signature bytes) are dropped and allow-empty-signatures is required; logic signatures are kept. Transactions that differ only by their window become identical, so a later one is a duplicate: give them distinct notes. All the normal checks then apply to the rewritten transactions, which the results echo: clients should not match results by transaction ID, and the echoed transactions cannot be submitted as they are. Heartbeat transactions keep their window, and their signature unless their group ID changes. With fix-signers, the signer of every transaction whose signature was dropped is fixed from the ledger. Reading a block after the start round fails. Only with rounds, and not with skip-validity-window. Non-standard fork feature.
+	RewriteValidityWindow *bool `json:"rewrite-validity-window,omitempty"`
+
 	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round. A non-zero round cannot be combined with rounds; 0 is the same as omitting it.
 	Round *basics.Round `json:"round,omitempty"`
 
 	// Rounds If provided and not empty, the request is simulated once per listed round, each entry meaning what round means, and the results are returned in round-results, one per entry in this order, while the top-level last-round is 0 and txn-groups is empty. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a single-round request (round 0 or no round) uses, which is resolved when its own simulation starts. A round listed several times is simulated once. The node config value MaxAPISimulateRounds limits how many entries a request may list, duplicates included (0 disables rounds; at most 256). Problems with the request as a whole fail the whole request, while a round that cannot be simulated (not available, or a group that is invalid under that round's protocol) is reported in that entry's error, where a single-round request would fail. Non-standard fork feature.
 	Rounds *[]basics.Round `json:"rounds,omitempty"`
+
+	// SkipValidityWindow If true, transactions are evaluated as sent at every round, even outside their first-valid..last-valid window: the round-range check and the check for a transaction ID confirmed earlier are skipped. Leases (confirmed and earlier in the block), duplicates in the block, the genesis ID and hash, well-formedness (last-valid at least first-valid, a window of at most MaxTxnLife rounds) and fees are still checked. Programs see the original first-valid and last-valid, so block, txn FirstValidTime and inner transactions stay tied to the original window, and reading a block after the start round fails. A transaction confirmed with a lease still fails on its own lease while that lease is live. Leases confirmed before the node's last MaxTxnLife rounds are not detected. Only with rounds, and not with rewrite-validity-window. Non-standard fork feature.
+	SkipValidityWindow *bool `json:"skip-validity-window,omitempty"`
 
 	// TxnGroups The transaction groups to simulate. The node config value MaxAPISimulateGroups limits how many; more than one group is a non-standard fork feature. By default the groups run in order as consecutive groups of one simulated block: each group sees the effects of the groups before it, a transaction or lease used by an earlier group is a duplicate, and the groups share the block's byte limit, so a group that does not fit fails while a smaller later group may still fit. A group that fails is rolled back and the later groups still run, except after a failed post-evaluation check (placeholder PQ signatures with fix-signers), which runs once the group is applied, or after a group left the evaluator state corrupted: every later group is then reported as not simulated, with the index of the group that stopped them. Group indexes in these messages and failed-at paths are 0-based. A request with a StateProof transaction is rejected as a whole. With parallel-groups, every group is simulated alone against the state at the start round: groups do not see each other's effects, duplicate transactions and leases are not detected across groups, and several groups may create the same app or asset ID.
 	TxnGroups []SimulateRequestTransactionGroup `json:"txn-groups"`
@@ -1217,6 +1223,12 @@ type SimulationEvalOverrides struct {
 
 	// ParallelGroups If true, every transaction group was simulated alone against the state at the start round, instead of as consecutive groups of one block.
 	ParallelGroups *bool `json:"parallel-groups,omitempty"`
+
+	// RewriteValidityWindow If true, transactions' validity windows were moved to the simulated block, and their signatures over the transaction dropped.
+	RewriteValidityWindow *bool `json:"rewrite-validity-window,omitempty"`
+
+	// SkipValidityWindow If true, transactions were evaluated outside their validity window, as sent.
+	SkipValidityWindow *bool `json:"skip-validity-window,omitempty"`
 }
 
 // SimulationOpcodeTraceUnit The set of trace information and effect from evaluating a single opcode.

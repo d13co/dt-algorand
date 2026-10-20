@@ -1577,6 +1577,8 @@ type PreEncodedSimulateRequest struct {
 	ExecTraceConfig       simulation.ExecTraceConfig                  `codec:"exec-trace-config,omitempty"`
 	FixSigners            bool                                        `codec:"fix-signers,omitempty"`
 	ParallelGroups        bool                                        `codec:"parallel-groups,omitempty"`
+	SkipValidityWindow    bool                                        `codec:"skip-validity-window,omitempty"`
+	RewriteValidityWindow bool                                        `codec:"rewrite-validity-window,omitempty"`
 }
 
 // SimulateTransaction simulates broadcasting a raw transaction to the network, returning relevant simulation results.
@@ -1627,6 +1629,12 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 	}
 	if len(simulateRequest.Rounds) > 0 {
 		return v2.simulateRounds(ctx, handle, contentType, stat, simulateRequest)
+	}
+	// The validity window modes exist to run the same txns across rounds further apart than
+	// MaxTxnLife. Non-standard fork features.
+	if simulateRequest.SkipValidityWindow || simulateRequest.RewriteValidityWindow {
+		err = errors.New("skip-validity-window and rewrite-validity-window require rounds")
+		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Simulate transaction
 	simulationResult, err := v2.Node.Simulate(convertSimulationRequest(simulateRequest))

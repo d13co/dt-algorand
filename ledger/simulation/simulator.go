@@ -73,6 +73,19 @@ type Request struct {
 	// by API clients. Non-standard fork feature.
 	MaxExtraOpcodeBudget uint64
 
+	// SkipValidityWindow evaluates txns outside their FirstValid..LastValid window, as sent: the
+	// round-range part of the liveness check and the check for a txid confirmed earlier are skipped.
+	// Leases, in-block duplicates, genesis and well-formedness are still checked, and headers after
+	// the start round can't be read. The REST API allows it only with rounds. Non-standard fork
+	// feature.
+	SkipValidityWindow bool
+
+	// RewriteValidityWindow moves every top-level txn's window to the simulated block, keeping its
+	// width, and recomputes valid group IDs; the signatures over the body of the txns it changes are
+	// dropped, so it needs AllowEmptySignatures (validity_window.go). Headers after the start round can't be read. The
+	// REST API allows it only with rounds. Non-standard fork feature.
+	RewriteValidityWindow bool
+
 	hooks *testHooks
 }
 
@@ -121,6 +134,21 @@ func (r Request) Validate(developerAPI bool) error {
 		return InvalidRequestError{
 			SimulatorError{
 				errors.New("FixSigners requires AllowEmptySignatures to be enabled"),
+			},
+		}
+	}
+
+	if r.SkipValidityWindow && r.RewriteValidityWindow {
+		return InvalidRequestError{
+			SimulatorError{
+				errors.New("skip-validity-window and rewrite-validity-window are mutually exclusive"),
+			},
+		}
+	}
+	if r.RewriteValidityWindow && !r.AllowEmptySignatures {
+		return InvalidRequestError{
+			SimulatorError{
+				errors.New("rewrite-validity-window requires allow-empty-signatures"),
 			},
 		}
 	}
@@ -178,6 +206,22 @@ func (r Request) Validate(developerAPI bool) error {
 type simulatorLedger struct {
 	*data.Ledger
 	start basics.Round
+
+	// skipValidityWindow and rewriteValidityWindow are the request's validity window modes. They
+	// are set by Simulate, on its copy of the simulator.
+	skipValidityWindow    bool
+	rewriteValidityWindow bool
+}
+
+// BlockHdr is part of the ledger.Ledger interface. With a validity window mode, a txn's window
+// may lie after the start round, so programs (block, txn FirstValidTime) and heartbeats (the seed
+// of FirstValid) could read the headers of later rounds on a ledger that has them. Those are
+// refused. The evaluator itself reads only headers up to the start round.
+func (l simulatorLedger) BlockHdr(rnd basics.Round) (bookkeeping.BlockHeader, error) {
+	if (l.skipValidityWindow || l.rewriteValidityWindow) && rnd > l.start {
+		return bookkeeping.BlockHeader{}, fmt.Errorf("round %d is after the simulation start round %d", rnd, l.start)
+	}
+	return l.Ledger.BlockHdr(rnd)
 }
 
 // Latest is part of the ledger.Ledger interface.
@@ -195,7 +239,13 @@ func (l simulatorLedger) LatestTotals() (basics.Round, ledgercore.AccountTotals,
 // CheckDup is part of the ledger.Ledger interface. We override this so that
 // a simulation at a past round does not count the transactions and leases of
 // the rounds after it.
+//
+// With skipValidityWindow, a txn may be evaluated long after its LastValid, so only its lease is
+// checked: a txid confirmed earlier is not a duplicate.
 func (l simulatorLedger) CheckDup(currentProto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
+	if l.skipValidityWindow {
+		return l.Ledger.CheckLeaseAt(currentProto, current, firstValid, lastValid, txid, txl)
+	}
 	return l.Ledger.CheckDupAt(currentProto, current, firstValid, lastValid, txid, txl)
 }
 
@@ -222,6 +272,7 @@ func (l simulatorLedger) StartEvaluator(hdr bookkeeping.BlockHeader, paysetHint,
 			Validate:            true,
 			MaxTxnBytesPerBlock: maxTxnBytesPerBlock,
 			Tracer:              tracer,
+			SkipValidityWindow:  l.skipValidityWindow,
 		})
 }
 
@@ -257,7 +308,7 @@ type Simulator struct {
 // MakeSimulator creates a new simulator from a ledger.
 func MakeSimulator(ledger *data.Ledger, developerAPI bool) *Simulator {
 	return &Simulator{
-		ledger:       simulatorLedger{ledger, 0}, // start round to be specified in Simulate method
+		ledger:       simulatorLedger{Ledger: ledger}, // start round to be specified in Simulate method
 		developerAPI: developerAPI,
 	}
 }
@@ -745,12 +796,20 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 		// Access underlying data.Ledger to get the real latest round
 		s.ledger.start = s.ledger.Ledger.Latest()
 	}
+	// s is a copy, so these hold for this call only.
+	s.ledger.skipValidityWindow = simulateRequest.SkipValidityWindow
+	s.ledger.rewriteValidityWindow = simulateRequest.RewriteValidityWindow
 
 	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
 	if err != nil {
 		return Result{}, err
 	}
 	nextBlock := bookkeeping.MakeBlock(prevBlockHdr)
+
+	if simulateRequest.RewriteValidityWindow {
+		// simulateRequest is a copy: the caller's groups, which other rounds may share, are kept.
+		simulateRequest.TxnGroups = rewriteValidityWindow(simulateRequest.TxnGroups, nextBlock.Round(), config.Consensus[nextBlock.CurrentProtocol])
+	}
 
 	var result *Result
 	if simulateRequest.ParallelGroups {

@@ -38,12 +38,14 @@ import (
 
 	"github.com/algorand/go-codec/codec"
 
+	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/daemon/algod/api/server"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/simulation"
@@ -331,6 +333,128 @@ func TestSimulateRoundsGroups(t *testing.T) {
 			for g, group := range results[1].TxnGroups {
 				require.Nil(t, group.FailureMessage, "group %d", g)
 			}
+		})
+	}
+}
+
+// windowRoundLoggerApp logs txn FirstValid and the round of the simulated block.
+const windowRoundLoggerApp = `#pragma version 8
+txn FirstValid
+itob
+log
+global Round
+itob
+log
+int 1`
+
+// TestSimulateRoundsValidityWindow simulates one txn at rounds more than MaxTxnLife apart, which
+// only the validity window modes allow, and checks the requests they make invalid.
+func TestSimulateRoundsValidityWindow(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t, func(cfg *config.Local) {
+		cfg.Archival = false
+		cfg.EnableTimeTravel = true
+	})
+	defer env.Close()
+	sender := env.Accounts[0]
+	proto := env.TxnInfo.CurrentProtocolParams()
+	for range proto.MaxTxnLife + 200 {
+		hdr := env.TxnInfo.LatestHeader
+		blk := bookkeeping.MakeBlock(hdr)
+		blk.TxnCounter = hdr.TxnCounter
+		require.NoError(t, env.Ledger.AddBlock(blk, agreement.Certificate{}))
+		env.TxnInfo.LatestHeader = blk.BlockHeader
+	}
+	latest := env.Ledger.Latest()
+	old := latest - basics.Round(proto.MaxTxnLife) - 100
+	rounds := []basics.Round{latest, old}
+
+	txn := env.TxnInfo.NewTxn(txntest.Txn{
+		Type:              protocol.ApplicationCallTx,
+		Sender:            sender.Addr,
+		ApprovalProgram:   windowRoundLoggerApp,
+		ClearStateProgram: "#pragma version 8\nint 1",
+	})
+	txn.FirstValid, txn.LastValid = latest-5, latest+5
+	request := oneGroupRequest(txn.Txn().Sign(sender.Sk))
+	request.Rounds = rounds
+
+	n := newRoundsNode(t, env)
+	router := newRoundsRouter(t, n)
+	// logged returns the first valid and the block round that round result i logged.
+	logged := func(t *testing.T, response v2.PreEncodedSimulateResponse, i int) (basics.Round, basics.Round) {
+		t.Helper()
+		roundResult := (*response.RoundResults)[i]
+		require.Nil(t, roundResult.Error)
+		group := roundResult.TxnGroups[0]
+		require.Nil(t, group.FailureMessage, "entry %d", i)
+		logs := *group.Txns[0].Txn.Logs
+		require.Len(t, logs, 2)
+		return basics.Round(binary.BigEndian.Uint64(logs[0])), basics.Round(binary.BigEndian.Uint64(logs[1]))
+	}
+
+	t.Run("no mode", func(t *testing.T) {
+		response := simulateOK(t, router, request, "msgpack")
+		results := *response.RoundResults
+		require.Nil(t, results[0].TxnGroups[0].FailureMessage)
+		require.NotNil(t, results[1].TxnGroups[0].FailureMessage)
+		require.Contains(t, *results[1].TxnGroups[0].FailureMessage, "txn dead")
+		require.Nil(t, response.EvalOverrides)
+	})
+
+	t.Run("skip", func(t *testing.T) {
+		request := request
+		request.SkipValidityWindow = true
+		response := simulateOK(t, router, request, "json")
+		for i, rnd := range rounds {
+			fv, blockRound := logged(t, response, i)
+			require.Equal(t, latest-5, fv)
+			require.Equal(t, rnd+1, blockRound)
+		}
+		require.NotNil(t, response.EvalOverrides)
+		require.Equal(t, &request.SkipValidityWindow, response.EvalOverrides.SkipValidityWindow)
+		require.Nil(t, response.EvalOverrides.RewriteValidityWindow)
+	})
+
+	t.Run("rewrite", func(t *testing.T) {
+		request := request
+		request.RewriteValidityWindow = true
+		request.AllowEmptySignatures = true
+		response := simulateOK(t, router, request, "msgpack")
+		for i, rnd := range rounds {
+			fv, blockRound := logged(t, response, i)
+			require.Equal(t, rnd+1, fv)
+			require.Equal(t, rnd+1, blockRound)
+			echoed := (*response.RoundResults)[i].TxnGroups[0].Txns[0].Txn.Txn
+			require.Equal(t, rnd+1, echoed.Txn.FirstValid)
+			require.Equal(t, rnd+11, echoed.Txn.LastValid)
+			require.True(t, echoed.Sig.Blank())
+		}
+		require.NotNil(t, response.EvalOverrides)
+		require.Equal(t, &request.RewriteValidityWindow, response.EvalOverrides.RewriteValidityWindow)
+		require.Nil(t, response.EvalOverrides.SkipValidityWindow)
+	})
+
+	for _, tc := range []struct {
+		name    string
+		request v2.PreEncodedSimulateRequest
+		err     string
+	}{
+		{"skip without rounds", v2.PreEncodedSimulateRequest{SkipValidityWindow: true}, "skip-validity-window and rewrite-validity-window require rounds"},
+		{"rewrite without rounds", v2.PreEncodedSimulateRequest{RewriteValidityWindow: true, AllowEmptySignatures: true}, "skip-validity-window and rewrite-validity-window require rounds"},
+		{"both modes", v2.PreEncodedSimulateRequest{Rounds: rounds, SkipValidityWindow: true, RewriteValidityWindow: true, AllowEmptySignatures: true}, "skip-validity-window and rewrite-validity-window are mutually exclusive"},
+		{"rewrite without empty signatures", v2.PreEncodedSimulateRequest{Rounds: rounds, RewriteValidityWindow: true}, "rewrite-validity-window requires allow-empty-signatures"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newRoundsNode(t, env)
+			r := tc.request
+			r.TxnGroups = request.TxnGroups
+			rec := postSimulate(t, newRoundsRouter(t, n), encodeSimulateRequest(t, r, "json"), "json")
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), tc.err)
+			require.Zero(t, n.calls.Load())
 		})
 	}
 }

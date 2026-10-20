@@ -4096,6 +4096,14 @@
         "parallel-groups": {
           "description": "If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.",
           "type": "boolean"
+        },
+        "skip-validity-window": {
+          "description": "If true, transactions are evaluated as sent at every round, even outside their first-valid..last-valid window: the round-range check and the check for a transaction ID confirmed earlier are skipped. Leases (confirmed and earlier in the block), duplicates in the block, the genesis ID and hash, well-formedness (last-valid at least first-valid, a window of at most MaxTxnLife rounds) and fees are still checked. Programs see the original first-valid and last-valid, so block, txn FirstValidTime and inner transactions stay tied to the original window, and reading a block after the start round fails. A transaction confirmed with a lease still fails on its own lease while that lease is live. Leases confirmed before the node's last MaxTxnLife rounds are not detected. Only with rounds, and not with rewrite-validity-window. Non-standard fork feature.",
+          "type": "boolean"
+        },
+        "rewrite-validity-window": {
+          "description": "If true, at every round each top-level transaction's window is moved to the simulated block, keeping its width: first-valid becomes the round after the start round and last-valid first-valid plus the original last-valid minus first-valid. Valid group IDs are recomputed. Transaction IDs change, so the signatures over every changed transaction (sig, msig, the PQ signature bytes) are dropped and allow-empty-signatures is required; logic signatures are kept. Transactions that differ only by their window become identical, so a later one is a duplicate: give them distinct notes. All the normal checks then apply to the rewritten transactions, which the results echo: clients should not match results by transaction ID, and the echoed transactions cannot be submitted as they are. Heartbeat transactions keep their window, and their signature unless their group ID changes. With fix-signers, the signer of every transaction whose signature was dropped is fixed from the ledger. Reading a block after the start round fails. Only with rounds, and not with skip-validity-window. Non-standard fork feature.",
+          "type": "boolean"
         }
       }
     },
@@ -4565,6 +4573,14 @@
         },
         "parallel-groups": {
           "description": "If true, every transaction group was simulated alone against the state at the start round, instead of as consecutive groups of one block.",
+          "type": "boolean"
+        },
+        "skip-validity-window": {
+          "description": "If true, transactions were evaluated outside their validity window, as sent.",
+          "type": "boolean"
+        },
+        "rewrite-validity-window": {
+          "description": "If true, transactions' validity windows were moved to the simulated block, and their signatures over the transaction dropped.",
           "type": "boolean"
         }
       }

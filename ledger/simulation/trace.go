@@ -100,6 +100,8 @@ type ResultEvalOverrides struct {
 	ExtraOpcodeBudget     int
 	FixSigners            bool
 	ParallelGroups        bool
+	SkipValidityWindow    bool
+	RewriteValidityWindow bool
 }
 
 // LogBytesLimit hardcode limit of how much bytes one can log per transaction during simulation (with AllowMoreLogging)
@@ -256,6 +258,8 @@ func (r Request) EvalOverrides() ResultEvalOverrides {
 		AllowUnnamedResources: r.AllowUnnamedResources,
 		FixSigners:            r.FixSigners,
 		ParallelGroups:        r.ParallelGroups,
+		SkipValidityWindow:    r.SkipValidityWindow,
+		RewriteValidityWindow: r.RewriteValidityWindow,
 	}.AllowMoreLogging(r.AllowMoreLogging)
 }
 
