@@ -428,6 +428,36 @@ int 1`,
 		require.Zero(t, result.TxnGroups[1].Txns[0].FixedSigner)
 	})
 
+	t.Run("rekey in a group that panics", func(t *testing.T) {
+		t.Parallel()
+		env := simulationtesting.PrepareSimulatorTest(t)
+		defer env.Close()
+		a, b := env.Accounts[0], env.Accounts[1]
+
+		rekey := env.TxnInfo.NewTxn(txntest.Txn{
+			Type:     protocol.PaymentTx,
+			Sender:   a.Addr,
+			Receiver: a.Addr,
+			RekeyTo:  b.Addr,
+		}).Txn().Sign(a.Sk)
+		request := simulation.WithAfterTxnHook(simulation.Request{
+			TxnGroups:            [][]transactions.SignedTxn{{rekey}, {unsignedPay(env, a.Addr, basics.Address{}, 1)}},
+			AllowEmptySignatures: true,
+			FixSigners:           true,
+		}, func(g, i int) {
+			// Before the commit: the evaluator recovers, rolls the group back and stays usable.
+			if g == 0 {
+				panic("injected")
+			}
+		})
+		// The tracer's AfterTxnGroup sees no error for the panicked group, but its rekey was rolled
+		// back, so the next group is signed by A itself.
+		result := simulateGroups(t, env, request)
+		require.Contains(t, result.TxnGroups[0].FailureMessage, "injected")
+		requireGroupSucceeded(t, result, 1)
+		require.Zero(t, result.TxnGroups[1].Txns[0].FixedSigner)
+	})
+
 	t.Run("un-rekey an account rekeyed at the start round", func(t *testing.T) {
 		t.Parallel()
 		env := simulationtesting.PrepareSimulatorTest(t)

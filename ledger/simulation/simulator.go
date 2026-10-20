@@ -106,6 +106,9 @@ type testHooks struct {
 	// afterGroup runs at the end of the tracer's AfterTxnGroup for each top-level group, while the
 	// evaluator is still in TransactionGroup.
 	afterGroup func(g int, evalError error)
+	// afterTxn runs at the end of the tracer's AfterTxn for each top-level txn, before the group
+	// is committed.
+	afterTxn func(g, i int)
 }
 
 // MaxSimulateGroups is the ceiling for Request.MaxGroups.
@@ -231,16 +234,18 @@ type simulatorLedger struct {
 
 // BlockHdr is part of the ledger.Ledger interface.
 //
-// With a validity window mode, a txn's window may lie after the start round, so programs (block,
-// txn FirstValidTime) and heartbeats (the seed of FirstValid) could read the headers of later
-// rounds on a ledger that has them. Those are refused. The evaluator itself reads only headers up
+// Headers after the start round are refused, as on chain, where the ledger does not yet have the
+// header of the round being evaluated or any later one. Without this, a ledger that has them (a
+// past start round on a time-travel node) would show them to heartbeats (the seed of FirstValid,
+// which may be start+1) and, with a validity window mode, where a txn's window may lie after the
+// start round, to programs (block, txn FirstValidTime). The evaluator itself reads only headers up
 // to the start round.
 //
 // With upgradeTo set, the header of the start round carries an upgrade to it, pending at the next
 // round, so the simulated block runs it. The evaluator checks the simulated header against this
 // one, so every reader gets the same.
 func (l simulatorLedger) BlockHdr(rnd basics.Round) (bookkeeping.BlockHeader, error) {
-	if (l.skipValidityWindow || l.rewriteValidityWindow) && rnd > l.start {
+	if rnd > l.start {
 		return bookkeeping.BlockHeader{}, fmt.Errorf("round %d is after the simulation start round %d", rnd, l.start)
 	}
 	hdr, err := l.Ledger.BlockHdr(rnd)
@@ -576,6 +581,7 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 			continue
 		}
 		committed++
+		tracer.commitGroupAuthAddrs()
 
 		// Full PQ placeholders need the final AuthAddr after FixSigners has run through evaluation.
 		if overrides.AllowEmptySignatures && overrides.FixSigners {

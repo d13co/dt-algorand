@@ -40,6 +40,15 @@ func WithAfterGroupHook(r Request, hook func(g int, evalError error)) Request {
 	return r
 }
 
+// WithAfterTxnHook returns a copy of r that runs hook at the end of the tracer's AfterTxn for each
+// top-level txn. A panic in hook happens before the group is committed, and leaves the evaluator
+// usable.
+func WithAfterTxnHook(r Request, hook func(g, i int)) Request {
+	r.hooks = withHooks(r.hooks)
+	r.hooks.afterTxn = hook
+	return r
+}
+
 func withHooks(h *testHooks) *testHooks {
 	if h == nil {
 		return &testHooks{}

@@ -109,6 +109,11 @@ type evalTracer struct {
 	// only allocated when FixSigners is set.
 	authAddrs map[basics.Address]basics.Address
 
+	// groupAuthAddrs holds the AuthAddrs of the current group until the simulator knows that
+	// TransactionGroup succeeded (commitGroupAuthAddrs). AfterTxnGroup alone can't tell: when the
+	// group panics, it runs before the evaluator recovers and sees no error.
+	groupAuthAddrs []authAddrUpdate
+
 	// resourceLimitMultiplier is Request.ResourceLimitMultiplier. It is kept here rather than in
 	// result.EvalOverrides so that it is not reported in the result.
 	resourceLimitMultiplier uint64
@@ -147,6 +152,7 @@ func (tracer *evalTracer) currentGroup() *TxnGroupResult {
 func (tracer *evalTracer) startGroup(g int) {
 	tracer.groupIdx = g
 	tracer.failedAt = nil
+	tracer.groupAuthAddrs = tracer.groupAuthAddrs[:0]
 	tracer.relativeCursor = nil
 	tracer.previousInnerTxns = nil
 	tracer.execTraceStack = nil
@@ -155,6 +161,20 @@ func (tracer *evalTracer) startGroup(g int) {
 	tracer.addCount = 0
 	tracer.popCount = 0
 	tracer.stackHeightAfterDeletion = 0
+}
+
+// authAddrUpdate is the AuthAddr of an account after a group.
+type authAddrUpdate struct {
+	addr, authAddr basics.Address
+}
+
+// commitGroupAuthAddrs records the signers kept by AfterTxnGroup for the current group. The
+// simulator calls it once TransactionGroup has returned without error.
+func (tracer *evalTracer) commitGroupAuthAddrs() {
+	for _, u := range tracer.groupAuthAddrs {
+		tracer.authAddrs[u.addr] = u.authAddr
+	}
+	tracer.groupAuthAddrs = tracer.groupAuthAddrs[:0]
 }
 
 // handleError is responsible for setting the failedAt field properly.
@@ -242,13 +262,14 @@ func (tracer *evalTracer) AfterTxnGroup(ep *logic.EvalParams, deltas *ledgercore
 		tracer.unnamedResourcePolicy = nil
 	}
 
-	// Remember the signers of a group that committed, for the FixSigners pre-pass of later groups.
-	// A failed group is skipped: its deltas hold partial changes that were rolled back. Rekeys
-	// done by inner txns are in the group's deltas too.
+	// Keep the signers of the group for the FixSigners pre-pass of later groups. They are recorded
+	// only once the group has committed (commitGroupAuthAddrs). A failed group is skipped: its
+	// deltas hold partial changes that were rolled back. Rekeys done by inner txns are in the
+	// group's deltas too.
 	if ep.GetCaller() == nil && evalError == nil && deltas != nil && tracer.authAddrs != nil {
 		for i := range deltas.Accts.Len() {
 			addr, data := deltas.Accts.GetByIdx(i)
-			tracer.authAddrs[addr] = data.AuthAddr
+			tracer.groupAuthAddrs = append(tracer.groupAuthAddrs, authAddrUpdate{addr, data.AuthAddr})
 		}
 	}
 
@@ -335,6 +356,10 @@ func (tracer *evalTracer) AfterTxn(ep *logic.EvalParams, groupIndex int, ad tran
 		tracer.execTraceStack = tracer.execTraceStack[:len(tracer.execTraceStack)-1]
 	}
 	tracer.cursorEvalTracer.AfterTxn(ep, groupIndex, ad, evalError)
+
+	if ep.GetCaller() == nil && tracer.hooks != nil && tracer.hooks.afterTxn != nil {
+		tracer.hooks.afterTxn(tracer.groupIdx, groupIndex)
+	}
 }
 
 func (tracer *evalTracer) saveEvalDelta(evalDelta transactions.EvalDelta, appIDToSave basics.AppIndex) {

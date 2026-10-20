@@ -432,7 +432,7 @@ func heartbeat(t *testing.T, env simulationtesting.Environment, sender, acct bas
 }
 
 // TestRewriteValidityWindowHeartbeat checks that heartbeats keep their window, and that their
-// seed lookup can't read past the start round.
+// seed lookup can't read past the start round, with or without a validity window mode.
 func TestRewriteValidityWindowHeartbeat(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -463,15 +463,24 @@ func TestRewriteValidityWindowHeartbeat(t *testing.T) {
 	})
 
 	t.Run("seed after the start round", func(t *testing.T) {
-		// A heartbeat is valid in the block after start, but the seed of that round is refused.
+		// A heartbeat is valid in the block after start, but the seed of that round is refused,
+		// as on chain, even though the ledger has it.
 		start := latest - 3
 		hb := heartbeat(t, env, b.Addr, c.Addr, otss, start+1, start+10).Txn().Sign(b.Sk)
+		refused := fmt.Sprintf("round %d is after the simulation start round %d", start+1, start)
 		result := simulateGroups(t, env, simulation.Request{Round: start, TxnGroups: oneTxn(hb)})
-		requireGroupSucceeded(t, result, 0)
+		require.Contains(t, result.TxnGroups[0].FailureMessage, refused)
 		result = simulateGroups(t, env, simulation.Request{Round: start, TxnGroups: oneTxn(hb), RewriteValidityWindow: true, AllowEmptySignatures: true})
-		require.Contains(t, result.TxnGroups[0].FailureMessage, fmt.Sprintf("round %d is after the simulation start round %d", start+1, start))
+		require.Contains(t, result.TxnGroups[0].FailureMessage, refused)
 		// A lone heartbeat is left unchanged, signature included.
 		require.Equal(t, hb, result.TxnGroups[0].Txns[0].Txn.SignedTxn)
+	})
+
+	t.Run("seed of the start round", func(t *testing.T) {
+		start := latest - 3
+		hb := heartbeat(t, env, b.Addr, c.Addr, otss, start, start+10).Txn().Sign(b.Sk)
+		result := simulateGroups(t, env, simulation.Request{Round: start, TxnGroups: oneTxn(hb)})
+		requireGroupSucceeded(t, result, 0)
 	})
 }
 

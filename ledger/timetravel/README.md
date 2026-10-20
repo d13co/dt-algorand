@@ -27,7 +27,7 @@ Read endpoints take `?round=R` (the `at-round` parameter in the API spec) and an
 | `GET /v2/applications/{id}/box?name=`, `/boxes`¹ | box value / box listing at R |
 | `GET /v2/ledger/supply` | totals at R |
 | `GET /v2/blocks/{R}?header-only=true` | header of any round (no `?round=` needed) |
-| `POST /v2/transactions/simulate` with `"round": R` in the request | evaluates the group as if it were in block R+1, projecting every object it touches, including unnamed resources (`allow-unnamed-resources`), from the history |
+| `POST /v2/transactions/simulate` with `"round": R` in the request | evaluates the group as if it were in block R+1, projecting every object it touches, including unnamed resources (`allow-unnamed-resources`), from the history. Block headers after R can't be read, as on chain, where block R+1 isn't there yet: a heartbeat with `first-valid` R+1 fails on its seed |
 
 ¹ `/boxes` takes stock algod's own `round` parameter, not `at-round`: a node without time travel serves it for the rounds it still holds in memory (`MaxAcctLookback`) instead of rejecting it, and a time travel node for every round.
 
