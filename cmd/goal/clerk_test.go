@@ -17,11 +17,16 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/txntest"
+	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
@@ -97,4 +102,39 @@ func TestDeterminePathToSourceFromSourceMap(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMakeSimulateRequestGroups checks that goal clerk simulate splits a txn file into groups and
+// passes --parallel-groups and --protocol on.
+func TestMakeSimulateRequestGroups(t *testing.T) { // nolint:paralleltest // Sets the command's flag variables.
+	partitiontest.PartitionTest(t)
+
+	sender := basics.Address{1}
+	pay := func(note byte) txntest.Txn {
+		return txntest.Txn{Type: protocol.PaymentTx, Sender: sender, Receiver: sender, Note: []byte{note}}
+	}
+	a, b, c := pay(1), pay(2), pay(3)
+	group := txntest.Group(&a, &b)
+	ungrouped := c.SignedTxn()
+
+	var data []byte
+	for _, stxn := range append(group, ungrouped) {
+		data = append(data, protocol.Encode(&stxn)...)
+	}
+	file := filepath.Join(t.TempDir(), "txns")
+	require.NoError(t, os.WriteFile(file, data, 0600))
+
+	defer func(name string, parallel bool, proto string) {
+		txFilename, simulateParallelGroups, simulateProtocol = name, parallel, proto
+	}(txFilename, simulateParallelGroups, simulateProtocol)
+	txFilename = file
+	simulateParallelGroups = true
+	simulateProtocol = "latest"
+
+	request := makeSimulateRequest(decodeTxnsFromFile(txFilename))
+	require.True(t, request.ParallelGroups)
+	require.Equal(t, "latest", request.Protocol)
+	require.Len(t, request.TxnGroups, 2)
+	require.Equal(t, group, request.TxnGroups[0].Txns)
+	require.Equal(t, []transactions.SignedTxn{ungrouped}, request.TxnGroups[1].Txns)
 }

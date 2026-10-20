@@ -680,6 +680,10 @@ type BlockEvaluator struct {
 
 	maxTxnBytesPerBlock int
 
+	// skipValidityWindow drops the round-range part of the txn liveness check (simulate,
+	// eval_simext.go). Non-standard fork feature.
+	skipValidityWindow bool
+
 	Tracer logic.EvalTracer
 }
 
@@ -700,6 +704,11 @@ type EvaluatorOptions struct {
 	Generate            bool
 	MaxTxnBytesPerBlock int
 	Tracer              logic.EvalTracer
+
+	// SkipValidityWindow evaluates txns outside their FirstValid..LastValid window: only the
+	// genesis part of the liveness check applies (eval_simext.go). For simulate only.
+	// Non-standard fork feature.
+	SkipValidityWindow bool
 }
 
 // StartEvaluator creates a BlockEvaluator, given a ledger and a block header
@@ -752,6 +761,7 @@ func StartEvaluator(l LedgerForEvaluator, hdr bookkeeping.BlockHeader, evalOpts 
 		genesisHash:         l.GenesisHash(),
 		l:                   l,
 		maxTxnBytesPerBlock: evalOpts.MaxTxnBytesPerBlock,
+		skipValidityWindow:  evalOpts.SkipValidityWindow,
 		Tracer:              evalOpts.Tracer,
 	}
 
@@ -1252,7 +1262,7 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, evalParams *
 	txid := txn.ID()
 
 	if eval.validate {
-		err = eval.block.Alive(txn.Txn.Header)
+		err = eval.alive(txn.Txn.Header)
 		if err != nil {
 			return err
 		}
@@ -1321,7 +1331,7 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, evalParams *
 	}
 
 	// Remember this txn
-	cow.addTx(txn.Txn, txid)
+	cow.addTx(eval.txnForTail(txn.Txn), txid)
 
 	return nil
 }

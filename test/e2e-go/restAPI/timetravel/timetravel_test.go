@@ -219,7 +219,7 @@ int 1`)
 	a.NotContains(goal("account", "info", "-a", sender, "--round", fmt.Sprint(created.round-1)), appID)
 
 	var pageRounds []basics.Round // the pages of --json, as the client gets them
-	for _, line := range strings.Split(strings.TrimSpace(goal("app", "versions", "--app-id", fmt.Sprint(app), "--json", "--all", "--limit", "2")), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(goal("app", "versions", "--app-id", fmt.Sprint(app), "--json", "--all", "--limit", "2")), "\n") {
 		var page model.ApplicationVersionsResponse
 		a.NoError(json.Unmarshal([]byte(line), &page), line)
 		for _, v := range page.Versions {

@@ -61,6 +61,7 @@ import (
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/node"
@@ -2075,6 +2076,124 @@ func TestSimulateTransactionVerificationErr(t *testing.T) {
 	require.Equal(t, 400, rec.Code, rec.Body.String())
 }
 
+// TestSimulateTransactionResourceLimitMultiplier checks that SimulateResourceLimitMultiplier from
+// the node config reaches the simulator: a group that reads more unnamed accounts than the
+// consensus limits allow fails by default and succeeds with a multiplier of 2.
+func TestSimulateTransactionResourceLimitMultiplier(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	opts := testEnvOptions{
+		numAccounts:     5,
+		numTransactions: 1,
+		offlineAccounts: true,
+		minMoneyAtStart: 10_000_000,
+		maxMoneyAtStart: 20_000_000,
+	}
+	mockLedger, roots, _, _, releasefunc := testingenvWithOptions(t, opts)
+	defer releasefunc()
+
+	hdr, err := mockLedger.BlockHdr(mockLedger.Latest())
+	require.NoError(t, err)
+	txnInfo := simulationtesting.TxnInfo{LatestHeader: hdr}
+	proto := txnInfo.CurrentProtocolParams()
+	sender := roots[0]
+
+	// One more account than one app call may reference. The group is filled up to MaxTxGroupSize
+	// with payments, so the app call's own limits are the group's limits.
+	accounts := make([]basics.Address, proto.MaxAppTotalTxnReferences+1)
+	args := make([][]byte, len(accounts))
+	for i := range accounts {
+		accounts[i] = basics.Address{0xbb, byte(i + 1)}
+		args[i] = accounts[i][:]
+	}
+	appCreate := txnInfo.NewTxn(txntest.Txn{
+		Type:   protocol.ApplicationCallTx,
+		Sender: sender.Address(),
+		ApprovalProgram: `#pragma version 10
+int 0
+store 0
+loop:
+load 0
+txn NumAppArgs
+<
+bz end
+load 0
+txnas ApplicationArgs
+acct_params_get AcctBalance
+pop
+pop
+load 0
+int 1
++
+store 0
+b loop
+end:
+int 1`,
+		ClearStateProgram: "#pragma version 10\nint 1",
+		ApplicationArgs:   args,
+	})
+	txns := []*txntest.Txn{&appCreate}
+	for i := 1; i < proto.MaxTxGroupSize; i++ {
+		pay := txnInfo.NewTxn(txntest.Txn{
+			Type:     protocol.PaymentTx,
+			Sender:   sender.Address(),
+			Receiver: sender.Address(),
+			Note:     []byte{byte(i)},
+		})
+		txns = append(txns, &pay)
+	}
+	txntest.Group(txns...)
+	stxns := make([]transactions.SignedTxn, len(txns))
+	for i, txn := range txns {
+		stxns[i] = txn.Txn().Sign(sender.Secrets())
+	}
+	bodyBytes := protocol.EncodeReflect(&v2.PreEncodedSimulateRequest{
+		TxnGroups:             []v2.PreEncodedSimulateRequestTransactionGroup{{Txns: stxns}},
+		AllowUnnamedResources: true,
+	})
+
+	simulate := func(multiplier uint64) v2.PreEncodedSimulateTxnGroupResult {
+		t.Helper()
+		cfg := config.GetDefaultLocal()
+		cfg.SimulateResourceLimitMultiplier = multiplier
+		handler := v2.Handlers{
+			Node:     makeMockNodeWithConfig(mockLedger, t.Name(), nil, cannedStatusReportGolden, false, cfg),
+			Log:      logging.Base(),
+			Shutdown: make(chan struct{}),
+		}
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(bodyBytes))
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		require.NoError(t, handler.SimulateTransaction(c, model.SimulateTransactionParams{}))
+		require.Equal(t, 200, rec.Code, rec.Body.String())
+
+		var response v2.PreEncodedSimulateResponse
+		require.NoError(t, codec.NewDecoderBytes(rec.Body.Bytes(), protocol.JSONStrictHandle).Decode(&response))
+		require.Len(t, response.TxnGroups, 1)
+		// the multiplier is not reported
+		allowUnnamed := true
+		require.Equal(t, &model.SimulationEvalOverrides{AllowUnnamedResources: &allowUnnamed}, response.EvalOverrides)
+		return response.TxnGroups[0]
+	}
+
+	for _, m := range []uint64{0, 1} {
+		group := simulate(m)
+		require.NotNil(t, group.FailureMessage, "multiplier %d", m)
+		require.Contains(t, *group.FailureMessage, fmt.Sprintf("unavailable Account %s", accounts[len(accounts)-1]))
+	}
+
+	group := simulate(2)
+	require.Nil(t, group.FailureMessage)
+	require.NotNil(t, group.UnnamedResourcesAccessed)
+	require.NotNil(t, group.UnnamedResourcesAccessed.Accounts)
+	expected := make([]string, len(accounts))
+	for i := range accounts {
+		expected[i] = accounts[i].String()
+	}
+	require.ElementsMatch(t, expected, *group.UnnamedResourcesAccessed.Accounts)
+}
+
 func TestSimulateTransactionMultipleGroups(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -2115,31 +2234,120 @@ func TestSimulateTransactionMultipleGroups(t *testing.T) {
 	stxn1 := txn1.Txn().Sign(sender.Secrets())
 	stxn2 := txn2.Txn().Sign(sender.Secrets())
 
-	// build request body
-	request := v2.PreEncodedSimulateRequest{
-		TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
-			{
-				Txns: []transactions.SignedTxn{stxn1},
-			},
-			{
-				Txns: []transactions.SignedTxn{stxn2},
-			},
-		},
+	simulate := func(request v2.PreEncodedSimulateRequest) *httptest.ResponseRecorder {
+		t.Helper()
+		bodyBytes := protocol.EncodeReflect(&request)
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(bodyBytes))
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		require.NoError(t, handler.SimulateTransaction(c, model.SimulateTransactionParams{}))
+		return rec
 	}
-	bodyBytes := protocol.EncodeReflect(&request)
-	body := bytes.NewReader(bodyBytes)
-	req := httptest.NewRequest(http.MethodPost, "/", body)
-	rec := httptest.NewRecorder()
 
-	e := echo.New()
-	c := e.NewContext(req, rec)
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%t", parallel), func(t *testing.T) {
+			rec := simulate(v2.PreEncodedSimulateRequest{
+				TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
+					{Txns: []transactions.SignedTxn{stxn1}},
+					{Txns: []transactions.SignedTxn{stxn2}},
+				},
+				ParallelGroups: parallel,
+			})
+			require.Equal(t, 200, rec.Code, rec.Body.String())
 
-	// simulate transaction
-	err = handler.SimulateTransaction(c, model.SimulateTransactionParams{})
-	require.NoError(t, err)
-	bodyString := rec.Body.String()
-	require.Equal(t, 400, rec.Code, bodyString)
-	require.Contains(t, bodyString, "expected 1 transaction group, got 2")
+			var response v2.PreEncodedSimulateResponse
+			require.NoError(t, codec.NewDecoderBytes(rec.Body.Bytes(), protocol.JSONStrictHandle).Decode(&response))
+			require.Len(t, response.TxnGroups, 2)
+			for i, stxn := range []transactions.SignedTxn{stxn1, stxn2} {
+				group := response.TxnGroups[i]
+				require.Nil(t, group.FailureMessage, "group %d", i)
+				require.Len(t, group.Txns, 1)
+				require.Equal(t, stxn.ID(), group.Txns[0].Txn.Txn.Txn.ID())
+			}
+			if parallel {
+				require.NotNil(t, response.EvalOverrides)
+				require.Equal(t, &parallel, response.EvalOverrides.ParallelGroups)
+			} else {
+				require.Nil(t, response.EvalOverrides)
+			}
+		})
+	}
+
+	t.Run("no groups", func(t *testing.T) {
+		rec := simulate(v2.PreEncodedSimulateRequest{TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{}})
+		require.Equal(t, 400, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "expected at least 1 transaction group, got 0")
+	})
+
+	t.Run("too many groups", func(t *testing.T) {
+		groups := make([]v2.PreEncodedSimulateRequestTransactionGroup, config.GetDefaultLocal().MaxAPISimulateGroups+1)
+		for i := range groups {
+			groups[i] = v2.PreEncodedSimulateRequestTransactionGroup{Txns: []transactions.SignedTxn{stxn1}}
+		}
+		rec := simulate(v2.PreEncodedSimulateRequest{TxnGroups: groups})
+		require.Equal(t, 400, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), fmt.Sprintf("too many transaction groups: got %d, the limit is %d", len(groups), len(groups)-1))
+	})
+
+	t.Run("MaxAPISimulateGroups 0", func(t *testing.T) {
+		cfg := config.GetDefaultLocal()
+		cfg.MaxAPISimulateGroups = 0
+		handler := v2.Handlers{
+			Node:     makeMockNodeWithConfig(mockLedger, t.Name(), nil, cannedStatusReportGolden, false, cfg),
+			Log:      logging.Base(),
+			Shutdown: make(chan struct{}),
+		}
+		simulate := func(groups ...transactions.SignedTxn) *httptest.ResponseRecorder {
+			request := v2.PreEncodedSimulateRequest{}
+			for _, stxn := range groups {
+				request.TxnGroups = append(request.TxnGroups, v2.PreEncodedSimulateRequestTransactionGroup{Txns: []transactions.SignedTxn{stxn}})
+			}
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&request)))
+			rec := httptest.NewRecorder()
+			require.NoError(t, handler.SimulateTransaction(echo.New().NewContext(req, rec), model.SimulateTransactionParams{}))
+			return rec
+		}
+		rec := simulate(stxn1)
+		require.Equal(t, 200, rec.Code, rec.Body.String())
+		rec = simulate(stxn1, stxn2)
+		require.Equal(t, 400, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "too many transaction groups: got 2, the limit is 1")
+	})
+
+	t.Run("MaxAPISimulateExtraOpcodeBudget", func(t *testing.T) {
+		for _, tc := range []struct {
+			limit  uint64
+			budget int
+			err    string
+		}{
+			{0, simulation.MaxExtraOpcodeBudget, ""},
+			{0, simulation.MaxExtraOpcodeBudget + 1, "extra budget 320001 \\u003e simulation extra budget limit 320000"},
+			{1_000_000, 1_000_000, ""},
+			{1_000_000, 1_000_001, "extra budget 1000001 \\u003e simulation extra budget limit 1000000"},
+			{100, 101, "extra budget 101 \\u003e simulation extra budget limit 100"},
+		} {
+			cfg := config.GetDefaultLocal()
+			cfg.MaxAPISimulateExtraOpcodeBudget = tc.limit
+			handler := v2.Handlers{
+				Node:     makeMockNodeWithConfig(mockLedger, t.Name(), nil, cannedStatusReportGolden, false, cfg),
+				Log:      logging.Base(),
+				Shutdown: make(chan struct{}),
+			}
+			request := v2.PreEncodedSimulateRequest{
+				TxnGroups:         []v2.PreEncodedSimulateRequestTransactionGroup{{Txns: []transactions.SignedTxn{stxn1}}},
+				ExtraOpcodeBudget: tc.budget,
+			}
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&request)))
+			rec := httptest.NewRecorder()
+			require.NoError(t, handler.SimulateTransaction(echo.New().NewContext(req, rec), model.SimulateTransactionParams{}))
+			if tc.err == "" {
+				require.Equal(t, 200, rec.Code, "limit %d budget %d: %s", tc.limit, tc.budget, rec.Body.String())
+				continue
+			}
+			require.Equal(t, 400, rec.Code, "limit %d budget %d: %s", tc.limit, tc.budget, rec.Body.String())
+			require.Contains(t, rec.Body.String(), tc.err)
+		}
+	})
 }
 
 func startCatchupTest(t *testing.T, catchpoint string, nodeError error, expectedCode int) {

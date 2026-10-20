@@ -17,6 +17,7 @@
 package simulation
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -154,8 +155,15 @@ int 1`,
 	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
 	require.NoError(t, err)
 	nextBlock := bookkeeping.MakeBlock(prevBlockHdr)
-	block, err := s.simulateWithTracer(nextBlock.BlockHeader, transactions.WrapSignedTxnsWithAD(txgroup), mockTracer, ResultEvalOverrides{})
+	group := transactions.WrapSignedTxnsWithAD(txgroup)
+	require.NoError(t, s.check(nextBlock.BlockHeader, group, mockTracer, ResultEvalOverrides{}))
+	evaluator, err := s.ledger.StartEvaluator(nextBlock.BlockHeader, len(group), 0, mockTracer)
 	require.NoError(t, err)
+	require.NoError(t, evaluator.TransactionGroup(group...))
+	ub, err := evaluator.GenerateBlock(nil)
+	require.NoError(t, err)
+	vb := ledgercore.MakeValidatedBlock(ub.UnfinishedBlock(), ub.UnfinishedDeltas())
+	block := &vb
 
 	evalBlock := block.Block()
 	require.Len(t, evalBlock.Payset, 2)
@@ -251,4 +259,88 @@ int 1`,
 		mocktracer.AfterBlock(block.Block().Round()),
 	}
 	mocktracer.AssertEventsEqual(t, expectedEvents, mockTracer.Events)
+}
+
+// requireTracerBalanced checks that the tracer's per-group stacks are empty between groups.
+func requireTracerBalanced(t *testing.T, tracer *evalTracer, msg string) {
+	t.Helper()
+	require.Empty(t, tracer.relativeCursor, msg)
+	require.Empty(t, tracer.previousInnerTxns, msg)
+	require.Empty(t, tracer.execTraceStack, msg)
+	require.Nil(t, tracer.unnamedResourcePolicy, msg)
+}
+
+// TestRunGroupsTracerState checks that the tracer starts every group from a clean state, including
+// after a group whose inner txn failed.
+func TestRunGroupsTracerState(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	defer env.Close()
+	s := MakeSimulator(env.Ledger, true)
+	sender := env.Accounts[0]
+
+	// The inner payment overspends.
+	failingApp := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+		ApprovalProgram: `#pragma version 8
+txn ApplicationID
+bz done
+itxn_begin
+int pay
+itxn_field TypeEnum
+txn Sender
+itxn_field Receiver
+int 1000000000
+itxn_field Amount
+itxn_submit
+done:
+int 1`,
+		ClearStateProgram: "#pragma version 8\nint 1",
+	})
+	env.TransferAlgos(sender.Addr, failingApp.Address(), 1_000_000)
+	okApp := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+		ApprovalProgram:   "#pragma version 8\nint 1\nint 2\n+\npop\nint 1",
+		ClearStateProgram: "#pragma version 8\nint 1",
+	})
+
+	call := func(app basics.AppIndex, note byte) []transactions.SignedTxn {
+		return []transactions.SignedTxn{env.TxnInfo.NewTxn(txntest.Txn{
+			Type:          protocol.ApplicationCallTx,
+			Sender:        sender.Addr,
+			ApplicationID: app,
+			Fee:           2 * env.TxnInfo.CurrentProtocolParams().MinTxnFee,
+			Note:          []byte{note},
+		}).Txn().Sign(sender.Sk)}
+	}
+	request := Request{
+		TxnGroups:             [][]transactions.SignedTxn{call(failingApp, 1), call(okApp, 2), call(failingApp, 3)},
+		AllowUnnamedResources: true,
+		TraceConfig:           ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true},
+		MaxGroups:             3,
+	}
+	s.ledger.start = s.ledger.Ledger.Latest()
+	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
+	require.NoError(t, err)
+	hdr := bookkeeping.MakeBlock(prevBlockHdr).BlockHeader
+
+	groups := make([][]transactions.SignedTxnWithAD, len(request.TxnGroups))
+	for i, txgroup := range request.TxnGroups {
+		groups[i] = transactions.WrapSignedTxnsWithAD(txgroup)
+	}
+	tracer := makeEvalTracer(s.ledger.start, groups, request)
+	evaluator, err := s.ledger.StartEvaluator(hdr, 3, 0, tracer)
+	require.NoError(t, err)
+
+	for g := range groups {
+		_, _, err := s.runGroups(hdr, tracer, evaluator, []int{g}, false)
+		require.NoError(t, err)
+		require.Equal(t, g, tracer.groupIdx)
+		requireTracerBalanced(t, tracer, fmt.Sprintf("after group %d", g))
+	}
+	require.Contains(t, tracer.result.TxnGroups[0].FailureMessage, "overspend")
+	require.Empty(t, tracer.result.TxnGroups[1].FailureMessage)
+	require.NotEmpty(t, tracer.result.TxnGroups[1].Txns[0].Trace.ApprovalProgramTrace)
+	require.Contains(t, tracer.result.TxnGroups[2].FailureMessage, "overspend")
+	require.Equal(t, tracer.result.TxnGroups[0].FailedAt, tracer.result.TxnGroups[2].FailedAt)
 }

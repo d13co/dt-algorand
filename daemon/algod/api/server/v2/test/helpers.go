@@ -175,7 +175,7 @@ func (m *mockNode) AsyncBroadcastSignedTxGroup(txgroup []transactions.SignedTxn)
 
 func (m *mockNode) Simulate(request simulation.Request) (simulation.Result, error) {
 	simulator := simulation.MakeSimulator(m.ledger.(*data.Ledger), m.config.EnableDeveloperAPI)
-	return simulator.Simulate(request)
+	return simulator.Simulate(request.WithNodeLimits(m.config))
 }
 
 func (m *mockNode) GetPendingTransaction(txID transactions.Txid) (res node.TxnWithStatus, found bool) {

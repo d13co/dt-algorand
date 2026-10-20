@@ -587,6 +587,40 @@ type Local struct {
 	// guarantees in terms of functionality or future support.
 	EnableExperimentalAPI bool `version[26]:"false"`
 
+	// SimulateResourceLimitMultiplier scales the limits simulate places on unnamed resources
+	// (allow-unnamed-resources): accounts, assets, apps, boxes, holdings, locals and the box I/O budget
+	// they bring. 1 keeps the consensus limits, which size the reported resources for a real group.
+	// Larger values let simulate read more state per call, but the resources it reports may no longer
+	// fit in a submittable group. Values below 1 count as 1; values above 1024 count as 1024.
+	// The opcode budget bounds the work a call can do, but the multiplier bounds how many resources
+	// simulate records: at high values one response can list hundreds of thousands of
+	// unnamed-resources-accessed entries, with the memory and response size that brings.
+	// Non-standard fork feature.
+	SimulateResourceLimitMultiplier uint64 `version[39]:"1"`
+
+	// MaxAPISimulateGroups is the most transaction groups one simulate request may hold. Values
+	// below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
+	MaxAPISimulateGroups uint64 `version[39]:"16"`
+
+	// MaxAPISimulateExtraOpcodeBudget is the most extra-opcode-budget a simulate request may ask for. It
+	// applies to each top-level transaction group of the request. 0 counts as 320000, the upstream limit;
+	// values above 320000000 are clamped to 320000000 when used. A larger budget lets one group run longer (roughly
+	// 60 ns to 2 µs per unit): the node evaluates it to the end even if the client has gone away or the
+	// REST write timeout has passed. Execution traces (EnableDeveloperAPI) take over 100 bytes per opcode
+	// run, so a raised limit and EnableDeveloperAPI together can exhaust the node's memory. A value below
+	// 320000 rejects clients that ask for the upstream maximum. Non-standard fork feature.
+	MaxAPISimulateExtraOpcodeBudget uint64 `version[39]:"320000"`
+
+	// MaxAPISimulateRounds is the most rounds one simulate request may list in "rounds", which simulates
+	// the request once per distinct listed round; duplicates count against the limit. 0 disables "rounds";
+	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
+	MaxAPISimulateRounds uint64 `version[39]:"16"`
+
+	// SimulateRoundsParallelism is the most per-round simulations of "rounds" requests that run at once,
+	// across all requests of the node. Values below 1 count as 1; values above simulation.MaxSimulateRounds
+	// (256) count as that. Non-standard fork feature.
+	SimulateRoundsParallelism int `version[39]:"4"`
+
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation
 	// and SHOULD NOT be used for other reasons than testing.

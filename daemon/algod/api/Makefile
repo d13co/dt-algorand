@@ -9,6 +9,7 @@ GEN := \
  server/v2/generated/data/routes.go \
  server/v2/generated/experimental/routes.go \
  server/v2/generated/timetravel/routes.go \
+ server/v2/generated/dtalgorand/routes.go \
  server/v2/generated/model/types.go
 
 all:	$(GEN)

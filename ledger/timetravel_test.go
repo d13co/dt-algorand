@@ -857,6 +857,60 @@ func deltaJSON(t *testing.T, sd ledgercore.StateDelta) string {
 	return string(protocol.EncodeJSONStrict(sd))
 }
 
+// TestCheckLeaseAt checks CheckLeaseAt, simulate's CheckDup in skip-validity-window mode: only
+// the leases of rounds before current count, a confirmed txid is not an error, and neither is a
+// lastValid below the txtail's low watermark, with or without time travel.
+func TestCheckLeaseAt(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	for _, timeTravel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("timeTravel=%t", timeTravel), func(t *testing.T) {
+			t.Parallel()
+			genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+			cfg := config.GetDefaultLocal()
+			cfg.EnableTimeTravel = timeTravel
+			dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg)
+			defer dl.Close()
+			l := dl.validator
+			proto := config.Consensus[protocol.ConsensusFuture]
+
+			lease := ledgercore.Txlease{Sender: addrs[0], Lease: [32]byte{1}}
+			leased := txntest.Txn{Type: "pay", Sender: addrs[0], Receiver: addrs[1], Amount: 1, Lease: lease.Lease}
+			dl.txn(&leased)
+			leasedRnd, leasedID := l.Latest(), leased.Txn().ID()
+			for range 10 {
+				dl.fullBlock()
+			}
+			// drop the txids of the rounds written so far, as notifyCommit does
+			l.txTail.committedUpTo(l.Latest())
+
+			var leaseErr *ledgercore.LeaseInLedgerError
+			for _, current := range []basics.Round{leasedRnd + 1, l.Latest() + 1} {
+				// the lease is found, with any window
+				require.ErrorAs(t, l.CheckLeaseAt(proto, current, 1, 2, transactions.Txid{9}, lease), &leaseErr, "round %d", current)
+				// the txid is no duplicate
+				require.NoError(t, l.CheckLeaseAt(proto, current, leased.FirstValid, leased.LastValid, leasedID, ledgercore.Txlease{}), "round %d", current)
+			}
+			// before FixTransactionLeases too, whatever the window
+			oldProto := proto
+			oldProto.FixTransactionLeases = false
+			require.ErrorAs(t, l.CheckLeaseAt(oldProto, leasedRnd+1, 500, 600, transactions.Txid{9}, lease), &leaseErr)
+			l.txTail.tailMu.RLock()
+			narrow := l.txTail.checkLeasePastLocked(oldProto, leasedRnd+1, 500, 600, transactions.Txid{9}, lease, false)
+			l.txTail.tailMu.RUnlock()
+			require.NoError(t, narrow, "the window's rounds only")
+			// at leased's own round and before, its lease comes later
+			require.NoError(t, l.CheckLeaseAt(proto, leasedRnd, 1, 2, transactions.Txid{9}, lease))
+			require.NoError(t, l.CheckLeaseAt(proto, leasedRnd-1, 1, 2, transactions.Txid{9}, lease))
+			// a lastValid below the low watermark: CheckDup's error, not CheckLeaseAt's
+			var missing *errTxTailMissingRound
+			require.ErrorAs(t, l.CheckDup(proto, l.Latest()+1, 1, 2, transactions.Txid{9}, ledgercore.Txlease{}), &missing)
+			require.NoError(t, l.CheckLeaseAt(proto, l.Latest()+1, 1, 2, transactions.Txid{9}, ledgercore.Txlease{Sender: addrs[0], Lease: [32]byte{2}}))
+		})
+	}
+}
+
 // TestTimeTravelCheckDupPast checks CheckDupAt, simulate's CheckDup, at rounds
 // the ledger already has: only the leases and confirmations of earlier rounds
 // count, and a transaction whose txid the txtail dropped is not an error. At

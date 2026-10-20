@@ -288,7 +288,7 @@ func parseExclude(s string) (ledger.AccountVersionsExclude, error) {
 		ex.All = true
 		return ex, nil
 	}
-	for _, v := range strings.Split(s, ",") {
+	for v := range strings.SplitSeq(s, ",") {
 		switch v {
 		case "created-apps-params":
 			ex.CreatedAppsParams = true

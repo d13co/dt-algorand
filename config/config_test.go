@@ -358,6 +358,118 @@ func TestLocal_ConfigMigrateFromDisk(t *testing.T) {
 	a.Error(err)
 }
 
+// TestLocal_SimulateResourceLimitMultiplier checks that a v39 config file without
+// SimulateResourceLimitMultiplier loads the default 1, and that an explicit 0 is kept as 0
+// (the simulator treats it as 1).
+func TestLocal_SimulateResourceLimitMultiplier(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(1), GetDefaultLocal().SimulateResourceLimitMultiplier)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	a.Equal(uint64(1), load(`{"Version": 39}`).SimulateResourceLimitMultiplier)
+	a.Equal(uint64(0), load(`{"Version": 39, "SimulateResourceLimitMultiplier": 0}`).SimulateResourceLimitMultiplier)
+	a.Equal(uint64(2), load(`{"Version": 39, "SimulateResourceLimitMultiplier": 2}`).SimulateResourceLimitMultiplier)
+	// an older file never has the field, and keeps the default
+	a.Equal(uint64(1), load(`{"Version": 38}`).SimulateResourceLimitMultiplier)
+}
+
+// TestLocal_MaxAPISimulateGroups checks that a v39 config file without MaxAPISimulateGroups loads
+// the default 16, and that an explicit 0 is kept as 0 (the simulator treats it as 1).
+func TestLocal_MaxAPISimulateGroups(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(16), GetDefaultLocal().MaxAPISimulateGroups)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	a.Equal(uint64(16), load(`{"Version": 39}`).MaxAPISimulateGroups)
+	a.Equal(uint64(0), load(`{"Version": 39, "MaxAPISimulateGroups": 0}`).MaxAPISimulateGroups)
+	a.Equal(uint64(300), load(`{"Version": 39, "MaxAPISimulateGroups": 300}`).MaxAPISimulateGroups)
+	// an older file never has the field, and keeps the default
+	a.Equal(uint64(16), load(`{"Version": 38}`).MaxAPISimulateGroups)
+}
+
+// TestLocal_MaxAPISimulateExtraOpcodeBudget checks that a v39 config file without
+// MaxAPISimulateExtraOpcodeBudget loads the default 320000 (the upstream limit), and that an explicit 0
+// is kept as 0 (the simulator treats it as 320000).
+func TestLocal_MaxAPISimulateExtraOpcodeBudget(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(320000), GetDefaultLocal().MaxAPISimulateExtraOpcodeBudget)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	a.Equal(uint64(320000), load(`{"Version": 39}`).MaxAPISimulateExtraOpcodeBudget)
+	a.Equal(uint64(0), load(`{"Version": 39, "MaxAPISimulateExtraOpcodeBudget": 0}`).MaxAPISimulateExtraOpcodeBudget)
+	a.Equal(uint64(5000000), load(`{"Version": 39, "MaxAPISimulateExtraOpcodeBudget": 5000000}`).MaxAPISimulateExtraOpcodeBudget)
+	// an older file never has the field, and keeps the default
+	a.Equal(uint64(320000), load(`{"Version": 38}`).MaxAPISimulateExtraOpcodeBudget)
+}
+
+// TestLocal_SimulateRounds checks that a v39 config file without MaxAPISimulateRounds and
+// SimulateRoundsParallelism loads their defaults, and that explicit values, 0 included, are kept
+// as written (the handler disables rounds at 0, treats a parallelism below 1 as 1 and clamps the
+// round count at 256).
+func TestLocal_SimulateRounds(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(16), GetDefaultLocal().MaxAPISimulateRounds)
+	a.Equal(4, GetDefaultLocal().SimulateRoundsParallelism)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	c := load(`{"Version": 39}`)
+	a.Equal(uint64(16), c.MaxAPISimulateRounds)
+	a.Equal(4, c.SimulateRoundsParallelism)
+
+	c = load(`{"Version": 39, "MaxAPISimulateRounds": 0, "SimulateRoundsParallelism": 0}`)
+	a.Equal(uint64(0), c.MaxAPISimulateRounds)
+	a.Equal(0, c.SimulateRoundsParallelism)
+
+	c = load(`{"Version": 39, "MaxAPISimulateRounds": 300, "SimulateRoundsParallelism": -2}`)
+	a.Equal(uint64(300), c.MaxAPISimulateRounds)
+	a.Equal(-2, c.SimulateRoundsParallelism)
+
+	// an older file never has the fields, and keeps the defaults
+	c = load(`{"Version": 38}`)
+	a.Equal(uint64(16), c.MaxAPISimulateRounds)
+	a.Equal(4, c.SimulateRoundsParallelism)
+}
+
 // Verify that nobody is changing the shipping default configurations
 func TestLocal_ConfigInvariant(t *testing.T) {
 	partitiontest.PartitionTest(t)

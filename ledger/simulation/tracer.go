@@ -100,14 +100,81 @@ type evalTracer struct {
 	scratchSlots []int
 
 	groups [][]transactions.SignedTxnWithAD
+
+	// groupIdx is the index, in groups and result.TxnGroups, of the group being simulated.
+	groupIdx int
+
+	// authAddrs holds the AuthAddr of every account modified by a top-level group that committed
+	// without error, so that the FixSigners pre-pass of a later group sees earlier rekeys. It is
+	// only allocated when FixSigners is set.
+	authAddrs map[basics.Address]basics.Address
+
+	// groupAuthAddrs holds the AuthAddrs of the current group until the simulator knows that
+	// TransactionGroup succeeded (commitGroupAuthAddrs). AfterTxnGroup alone can't tell: when the
+	// group panics, it runs before the evaluator recovers and sees no error.
+	groupAuthAddrs []authAddrUpdate
+
+	// resourceLimitMultiplier is Request.ResourceLimitMultiplier. It is kept here rather than in
+	// result.EvalOverrides so that it is not reported in the result.
+	resourceLimitMultiplier uint64
+
+	// protocolGaps is Request.protocolGaps: set when the simulation runs under a protocol
+	// override. pendingGap is the note the current opcode hits if it succeeds.
+	protocolGaps *protocolGaps
+	pendingGap   string
+
+	hooks *testHooks
 }
 
-func makeEvalTracer(lastRound basics.Round, group []transactions.SignedTxnWithAD, request Request, developerAPI bool) (*evalTracer, error) {
-	result, err := makeSimulationResult(lastRound, request, developerAPI)
-	if err != nil {
-		return nil, err
+func makeEvalTracer(lastRound basics.Round, groups [][]transactions.SignedTxnWithAD, request Request) *evalTracer {
+	result := makeSimulationResult(lastRound, request)
+	tracer := &evalTracer{
+		result:                  &result,
+		groups:                  groups,
+		resourceLimitMultiplier: request.ResourceLimitMultiplier,
+		protocolGaps:            request.protocolGaps,
+		hooks:                   request.hooks,
 	}
-	return &evalTracer{result: &result, groups: [][]transactions.SignedTxnWithAD{group}}, nil
+	if request.FixSigners {
+		tracer.authAddrs = make(map[basics.Address]basics.Address)
+	}
+	return tracer
+}
+
+// currentGroup returns the result of the group being simulated.
+func (tracer *evalTracer) currentGroup() *TxnGroupResult {
+	return &tracer.result.TxnGroups[tracer.groupIdx]
+}
+
+// startGroup prepares the tracer for group g. It resets all per-group state, since an inner txn
+// error or a recovered panic can leave the cursor and the trace stacks of the previous group
+// unbalanced.
+func (tracer *evalTracer) startGroup(g int) {
+	tracer.groupIdx = g
+	tracer.failedAt = nil
+	tracer.groupAuthAddrs = tracer.groupAuthAddrs[:0]
+	tracer.relativeCursor = nil
+	tracer.previousInnerTxns = nil
+	tracer.execTraceStack = nil
+	tracer.unnamedResourcePolicy = nil
+	tracer.scratchSlots = nil
+	tracer.addCount = 0
+	tracer.popCount = 0
+	tracer.stackHeightAfterDeletion = 0
+}
+
+// authAddrUpdate is the AuthAddr of an account after a group.
+type authAddrUpdate struct {
+	addr, authAddr basics.Address
+}
+
+// commitGroupAuthAddrs records the signers kept by AfterTxnGroup for the current group. The
+// simulator calls it once TransactionGroup has returned without error.
+func (tracer *evalTracer) commitGroupAuthAddrs() {
+	for _, u := range tracer.groupAuthAddrs {
+		tracer.authAddrs[u.addr] = u.authAddr
+	}
+	tracer.groupAuthAddrs = tracer.groupAuthAddrs[:0]
 }
 
 // handleError is responsible for setting the failedAt field properly.
@@ -122,7 +189,7 @@ func (tracer *evalTracer) getApplyDataAtPath(path TxnPath) (*transactions.ApplyD
 		return nil, fmt.Errorf("simulator debugger error: path is empty")
 	}
 
-	applyDataCursor := &tracer.result.TxnGroups[0].Txns[path[0]].Txn.ApplyData
+	applyDataCursor := &tracer.currentGroup().Txns[path[0]].Txn.ApplyData
 
 	for _, index := range path[1:] {
 		innerTxns := applyDataCursor.EvalDelta.InnerTxns
@@ -153,18 +220,27 @@ func (tracer *evalTracer) BeforeTxnGroup(ep *logic.EvalParams) {
 	if ep.GetCaller() != nil {
 		// If this is an inner txn group, save the txns
 		tracer.populateInnerTransactions(ep.TxnGroup)
-		tracer.result.TxnGroups[0].AppBudgetAdded += ep.Proto.MaxAppProgramCost
+		// Report a grant for each app call, not one for the whole group. The AVM
+		// grants budget per inner app call, so a group of payments adds nothing,
+		// while a group of several app calls adds several grants.
+		for i := range ep.TxnGroup {
+			if ep.TxnGroup[i].Txn.Type == protocol.ApplicationCallTx {
+				tracer.currentGroup().AppBudgetAdded += ep.Proto.MaxAppProgramCost
+			}
+		}
 	}
 	tracer.cursorEvalTracer.BeforeTxnGroup(ep)
 
-	// Currently only supports one (first) txn group
-	if ep.PooledApplicationBudget != nil && tracer.result.TxnGroups[0].AppBudgetAdded == 0 {
-		tracer.result.TxnGroups[0].AppBudgetAdded = *ep.PooledApplicationBudget
+	if ep.PooledApplicationBudget != nil && tracer.currentGroup().AppBudgetAdded == 0 {
+		tracer.currentGroup().AppBudgetAdded = *ep.PooledApplicationBudget
 	}
 
-	// Override transaction group budget if specified in request, retrieve from tracer.result
-	if ep.PooledApplicationBudget != nil {
-		tracer.result.TxnGroups[0].AppBudgetAdded += tracer.result.EvalOverrides.ExtraOpcodeBudget
+	// Override transaction group budget if specified in request, retrieve from tracer.result.
+	// Each top-level group gets the extra budget, as a lone group does. Inner groups share their
+	// top-level group's pool, so granting the extra again for each of them would hand out a
+	// multiple of what was asked for (upstream #6708).
+	if ep.PooledApplicationBudget != nil && ep.GetCaller() == nil {
+		tracer.currentGroup().AppBudgetAdded += tracer.result.EvalOverrides.ExtraOpcodeBudget
 		*ep.PooledApplicationBudget += tracer.result.EvalOverrides.ExtraOpcodeBudget
 	}
 
@@ -172,7 +248,7 @@ func (tracer *evalTracer) BeforeTxnGroup(ep *logic.EvalParams) {
 		// Override runtime related constraints against ep, before entering txn group
 		ep.EvalConstants = tracer.result.EvalOverrides.LogicEvalConstants()
 		if tracer.result.EvalOverrides.AllowUnnamedResources {
-			tracer.unnamedResourcePolicy = newResourcePolicy(ep, &tracer.result.TxnGroups[0])
+			tracer.unnamedResourcePolicy = newResourcePolicy(ep, tracer.currentGroup(), tracer.resourceLimitMultiplier)
 			ep.EvalConstants.UnnamedResources = tracer.unnamedResourcePolicy
 		}
 	}
@@ -184,6 +260,21 @@ func (tracer *evalTracer) AfterTxnGroup(ep *logic.EvalParams, deltas *ledgercore
 
 	if ep.GetCaller() == nil && tracer.unnamedResourcePolicy != nil {
 		tracer.unnamedResourcePolicy = nil
+	}
+
+	// Keep the signers of the group for the FixSigners pre-pass of later groups. They are recorded
+	// only once the group has committed (commitGroupAuthAddrs). A failed group is skipped: its
+	// deltas hold partial changes that were rolled back. Rekeys done by inner txns are in the
+	// group's deltas too.
+	if ep.GetCaller() == nil && evalError == nil && deltas != nil && tracer.authAddrs != nil {
+		for i := range deltas.Accts.Len() {
+			addr, data := deltas.Accts.GetByIdx(i)
+			tracer.groupAuthAddrs = append(tracer.groupAuthAddrs, authAddrUpdate{addr, data.AuthAddr})
+		}
+	}
+
+	if ep.GetCaller() == nil && tracer.hooks != nil && tracer.hooks.afterGroup != nil {
+		tracer.hooks.afterGroup(tracer.groupIdx, evalError)
 	}
 }
 
@@ -211,10 +302,10 @@ func (tracer *evalTracer) BeforeTxn(ep *logic.EvalParams, groupIndex int) {
 			//   then there should be a trace containing logic sig.
 			//   We should add the transaction type to the pre-existing execution trace.
 			// - otherwise, we take the simplest trace with transaction type.
-			if tracer.result.TxnGroups[0].Txns[groupIndex].Trace == nil {
-				tracer.result.TxnGroups[0].Txns[groupIndex].Trace = &TransactionTrace{}
+			if tracer.currentGroup().Txns[groupIndex].Trace == nil {
+				tracer.currentGroup().Txns[groupIndex].Trace = &TransactionTrace{}
 			}
-			txnTraceStackElem = tracer.result.TxnGroups[0].Txns[groupIndex].Trace
+			txnTraceStackElem = tracer.currentGroup().Txns[groupIndex].Trace
 		} else {
 			// we are reaching inner txns, so we don't have to be concerned about logic sig trace here
 			lastExecTrace := tracer.execTraceStack[len(tracer.execTraceStack)-1]
@@ -265,6 +356,10 @@ func (tracer *evalTracer) AfterTxn(ep *logic.EvalParams, groupIndex int, ad tran
 		tracer.execTraceStack = tracer.execTraceStack[:len(tracer.execTraceStack)-1]
 	}
 	tracer.cursorEvalTracer.AfterTxn(ep, groupIndex, ad, evalError)
+
+	if ep.GetCaller() == nil && tracer.hooks != nil && tracer.hooks.afterTxn != nil {
+		tracer.hooks.afterTxn(tracer.groupIdx, groupIndex)
+	}
 }
 
 func (tracer *evalTracer) saveEvalDelta(evalDelta transactions.EvalDelta, appIDToSave basics.AppIndex) {
@@ -291,6 +386,10 @@ func (o *OpcodeTraceUnit) computeStackValueDeletions(cx *logic.EvalContext, trac
 func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 	groupIndex := cx.GroupIndex()
 
+	if tracer.protocolGaps != nil {
+		tracer.pendingGap = tracer.protocolGaps.opcodeGap(cx)
+	}
+
 	if cx.RunMode() == logic.ModeApp {
 		// Remember app EvalDelta before executing the opcode. We do this
 		// because if this opcode fails, the block evaluator resets the EvalDelta.
@@ -305,7 +404,7 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 	if tracer.result.ReturnTrace() {
 		var txnTrace *TransactionTrace
 		if cx.RunMode() == logic.ModeSig {
-			txnTrace = tracer.result.TxnGroups[0].Txns[groupIndex].Trace
+			txnTrace = tracer.currentGroup().Txns[groupIndex].Trace
 		} else {
 			txnTrace = tracer.execTraceStack[len(tracer.execTraceStack)-1]
 		}
@@ -401,12 +500,21 @@ func (o *OpcodeTraceUnit) updateNewStateValues(cx *logic.EvalContext) {
 func (tracer *evalTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 	groupIndex := cx.GroupIndex()
 
+	// Opcodes that read data do not nest, so the pending gap is this opcode's. An inner
+	// transaction's opcodes have consumed their own by the time its itxn_submit ends.
+	if tracer.pendingGap != "" {
+		if evalError == nil {
+			tracer.recordGap(cx, tracer.pendingGap)
+		}
+		tracer.pendingGap = ""
+	}
+
 	// NOTE: only when we have no evalError on current opcode,
 	// we can proceed for recording stack change
 	if evalError == nil && tracer.result.ReturnTrace() {
 		var txnTrace *TransactionTrace
 		if cx.RunMode() == logic.ModeSig {
-			txnTrace = tracer.result.TxnGroups[0].Txns[groupIndex].Trace
+			txnTrace = tracer.currentGroup().Txns[groupIndex].Trace
 		} else {
 			txnTrace = tracer.execTraceStack[len(tracer.execTraceStack)-1]
 		}
@@ -440,6 +548,18 @@ func (tracer *evalTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 	}
 }
 
+// recordGap records that the transaction running cx hit the protocol override note code.
+func (tracer *evalTracer) recordGap(cx *logic.EvalContext, code string) {
+	var path TxnPath
+	if cx.RunMode() == logic.ModeSig {
+		// Logic signatures run while the group is verified, before evaluation moves the cursor.
+		path = TxnPath{cx.GroupIndex()}
+	} else {
+		path = tracer.absolutePath()
+	}
+	tracer.result.ProtocolOverride.addHit(code, NoteHit{Group: tracer.groupIdx, Path: path})
+}
+
 func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {
 	groupIndex := cx.GroupIndex()
 
@@ -448,8 +568,8 @@ func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {
 		// Before Program, activated for logic sig, happens before txn group execution
 		// we should create trace object for this txn result
 		if tracer.result.ReturnTrace() {
-			tracer.result.TxnGroups[0].Txns[groupIndex].Trace = &TransactionTrace{}
-			traceRef := tracer.result.TxnGroups[0].Txns[groupIndex].Trace
+			tracer.currentGroup().Txns[groupIndex].Trace = &TransactionTrace{}
+			traceRef := tracer.currentGroup().Txns[groupIndex].Trace
 			traceRef.programTraceRef = &traceRef.LogicSigTrace
 			traceRef.LogicSigHash = crypto.Hash(cx.GetProgram())
 		}
@@ -500,16 +620,16 @@ func (tracer *evalTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalErr
 
 	if cx.RunMode() == logic.ModeSig {
 		// Report cost for LogicSig program and exit
-		tracer.result.TxnGroups[0].Txns[groupIndex].LogicSigBudgetConsumed = cx.Cost()
+		tracer.currentGroup().Txns[groupIndex].LogicSigBudgetConsumed = cx.Cost()
 		if tracer.result.ReturnTrace() {
-			tracer.result.TxnGroups[0].Txns[groupIndex].Trace.programTraceRef = nil
+			tracer.currentGroup().Txns[groupIndex].Trace.programTraceRef = nil
 		}
 		return
 	}
 
 	// Report cost of this program.
 	// If it is an inner app call, roll up its cost to the top level transaction.
-	tracer.result.TxnGroups[0].Txns[tracer.relativeCursor[0]].AppBudgetConsumed += cx.Cost()
+	tracer.currentGroup().Txns[tracer.relativeCursor[0]].AppBudgetConsumed += cx.Cost()
 
 	if cx.TxnGroup[groupIndex].Txn.ApplicationCallTxnFields.OnCompletion == transactions.ClearStateOC {
 		if tracer.result.ReturnTrace() && (!pass || evalError != nil) {
@@ -529,7 +649,7 @@ func (tracer *evalTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalErr
 		knownAuthAddrs := make(map[basics.Address]basics.Address)
 		// iterate over all txns in the group after this one
 		for i := groupIndex + 1; i < len(cx.TxnGroup); i++ {
-			stxn := &tracer.groups[0][i]
+			stxn := &tracer.groups[tracer.groupIdx][i]
 			sender := stxn.Txn.Sender
 
 			// If we don't already know the auth addr, get it from the ledger

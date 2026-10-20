@@ -27,7 +27,7 @@ Read endpoints take `?round=R` (the `at-round` parameter in the API spec) and an
 | `GET /v2/applications/{id}/box?name=`, `/boxes`¹ | box value / box listing at R |
 | `GET /v2/ledger/supply` | totals at R |
 | `GET /v2/blocks/{R}?header-only=true` | header of any round (no `?round=` needed) |
-| `POST /v2/transactions/simulate` with `"round": R` in the request | evaluates the group as if it were in block R+1, projecting every object it touches, including unnamed resources (`allow-unnamed-resources`), from the history |
+| `POST /v2/transactions/simulate` with `"round": R` in the request | evaluates the group as if it were in block R+1, projecting every object it touches, including unnamed resources (`allow-unnamed-resources`), from the history. Block headers after R can't be read, as on chain, where block R+1 isn't there yet: a heartbeat with `first-valid` R+1 fails on its seed |
 
 ¹ `/boxes` takes stock algod's own `round` parameter, not `at-round`: a node without time travel serves it for the rounds it still holds in memory (`MaxAcctLookback`) instead of rejecting it, and a time travel node for every round.
 
@@ -48,6 +48,104 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 `GET /v2/deltas/{R}` works for any round whose block is still stored (every round with `Archival: true`, otherwise the last ~1,000, more with `MaxBlockHistoryLookback`): rounds older than the trackers' in-memory deltas are re-evaluated (see [Node integration](#node-integration)).
 
 `Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. The cost is the archival block DB (~3.5 TB) plus the history (~65 GB, of which ~12 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
+
+### Unnamed-resource limits in simulation
+
+With `allow-unnamed-resources`, simulate caps the unnamed resources a group may touch at what the group could legally reference under the consensus rules: each app call's account, asset, app, box and total reference limits (plus those of the empty slots of a group shorter than 16), the limit on holdings and local states, and the box I/O budget those box refs bring. That aims to keep the reported `unnamed-resources-accessed` sized for a real group (a txn that uses an `access` list can still get more than fits, an existing upstream limitation), but it blocks read-only uses such as reading many boxes or accounts in one call.
+
+`SimulateResourceLimitMultiplier` (node config, default 1) multiplies all of those limits, and with them the box I/O budget. Values below 1 count as 1; values above 1024 count as 1024, and the node logs a warning at startup. Clients cannot set it; simulate responses do not report it, but [`GET /v2/transactions/simulate/limits`](#simulate-limits) does. Above 1, the reported resources may no longer fit in a submittable group. The limits on the submitted transactions themselves (foreign arrays, `access` list, app args, group size) and the I/O budget of the box refs they list do not change. The setting is independent of time travel and works on any node.
+
+High values have a cost. The opcode budget (including `extra-opcode-budget`) bounds the work a call can do, but the multiplier bounds how many resources simulate records, and so the memory it uses and the size of the response: near the ceiling, one response can list hundreds of thousands of `unnamed-resources-accessed` entries (a full group at 1024× allows about 131,000 boxes or accounts). Raise it only as far as the reads you need.
+
+### Extra opcode budget limit in simulation
+
+Upstream, `extra-opcode-budget` may be at most 320,000 per group (16 × the LogicSig budget), on top of the group's own app budget (700 per app call) and any op-ups. `MaxAPISimulateExtraOpcodeBudget` (node config, default 320000) sets that limit instead, per top-level group; inner groups share their top-level group's budget and don't get the extra again. 0 counts as 320,000; values above 320,000,000 (1000×) are clamped to 320,000,000 when used, and the node logs a warning at startup. A negative `extra-opcode-budget` is rejected (400). Clients cannot change it; [`GET /v2/transactions/simulate/limits`](#simulate-limits) reports it. The setting is independent of time travel and works on any node. `goal clerk simulate --allow-more-opcode-budget` still asks for exactly 320,000; use `--extra-opcode-budget N` to ask for more. The limit can also be set lower than 320,000, but then clients that ask for the upstream maximum, such as that goal flag, get a 400.
+
+This is a change for apps that make inner app calls. Upstream 5.0.x and earlier dtalgorand builds give every inner group the extra budget again, so with `extra-opcode-budget` a call with inner app calls could run on far more budget than it asked for (up to 257× with 256 inner groups). This build has upstream's later fix (go-algorand #6708): the extra budget is added once per top-level group, and `app-budget-added` counts 700 for each inner app call. A simulation that only passed because of the inflated budget now fails with `dynamic cost budget exceeded`; ask for a larger `extra-opcode-budget` if the call needs it.
+
+The budget is time on the node's CPU. As a rough guide (one core of a desktop CPU), cheap opcodes and hashes take about 60–90 ns per budget unit, so 320,000 is about 20–30 ms; opcodes that build 4 KB byte arrays (`bzero`, `concat`) take about 350 ns per unit, and box writes into 32 KB boxes (`box_replace`, `box_splice`) about 2 µs per unit, so 320,000 of those is over half a second and the 320,000,000 ceiling about ten minutes per group. Multiply by the groups and rounds a request may hold (`MaxAPISimulateGroups`, `MaxAPISimulateRounds`) for the worst case of one request; single-round requests have no node-wide concurrency limit, so several requests at once multiply it again.
+
+A group runs to the end of its budget even if the client has gone away. A response that isn't written within `RestWriteTimeoutSeconds` (default 120) never reaches the client, so raising the limit beyond what runs in that time also needs a longer write timeout.
+
+Execution traces (`exec-trace-config`, only with `EnableDeveloperAPI`) record every opcode run, at about 112 bytes each before any stack, scratch or state data, and stack tracing copies every byte value pushed. At 320,000,000 that is tens of GB for one group, far more than a node has memory for, and even at 320,000 a stack trace of 4 KB values can reach a GB. Don't combine a raised limit with `EnableDeveloperAPI` on a node others can reach.
+
+### Several transaction groups in one simulation
+
+`txn-groups` may hold up to `MaxAPISimulateGroups` groups (node config, default 16; values below 1 count as 1, values above 256 count as 256, with a startup warning). By default they run in order as consecutive groups of one simulated block, so a later group sees the effects of the earlier ones, a transaction or lease seen in an earlier group is a duplicate, and the groups share the block's byte limit. Each group reports its own `failure-message` and `failed-at`: a failed group is rolled back and the later groups still run. The exceptions are the placeholder PQ signature check with `fix-signers`, which runs after its group is applied, and a group that leaves the evaluator state corrupted (a panic while it is committed): then every later group is reported as not simulated, with the index of the group that stopped them, and no block is made. Group indexes in these messages and `failed-at` paths are 0-based. A request with a StateProof transaction is rejected as a whole (400). A verification failure that can't be blamed on one transaction (a bad signature found by the batch verifier, a LogicSig args pool overflow) fails only its group, with no `failed-at`, but stays a 400 when the request has only that group.
+
+With `parallel-groups: true`, every group is simulated alone against the state at the start round, on up to one evaluator per CPU shared by all simulate requests of the node. Groups don't see each other's effects, duplicates and leases are not detected across groups, and several groups may create the same app or asset ID. `initial-states` merges the groups' states, lowest group first.
+
+`extra-opcode-budget` applies to each group, as it does to a lone group. `goal clerk simulate -t` splits its file into groups on changes of the Group field, as `goal clerk rawsend` does, and `--parallel-groups` sets the flag.
+
+### One simulation at several rounds
+
+`rounds` lists the rounds to simulate the same request at, each meaning what `round` means. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a later single-round request uses. The response then has `round-results`, one entry per listed round in request order, each with its `last-round` and either the `txn-groups` and `initial-states` of that round's simulation or an `error`. The top-level `last-round` is 0 and `txn-groups` is empty; `version`, `eval-overrides` and `exec-trace-config` come from the first entry that was simulated, or from the request when none was. A round listed several times is simulated once, but still counts against the limit below. Within each round, the groups run as described above, sequentially or with `parallel-groups`. With time travel any round since genesis can be listed; otherwise only the last `MaxAcctLookback` rounds are available, and older ones get an `error` entry.
+
+Problems with the request as a whole are a 400 before anything runs: a non-zero `round` with `rounds` (`round: 0` is the same as no `round`), more entries than `MaxAPISimulateRounds`, duplicates included (node config, default 16; 0 disables `rounds`; values above 256 count as 256, with a startup warning), a `format` other than json or msgpack, and everything a single-round request rejects whatever its round (`fix-signers` without `allow-empty-signatures`, too many groups, too much extra budget, exec traces without `EnableDeveloperAPI`, a StateProof transaction, both validity window modes, `rewrite-validity-window` without `allow-empty-signatures`). `skip-validity-window` or `rewrite-validity-window` without `rounds` is a 400 too. What depends on the round is reported in that round's entry instead, including the cases where a single-round request answers 400 or 500: a round the node doesn't have, or a group that is invalid under that round's protocol.
+
+The rounds run in parallel on up to `SimulateRoundsParallelism` simulations at once (node config, default 4; values below 1 count as 1, values above 256 count as 256, with a startup warning), a limit shared by all `rounds` requests of the node. Parallel groups inside a round also take the node's per-CPU group slots. If the client goes away, rounds not yet started are skipped and no response is written; rounds already running finish. A request can do up to rounds × groups simulations, each group with up to `MaxAPISimulateExtraOpcodeBudget` of extra opcode budget: all three caps are operator settings. `goal clerk simulate` has no flag for `rounds` yet.
+
+#### Validity window modes
+
+A transaction is valid for at most `MaxTxnLife` (1000) rounds, from its `first-valid` to its `last-valid`, and is rejected (`txn dead`) at any other round. So without help, the rounds of one request can't be more than about 1000 apart. Two request options lift that, only with `rounds`, and not both at once. With either, the normal checks still apply otherwise: genesis ID and hash, well-formedness (`last-valid` ≥ `first-valid`, a window of at most `MaxTxnLife`, keyreg `VoteFirst` ≤ `last-valid` + 1), fees (PQ fee contributions included), and the rest. The response's `eval-overrides` shows which mode was set.
+
+`skip-validity-window` evaluates the transactions as sent at every round. The round range check is skipped, and so is the check for a transaction ID the ledger already confirmed: at a round long after its `last-valid`, the node no longer keeps its transaction IDs. Leases are still checked, confirmed ones and ones used earlier in the simulated block, as are duplicates within the block; a transaction that was confirmed with a lease still fails on its own lease at rounds where that lease is live. Every lease still live at the simulated round is checked, under every protocol. The node keeps the leases of its last `MaxTxnLife` rounds only, so leases confirmed before those are not seen, the same gap as for any simulation at a past round. Programs see the original `first-valid` and `last-valid`, so `txn FirstValid`, the rounds `block` can read and `txn FirstValidTime`, and the windows of inner transactions all stay tied to the original window, not the simulated round. When that window lies after the start round, reading a block header after the start round fails, even on a node that has it: the simulation must not see the future.
+
+`rewrite-validity-window` moves every top-level transaction's window to the simulated block at every round, keeping its width: `first-valid` becomes the start round + 1 and `last-valid` that plus the original `last-valid` − `first-valid` (a malformed window is left as is, so it is reported as usual). Group IDs that were valid are recomputed over the rewritten transactions; an invalid one is left, so the group still fails. All the normal checks then run unchanged, and programs, `block`, `FirstValidTime` and inner transactions see a window at the simulated round. Because transaction IDs change, signatures over the transaction can't verify: the mode requires `allow-empty-signatures`, and drops `sig`, `msig` and the bytes of a PQ signature of every transaction it changes, which then counts as a placeholder (its fee contribution and envelope are still checked). A transaction whose window already starts at the simulated block, in a group whose ID doesn't change, is kept as it is. Logic signatures sign the program, not the transaction, so they are kept. Notes:
+
+- The results echo the rewritten transactions: a different `first-valid`, `last-valid`, group and transaction ID at every round, no `sig`. Don't match results by transaction ID; the echoed transactions can't be submitted as they are.
+- Transactions that differ only by their window (e.g. the same call built a few rounds apart with the suggested window) become identical, so a later one fails as a duplicate of the earlier one in the same simulated block. Give them distinct notes.
+- Heartbeat transactions keep their window: their proof is bound to `last-valid` and their seed to `first-valid`. They take their group's new ID, and lose their signature if that changes it.
+- A keyreg going online fails when its `VoteFirst` is after the rewritten `last-valid` + 1, e.g. when it is moved to an earlier round. That is reported as a normal group failure.
+- With `fix-signers`, every transaction whose signature was dropped needs a synthetic signature, so its `auth-addr` is replaced with the signer the ledger (or an earlier group) has, as for any unsigned transaction. Logic signature transactions keep theirs.
+- Reading a block header after the start round fails here too, which only a heartbeat can try (its seed is that of its own `first-valid`).
+
+### A later protocol at a past round
+
+`protocol` simulates the round under a later consensus protocol, as if an upgrade to it had taken effect right after the start round: run an app that needs AVM 13 against 2022 state, or see what an old app does under today's rules. It takes a consensus version string, `v24` to `v42` for the mainline ones, `latest` (the protocol of the block after the node's latest one: the latest block's, or the one an upgrade switches to right after it) or `future` (vFuture, only with `EnableDeveloperAPI`). The target must be a later protocol of the chain than the one the round's next block really ran, following the approved upgrades (plus FNet's v41 → fnet5); the same protocol simulates the round as it was, reported as not applied; anything else is a 400, or that round's `error` with `rounds`. An unknown name, or `future` without the developer API, is a 400 for the whole request. `goal clerk simulate --protocol` sets it. It works on any node, at any round the node can simulate; with time travel that is every round since genesis.
+
+How it works: simulate patches the start round's header so that it carries an approved upgrade to the target, switching at the next round. The simulated block is then built and checked exactly as the first block after a real upgrade: the target's programs, limits, fees and minimum balances apply, to programs deployed earlier too, its `Bonus` is the target's base amount when the upgrade turns incentives on, and its `Branch` hashes the patched header, so it does not match the real chain. Programs can't see the patch: `block` reads every header as it was, `BlkProtocol` included.
+
+The response's `protocol-override` (in each `round-results` entry instead, with `rounds`) gives `from` (the protocol the next block really ran), `to`, `applied` and `notes`. Where the new protocol reads data the chain never produced, the simulation sees what a real upgrade would have seen at that round, usually zero, and a note says so, listing up to 16 transactions (group index and `failed-at`-style path) that read it:
+
+| Note | When | What the simulation sees |
+|---|---|---|
+| `semantics-changed` | always, when a parameter that affects transactions differs | the target's rules; the message lists each changed parameter, old → new (e.g. `LogicSigMsig: true → false` rejects legacy multisig delegations, `PerByteTxnSurcharge` raises fees, `MaxTxnBytesPerBlock` changes what fits) |
+| `no-heartbeat-challenges` | the target has heartbeats and other payout rules | no challenge, since earlier challenge rounds ran other rules: only full-fee heartbeats are valid, and no account is absent |
+| `no-load-history` | the target tracks load and the real protocol did not | a congestion tax computed from a load of 0 (header only today) |
+| `block-incentive-fields` | `block` reads `BlkProposer`, `BlkFeesCollected`, `BlkBonus` or `BlkProposerPayout` of a round without incentives | zero |
+| `block-hash-fields` | `block` reads `BlkBranch512`, `BlkSha512TxnCommitment` or `BlkSha256TxnCommitment` of a round that did not compute it | zero bytes |
+| `online-stake-includes-expired` | `online_stake` when the balance round (320 back) did not exclude expired keys and the target does | the online money including keys that expire before the simulated round, as in the first 320 rounds after a real upgrade (an upper bound on the target's steady-state value) |
+| `account-incentive-fields` | `acct_params_get` `AcctIncentiveEligible`, `AcctLastProposed` or `AcctLastHeartbeat`, or `voter_params_get` `VoterIncentiveEligible`, before incentives | false or 0, as for every account right after the upgrade |
+| `app-version-starts-at-upgrade` | `app_params_get AppVersion` before app versions | 0 for apps updated earlier: versions count from the upgrade on |
+
+Notes are about the real protocol, not version numbers (FNet's fnet1 already had incentives, for instance). Values that come from the protocol itself, such as `global PayoutsEnabled` or `global MinTxnFee`, are the target's. The limits of simulating at an old round (below) still apply; in particular `online_stake` fails where the history has no record of the online stake.
+
+### Simulate limits
+
+`GET /v2/transactions/simulate/limits` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients what this node's simulate accepts, with each value as the handlers clamp it:
+
+```json
+{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-travel": true, "developer-api": false }
+```
+
+| field | node config | meaning |
+|---|---|---|
+| `max-txn-groups` | `MaxAPISimulateGroups` | most groups in `txn-groups`; a config of 0 counts as 1 |
+| `max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
+| `max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
+| `resource-limit-multiplier` | `SimulateResourceLimitMultiplier` | factor on the unnamed-resource limits; 1: the consensus limits; a config of 0 counts as 1 |
+| `time-travel` | `EnableTimeTravel` | `round` and `rounds` reach back to genesis, not only `MaxAcctLookback` rounds |
+| `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a disabled `exec-trace-config` is accepted either way |
+
+The response holds the values after these rules, so `max-rounds` is the only field that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
+
+Two limits are not in the response, because they don't come from the node's config:
+
+- A request body is at most 1,000,000 bytes, whatever `max-txn-groups` allows; a larger one gets a 400 `http: request body too large`. A full group of 16 transactions takes several KB, so a request near the 256-group ceiling can reach it first.
+- Groups simulated in order share one block, so together they may take at most the protocol's `MaxTxnBytesPerBlock`, counting what they produce (logs, inner transactions) as well as what was sent. A group that doesn't fit fails with `block does not have space for transaction`, without a `failed-at`, and the later groups still run; a smaller one may still fit. With `parallel-groups` every group gets a block of its own.
+
+A stock algod answers 404, which tells a client it can't use any of the fork's simulate features. `SimulateRoundsParallelism` is left out: it limits the node, not a request.
 
 ## Design
 

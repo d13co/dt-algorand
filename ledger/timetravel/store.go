@@ -61,6 +61,8 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/sstable"
+
+	"github.com/algorand/go-deadlock"
 )
 
 const (
@@ -134,13 +136,20 @@ type Store struct {
 	readOnly    bool
 	last        atomic.Int64 // -1 when empty
 
-	writeMu sync.Mutex   // serializes AddRound, RemoveNoops and IndexBoxes
-	dedup   *lastWritten // nil: store every change; guarded by writeMu
+	writeMu deadlock.Mutex // serializes AddRound, RemoveNoops and IndexBoxes
+	dedup   *lastWritten   // nil: store every change; guarded by writeMu
 
 	boxFrom atomic.Uint64 // see BoxIndexFrom
 	boxGen  atomic.Uint64 // odd while boxFrom changes; see setBoxFrom
 
-	closeMu sync.RWMutex // held for reading by every operation
+	// closeMu is held for reading by every operation, including while Versions,
+	// BoxChanges and the like run their callbacks. A callback that reads the
+	// store takes it again, which deadlocks if Close is waiting in between
+	// (a waiting writer blocks new readers), so algod callbacks must not do
+	// that. ttdump versions does (it reads headers), which is safe only
+	// because nothing closes its store concurrently; go-deadlock would report
+	// it as recursive locking in ttdump's tests, so it stays a sync.RWMutex.
+	closeMu sync.RWMutex `algofix:"allow sync.Mutex"`
 	closed  bool
 }
 
