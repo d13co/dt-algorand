@@ -335,7 +335,11 @@ func TestSimulateProtocolOverrideRewriteWindow(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35)
+	// The start round is 8 behind the tip, past the default MaxAcctLookback of 4. Keep it in memory
+	// so a tracker flush cannot move dbRound beyond it mid-test.
+	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35, func(cfg *config.Local) {
+		cfg.MaxAcctLookback = 16
+	})
 	defer env.Close()
 	sender := env.Accounts[0]
 	for range 10 {
