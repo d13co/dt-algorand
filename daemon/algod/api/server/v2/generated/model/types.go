@@ -1051,6 +1051,39 @@ type SimulateInitialStates struct {
 	AppInitialStates *[]ApplicationInitialStates `json:"app-initial-states,omitempty"`
 }
 
+// SimulateProtocolNote A note about simulating under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
+type SimulateProtocolNote struct {
+	Code string `json:"code"`
+
+	// Hits The transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.
+	Hits    *[]SimulateProtocolNoteHit `json:"hits,omitempty"`
+	Message string                     `json:"message"`
+}
+
+// SimulateProtocolNoteHit A transaction that hit a protocol note. Non-standard fork feature.
+type SimulateProtocolNoteHit struct {
+	// Group The 0-based index of the transaction group in the request.
+	Group int `json:"group"`
+
+	// Path The path of the transaction in its group, as in failed-at. A logic signature's hit has the path of its top-level transaction.
+	Path []int `json:"path"`
+}
+
+// SimulateProtocolOverride How the request's protocol applied to the simulated round. Non-standard fork feature.
+type SimulateProtocolOverride struct {
+	// Applied False when from is already to: the round was simulated as it is.
+	Applied bool `json:"applied"`
+
+	// From The protocol the round after the simulated one really ran.
+	From string `json:"from"`
+
+	// Notes Where the simulation under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.
+	Notes *[]SimulateProtocolNote `json:"notes,omitempty"`
+
+	// To The requested protocol, with aliases resolved.
+	To string `json:"to"`
+}
+
 // SimulateRequest Request type for simulation endpoint.
 type SimulateRequest struct {
 	// AllowEmptySignatures Allows transactions without signatures to be simulated as if they had correct signatures.
@@ -1073,6 +1106,9 @@ type SimulateRequest struct {
 
 	// ParallelGroups If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.
 	ParallelGroups *bool `json:"parallel-groups,omitempty"`
+
+	// Protocol If provided, the simulated round runs this consensus protocol, as if an upgrade to it took effect right after the round the simulation starts from: its programs, limits, fees and other parameters apply, to programs deployed earlier too. Accepts a consensus version string, a short name for a mainline one (v24 to v42), or latest for the protocol of the block after the node's latest one (the latest block's, or the one an upgrade switches to right after it). It must be a later protocol of the chain than the one the simulated round really ran, or future (vFuture, only with EnableDeveloperAPI). Data the chain never recorded under the old protocol (block proposers and fees collected before incentives, SHA-512 block hashes, app versions, ...) reads as it would right after a real upgrade, usually zero; protocol-override in the response says where. With rounds, it applies to every round, and each round-results entry has its own protocol-override instead of the top-level one. Non-standard fork feature.
+	Protocol *string `json:"protocol,omitempty"`
 
 	// RewriteValidityWindow If true, at every round each top-level transaction's window is moved to the simulated block, keeping its width: first-valid becomes the round after the start round and last-valid first-valid plus the original last-valid minus first-valid. Valid group IDs are recomputed. Transaction IDs change, so the signatures over every changed transaction (sig, msig, the PQ signature bytes) are dropped and allow-empty-signatures is required; logic signatures are kept. Transactions that differ only by their window become identical, so a later one is a duplicate: give them distinct notes. All the normal checks then apply to the rewritten transactions, which the results echo: clients should not match results by transaction ID, and the echoed transactions cannot be submitted as they are. Heartbeat transactions keep their window, and their signature unless their group ID changes. With fix-signers, the signer of every transaction whose signature was dropped is fixed from the ledger. Reading a block after the start round fails. Only with rounds, and not with skip-validity-window. Non-standard fork feature.
 	RewriteValidityWindow *bool `json:"rewrite-validity-window,omitempty"`
@@ -1106,6 +1142,9 @@ type SimulateRoundResult struct {
 
 	// LastRound The round immediately preceding this simulation: the requested round, with 0 resolved to the latest round.
 	LastRound basics.Round `json:"last-round"`
+
+	// ProtocolOverride How the request's protocol applied to the simulated round. Non-standard fork feature.
+	ProtocolOverride *SimulateProtocolOverride `json:"protocol-override,omitempty"`
 
 	// TxnGroups A result object for each transaction group that was simulated at this round. Absent when error is present.
 	TxnGroups *[]SimulateTransactionGroupResult `json:"txn-groups,omitempty"`
@@ -1758,6 +1797,9 @@ type SimulateResponse struct {
 
 	// LastRound The round immediately preceding this simulation. State changes through this round were used to run this simulation. 0 when round-results is present.
 	LastRound basics.Round `json:"last-round"`
+
+	// ProtocolOverride How the request's protocol applied to the simulated round. Non-standard fork feature.
+	ProtocolOverride *SimulateProtocolOverride `json:"protocol-override,omitempty"`
 
 	// RoundResults Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.
 	RoundResults *[]SimulateRoundResult `json:"round-results,omitempty"`

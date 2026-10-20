@@ -166,6 +166,7 @@ func requireRoundResultsMatch(t *testing.T, h http.Handler, request v2.PreEncode
 		require.Nil(t, expected.RoundResults)
 		require.Equal(t, expected.TxnGroups, roundResult.TxnGroups, "entry %d", i)
 		require.Equal(t, expected.InitialStates, roundResult.InitialStates, "entry %d", i)
+		require.Equal(t, expected.ProtocolOverride, roundResult.ProtocolOverride, "entry %d", i)
 		require.Equal(t, expected.EvalOverrides, response.EvalOverrides)
 		require.Equal(t, expected.Version, response.Version)
 	}

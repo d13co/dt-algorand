@@ -100,6 +100,27 @@ A transaction is valid for at most `MaxTxnLife` (1000) rounds, from its `first-v
 - With `fix-signers`, every transaction whose signature was dropped needs a synthetic signature, so its `auth-addr` is replaced with the signer the ledger (or an earlier group) has, as for any unsigned transaction. Logic signature transactions keep theirs.
 - Reading a block header after the start round fails here too, which only a heartbeat can try (its seed is that of its own `first-valid`).
 
+### A later protocol at a past round
+
+`protocol` simulates the round under a later consensus protocol, as if an upgrade to it had taken effect right after the start round: run an app that needs AVM 13 against 2022 state, or see what an old app does under today's rules. It takes a consensus version string, `v24` to `v42` for the mainline ones, `latest` (the protocol of the block after the node's latest one: the latest block's, or the one an upgrade switches to right after it) or `future` (vFuture, only with `EnableDeveloperAPI`). The target must be a later protocol of the chain than the one the round's next block really ran, following the approved upgrades (plus FNet's v41 → fnet5); the same protocol simulates the round as it was, reported as not applied; anything else is a 400, or that round's `error` with `rounds`. An unknown name, or `future` without the developer API, is a 400 for the whole request. `goal clerk simulate --protocol` sets it. It works on any node, at any round the node can simulate; with time travel that is every round since genesis.
+
+How it works: simulate patches the start round's header so that it carries an approved upgrade to the target, switching at the next round. The simulated block is then built and checked exactly as the first block after a real upgrade: the target's programs, limits, fees and minimum balances apply, to programs deployed earlier too, its `Bonus` is the target's base amount when the upgrade turns incentives on, and its `Branch` hashes the patched header, so it does not match the real chain. Programs can't see the patch: `block` reads every header as it was, `BlkProtocol` included.
+
+The response's `protocol-override` (in each `round-results` entry instead, with `rounds`) gives `from` (the protocol the next block really ran), `to`, `applied` and `notes`. Where the new protocol reads data the chain never produced, the simulation sees what a real upgrade would have seen at that round, usually zero, and a note says so, listing up to 16 transactions (group index and `failed-at`-style path) that read it:
+
+| Note | When | What the simulation sees |
+|---|---|---|
+| `semantics-changed` | always, when a parameter that affects transactions differs | the target's rules; the message lists each changed parameter, old → new (e.g. `LogicSigMsig: true → false` rejects legacy multisig delegations, `PerByteTxnSurcharge` raises fees, `MaxTxnBytesPerBlock` changes what fits) |
+| `no-heartbeat-challenges` | the target has heartbeats and other payout rules | no challenge, since earlier challenge rounds ran other rules: only full-fee heartbeats are valid, and no account is absent |
+| `no-load-history` | the target tracks load and the real protocol did not | a congestion tax computed from a load of 0 (header only today) |
+| `block-incentive-fields` | `block` reads `BlkProposer`, `BlkFeesCollected`, `BlkBonus` or `BlkProposerPayout` of a round without incentives | zero |
+| `block-hash-fields` | `block` reads `BlkBranch512`, `BlkSha512TxnCommitment` or `BlkSha256TxnCommitment` of a round that did not compute it | zero bytes |
+| `online-stake-includes-expired` | `online_stake` when the balance round (320 back) did not exclude expired keys and the target does | the online money including keys that expire before the simulated round, as in the first 320 rounds after a real upgrade (an upper bound on the target's steady-state value) |
+| `account-incentive-fields` | `acct_params_get` `AcctIncentiveEligible`, `AcctLastProposed` or `AcctLastHeartbeat`, or `voter_params_get` `VoterIncentiveEligible`, before incentives | false or 0, as for every account right after the upgrade |
+| `app-version-starts-at-upgrade` | `app_params_get AppVersion` before app versions | 0 for apps updated earlier: versions count from the upgrade on |
+
+Notes are about the real protocol, not version numbers (FNet's fnet1 already had incentives, for instance). Values that come from the protocol itself, such as `global PayoutsEnabled` or `global MinTxnFee`, are the target's. The limits of simulating at an old round (below) still apply; in particular `online_stake` fails where the history has no record of the online stake.
+
 ## Design
 
 ### Objects and keys

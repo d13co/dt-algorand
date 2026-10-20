@@ -162,6 +162,8 @@ type Result struct {
 	Block         *ledgercore.ValidatedBlock
 	TraceConfig   ExecTraceConfig
 	InitialStates *ResourcesInitialStates
+	// ProtocolOverride is set when the request asked for a protocol (Request.Protocol).
+	ProtocolOverride *ProtocolOverride
 }
 
 func summarizeTxnFeesPaid(txn transactions.SignedTxnWithAD) (feesPaid basics.MicroAlgos) {
@@ -270,7 +272,7 @@ func makeSimulationResult(lastRound basics.Round, request Request) Result {
 		groups[i] = makeTxnGroupResult(txgroup)
 	}
 
-	return Result{
+	result := Result{
 		Version:       ResultLatestVersion,
 		LastRound:     lastRound,
 		TxnGroups:     groups,
@@ -278,6 +280,11 @@ func makeSimulationResult(lastRound basics.Round, request Request) Result {
 		TraceConfig:   request.TraceConfig,
 		InitialStates: newResourcesInitialStates(request),
 	}
+	if request.protocolGaps != nil {
+		// Collects the notes transactions hit; Simulate completes it.
+		result.ProtocolOverride = &ProtocolOverride{}
+	}
+	return result
 }
 
 // ScratchChange represents a write operation into a scratch slot

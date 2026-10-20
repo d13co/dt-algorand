@@ -56,6 +56,12 @@ type Request struct {
 	// of as consecutive groups of one block. Non-standard fork feature.
 	ParallelGroups bool
 
+	// Protocol, when set, simulates the round as if an upgrade to this protocol took effect at
+	// the round after Round: a consensus version, a vNN name for a mainline one, or ProtocolLatest
+	// for the protocol of the block after the node's latest one. It must be a later protocol of the chain, or
+	// vFuture (developer API only). Non-standard fork feature.
+	Protocol string
+
 	// ResourceLimitMultiplier scales the limits on unnamed resources (AllowUnnamedResources).
 	// Values below 1 count as 1 (the consensus limits) and values above MaxResourceLimitMultiplier
 	// are clamped to it. It is set by the node from its config (SimulateResourceLimitMultiplier),
@@ -85,6 +91,9 @@ type Request struct {
 	// dropped, so it needs AllowEmptySignatures (validity_window.go). Headers after the start round can't be read. The
 	// REST API allows it only with rounds. Non-standard fork feature.
 	RewriteValidityWindow bool
+
+	// protocolGaps is set by Simulate when Protocol applies, for the tracers.
+	protocolGaps *protocolGaps
 
 	hooks *testHooks
 }
@@ -199,6 +208,10 @@ func (r Request) Validate(developerAPI bool) error {
 		}
 	}
 
+	if err := validateProtocol(r.Protocol, developerAPI); err != nil {
+		return err
+	}
+
 	return validateSimulateRequest(r, developerAPI)
 }
 
@@ -211,17 +224,30 @@ type simulatorLedger struct {
 	// are set by Simulate, on its copy of the simulator.
 	skipValidityWindow    bool
 	rewriteValidityWindow bool
+
+	// upgradeTo, when set, is the protocol that the round after start switches to (Request.Protocol).
+	upgradeTo protocol.ConsensusVersion
 }
 
-// BlockHdr is part of the ledger.Ledger interface. With a validity window mode, a txn's window
-// may lie after the start round, so programs (block, txn FirstValidTime) and heartbeats (the seed
-// of FirstValid) could read the headers of later rounds on a ledger that has them. Those are
-// refused. The evaluator itself reads only headers up to the start round.
+// BlockHdr is part of the ledger.Ledger interface.
+//
+// With a validity window mode, a txn's window may lie after the start round, so programs (block,
+// txn FirstValidTime) and heartbeats (the seed of FirstValid) could read the headers of later
+// rounds on a ledger that has them. Those are refused. The evaluator itself reads only headers up
+// to the start round.
+//
+// With upgradeTo set, the header of the start round carries an upgrade to it, pending at the next
+// round, so the simulated block runs it. The evaluator checks the simulated header against this
+// one, so every reader gets the same.
 func (l simulatorLedger) BlockHdr(rnd basics.Round) (bookkeeping.BlockHeader, error) {
 	if (l.skipValidityWindow || l.rewriteValidityWindow) && rnd > l.start {
 		return bookkeeping.BlockHeader{}, fmt.Errorf("round %d is after the simulation start round %d", rnd, l.start)
 	}
-	return l.Ledger.BlockHdr(rnd)
+	hdr, err := l.Ledger.BlockHdr(rnd)
+	if err != nil || l.upgradeTo == "" || rnd != l.start {
+		return hdr, err
+	}
+	return upgradeAt(hdr, l.upgradeTo), nil
 }
 
 // Latest is part of the ledger.Ledger interface.
@@ -780,6 +806,14 @@ func (s Simulator) simulateParallel(hdr bookkeeping.BlockHeader, request Request
 		// Merge in ascending group index, so that the result does not depend on the order in
 		// which the groups finished.
 		result.InitialStates.merge(groupResult.InitialStates)
+		if po := groupResult.ProtocolOverride; po != nil {
+			for _, note := range po.Notes {
+				for _, hit := range note.Hits {
+					// Each group ran as group 0 of its own sub-request.
+					result.ProtocolOverride.addHit(note.Code, NoteHit{Group: g, Path: hit.Path})
+				}
+			}
+		}
 	}
 	return &result, nil
 }
@@ -790,11 +824,12 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 		return Result{}, err
 	}
 
+	// Access underlying data.Ledger to get the real latest round
+	latest := s.ledger.Ledger.Latest()
 	if simulateRequest.Round != 0 {
 		s.ledger.start = simulateRequest.Round
 	} else {
-		// Access underlying data.Ledger to get the real latest round
-		s.ledger.start = s.ledger.Ledger.Latest()
+		s.ledger.start = latest
 	}
 	// s is a copy, so these hold for this call only.
 	s.ledger.skipValidityWindow = simulateRequest.SkipValidityWindow
@@ -803,6 +838,16 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
 	if err != nil {
 		return Result{}, err
+	}
+	var override *ProtocolOverride
+	if simulateRequest.Protocol != "" {
+		override, err = s.overrideProtocol(&simulateRequest, prevBlockHdr, latest)
+		if err != nil {
+			return Result{}, err
+		}
+		if override.Applied {
+			prevBlockHdr = upgradeAt(prevBlockHdr, override.To)
+		}
 	}
 	nextBlock := bookkeeping.MakeBlock(prevBlockHdr)
 
@@ -823,5 +868,55 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 
 	populateFeeUsage(result, config.Consensus[nextBlock.CurrentProtocol])
 
+	if override != nil {
+		// The tracers added the notes that transactions hit.
+		if hits := result.ProtocolOverride; hits != nil {
+			override.Notes = append(override.Notes, hits.Notes...)
+		}
+		override.sortNotes()
+		result.ProtocolOverride = override
+	}
+
 	return *result, nil
+}
+
+// overrideProtocol works out how request.Protocol applies to the round after prevHdr, whose
+// header it is, with latest the node's latest round. ProtocolLatest is the protocol of the block
+// after latest. When it applies, it sets the ledger to
+// switch to it, and request.protocolGaps for the tracers.
+func (s *Simulator) overrideProtocol(request *Request, prevHdr bookkeeping.BlockHeader, latest basics.Round) (*ProtocolOverride, error) {
+	var target protocol.ConsensusVersion
+	if request.Protocol == ProtocolLatest {
+		// The protocol of the block after the tip, so that the round before an upgrade switches
+		// already gets the new one.
+		latestHdr, err := s.ledger.Ledger.BlockHdr(latest)
+		if err != nil {
+			return nil, err
+		}
+		_, tipNext, err := bookkeeping.ProcessUpgradeParams(latestHdr)
+		if err != nil {
+			return nil, err
+		}
+		target = tipNext.CurrentProtocol
+	} else {
+		var err error
+		if target, err = parseProtocol(request.Protocol); err != nil {
+			return nil, InvalidRequestError{SimulatorError{err}}
+		}
+	}
+
+	_, next, err := bookkeeping.ProcessUpgradeParams(prevHdr)
+	if err != nil {
+		return nil, err
+	}
+	override := &ProtocolOverride{From: next.CurrentProtocol, To: target}
+	if override.Applied, err = decideProtocol(override.From, target); err != nil || !override.Applied {
+		return override, err
+	}
+
+	realNext, targetParams := config.Consensus[override.From], config.Consensus[target]
+	s.ledger.upgradeTo = target
+	request.protocolGaps = makeProtocolGaps(s.ledger, realNext, targetParams)
+	override.Notes = staticNotes(realNext, targetParams)
+	return override, nil
 }

@@ -606,12 +606,31 @@ func convertSimulationResult(result simulation.Result) PreEncodedSimulateRespons
 	}
 
 	return PreEncodedSimulateResponse{
-		Version:         result.Version,
-		LastRound:       result.LastRound,
-		TxnGroups:       util.Map(result.TxnGroups, convertTxnGroupResult),
-		EvalOverrides:   evalOverrides,
-		ExecTraceConfig: result.TraceConfig,
-		InitialStates:   convertSimulateInitialStates(result.InitialStates),
+		Version:          result.Version,
+		LastRound:        result.LastRound,
+		TxnGroups:        util.Map(result.TxnGroups, convertTxnGroupResult),
+		EvalOverrides:    evalOverrides,
+		ExecTraceConfig:  result.TraceConfig,
+		InitialStates:    convertSimulateInitialStates(result.InitialStates),
+		ProtocolOverride: convertProtocolOverride(result.ProtocolOverride),
+	}
+}
+
+func convertProtocolOverride(po *simulation.ProtocolOverride) *model.SimulateProtocolOverride {
+	if po == nil {
+		return nil
+	}
+	notes := util.Map(po.Notes, func(n simulation.ProtocolNote) model.SimulateProtocolNote {
+		hits := util.Map(n.Hits, func(h simulation.NoteHit) model.SimulateProtocolNoteHit {
+			return model.SimulateProtocolNoteHit{Group: h.Group, Path: slices.Clone[[]int, int](h.Path)}
+		})
+		return model.SimulateProtocolNote{Code: n.Code, Message: n.Message, Hits: sliceOrNil(hits)}
+	})
+	return &model.SimulateProtocolOverride{
+		From:    string(po.From),
+		To:      string(po.To),
+		Applied: po.Applied,
+		Notes:   sliceOrNil(notes),
 	}
 }
 
@@ -632,6 +651,7 @@ func convertSimulationRequest(request PreEncodedSimulateRequest) simulation.Requ
 		ParallelGroups:        request.ParallelGroups,
 		SkipValidityWindow:    request.SkipValidityWindow,
 		RewriteValidityWindow: request.RewriteValidityWindow,
+		Protocol:              request.Protocol,
 	}
 }
 

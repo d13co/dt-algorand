@@ -241,7 +241,12 @@ func (env *Environment) Rekey(account, rekeyTo basics.Address) {
 // PrepareSimulatorTest creates an environment to test transaction simulations. The caller is
 // responsible for calling Close() on the returned Environment.
 func PrepareSimulatorTest(t *testing.T, configure ...func(*config.Local)) Environment {
-	genesisInitState, keys := ledgertesting.GenerateInitState(t, protocol.ConsensusFuture, 200)
+	return PrepareSimulatorTestAt(t, protocol.ConsensusFuture, configure...)
+}
+
+// PrepareSimulatorTestAt is PrepareSimulatorTest with a ledger whose genesis runs proto.
+func PrepareSimulatorTestAt(t *testing.T, proto protocol.ConsensusVersion, configure ...func(*config.Local)) Environment {
+	genesisInitState, keys := ledgertesting.GenerateInitState(t, proto, 200)
 
 	// Prepare ledger
 	const inMem = true

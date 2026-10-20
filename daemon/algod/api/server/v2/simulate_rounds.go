@@ -39,10 +39,11 @@ import (
 
 // PreEncodedSimulateRoundResult mirrors model.SimulateRoundResult
 type PreEncodedSimulateRoundResult struct {
-	LastRound     basics.Round                       `codec:"last-round"`
-	TxnGroups     []PreEncodedSimulateTxnGroupResult `codec:"txn-groups,omitempty"`
-	InitialStates *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
-	Error         *string                            `codec:"error,omitempty"`
+	LastRound        basics.Round                       `codec:"last-round"`
+	TxnGroups        []PreEncodedSimulateTxnGroupResult `codec:"txn-groups,omitempty"`
+	InitialStates    *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
+	ProtocolOverride *model.SimulateProtocolOverride    `codec:"protocol-override,omitempty"`
+	Error            *string                            `codec:"error,omitempty"`
 }
 
 // effectiveMaxSimulateRounds returns the most entries, duplicates included, a simulate request may
@@ -164,9 +165,10 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 			first = roundResult
 		}
 		roundResults[i] = PreEncodedSimulateRoundResult{
-			LastRound:     roundResult.LastRound,
-			TxnGroups:     roundResult.TxnGroups,
-			InitialStates: roundResult.InitialStates,
+			LastRound:        roundResult.LastRound,
+			TxnGroups:        roundResult.TxnGroups,
+			InitialStates:    roundResult.InitialStates,
+			ProtocolOverride: roundResult.ProtocolOverride,
 		}
 	}
 

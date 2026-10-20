@@ -1551,13 +1551,14 @@ type PreEncodedSimulateTxnGroupResult struct {
 
 // PreEncodedSimulateResponse mirrors model.SimulateResponse
 type PreEncodedSimulateResponse struct {
-	Version         uint64                             `codec:"version"`
-	LastRound       basics.Round                       `codec:"last-round"`
-	TxnGroups       []PreEncodedSimulateTxnGroupResult `codec:"txn-groups"`
-	EvalOverrides   *model.SimulationEvalOverrides     `codec:"eval-overrides,omitempty"`
-	ExecTraceConfig simulation.ExecTraceConfig         `codec:"exec-trace-config,omitempty"`
-	InitialStates   *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
-	RoundResults    *[]PreEncodedSimulateRoundResult   `codec:"round-results,omitempty"`
+	Version          uint64                             `codec:"version"`
+	LastRound        basics.Round                       `codec:"last-round"`
+	TxnGroups        []PreEncodedSimulateTxnGroupResult `codec:"txn-groups"`
+	EvalOverrides    *model.SimulationEvalOverrides     `codec:"eval-overrides,omitempty"`
+	ExecTraceConfig  simulation.ExecTraceConfig         `codec:"exec-trace-config,omitempty"`
+	InitialStates    *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
+	ProtocolOverride *model.SimulateProtocolOverride    `codec:"protocol-override,omitempty"`
+	RoundResults     *[]PreEncodedSimulateRoundResult   `codec:"round-results,omitempty"`
 }
 
 // PreEncodedSimulateRequestTransactionGroup mirrors model.SimulateRequestTransactionGroup
@@ -1579,6 +1580,7 @@ type PreEncodedSimulateRequest struct {
 	ParallelGroups        bool                                        `codec:"parallel-groups,omitempty"`
 	SkipValidityWindow    bool                                        `codec:"skip-validity-window,omitempty"`
 	RewriteValidityWindow bool                                        `codec:"rewrite-validity-window,omitempty"`
+	Protocol              string                                      `codec:"protocol,omitempty"`
 }
 
 // SimulateTransaction simulates broadcasting a raw transaction to the network, returning relevant simulation results.

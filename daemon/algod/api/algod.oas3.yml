@@ -1094,6 +1094,9 @@
                   "type": "integer",
                   "x-go-type": "basics.Round"
                 },
+                "protocol-override": {
+                  "$ref": "#/components/schemas/SimulateProtocolOverride"
+                },
                 "round-results": {
                   "description": "Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.",
                   "items": {
@@ -2797,6 +2800,80 @@
         },
         "type": "object"
       },
+      "SimulateProtocolNote": {
+        "description": "A note about simulating under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "hits": {
+            "description": "The transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.",
+            "items": {
+              "$ref": "#/components/schemas/SimulateProtocolNoteHit"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "SimulateProtocolNoteHit": {
+        "description": "A transaction that hit a protocol note. Non-standard fork feature.",
+        "properties": {
+          "group": {
+            "description": "The 0-based index of the transaction group in the request.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "The path of the transaction in its group, as in failed-at. A logic signature's hit has the path of its top-level transaction.",
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "group",
+          "path"
+        ],
+        "type": "object"
+      },
+      "SimulateProtocolOverride": {
+        "description": "How the request's protocol applied to the simulated round. Non-standard fork feature.",
+        "properties": {
+          "applied": {
+            "description": "False when from is already to: the round was simulated as it is.",
+            "type": "boolean"
+          },
+          "from": {
+            "description": "The protocol the round after the simulated one really ran.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Where the simulation under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.",
+            "items": {
+              "$ref": "#/components/schemas/SimulateProtocolNote"
+            },
+            "type": "array"
+          },
+          "to": {
+            "description": "The requested protocol, with aliases resolved.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "applied",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
       "SimulateRequest": {
         "description": "Request type for simulation endpoint.",
         "properties": {
@@ -2826,6 +2903,10 @@
           "parallel-groups": {
             "description": "If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.",
             "type": "boolean"
+          },
+          "protocol": {
+            "description": "If provided, the simulated round runs this consensus protocol, as if an upgrade to it took effect right after the round the simulation starts from: its programs, limits, fees and other parameters apply, to programs deployed earlier too. Accepts a consensus version string, a short name for a mainline one (v24 to v42), or latest for the protocol of the block after the node's latest one (the latest block's, or the one an upgrade switches to right after it). It must be a later protocol of the chain than the one the simulated round really ran, or future (vFuture, only with EnableDeveloperAPI). Data the chain never recorded under the old protocol (block proposers and fees collected before incentives, SHA-512 block hashes, app versions, ...) reads as it would right after a real upgrade, usually zero; protocol-override in the response says where. With rounds, it applies to every round, and each round-results entry has its own protocol-override instead of the top-level one. Non-standard fork feature.",
+            "type": "string"
           },
           "rewrite-validity-window": {
             "description": "If true, at every round each top-level transaction's window is moved to the simulated block, keeping its width: first-valid becomes the round after the start round and last-valid first-valid plus the original last-valid minus first-valid. Valid group IDs are recomputed. Transaction IDs change, so the signatures over every changed transaction (sig, msig, the PQ signature bytes) are dropped and allow-empty-signatures is required; logic signatures are kept. Transactions that differ only by their window become identical, so a later one is a duplicate: give them distinct notes. All the normal checks then apply to the rewritten transactions, which the results echo: clients should not match results by transaction ID, and the echoed transactions cannot be submitted as they are. Heartbeat transactions keep their window, and their signature unless their group ID changes. With fix-signers, the signer of every transaction whose signature was dropped is fixed from the ledger. Reading a block after the start round fails. Only with rounds, and not with skip-validity-window. Non-standard fork feature.",
@@ -2894,6 +2975,9 @@
             "description": "The round immediately preceding this simulation: the requested round, with 0 resolved to the latest round.",
             "type": "integer",
             "x-go-type": "basics.Round"
+          },
+          "protocol-override": {
+            "$ref": "#/components/schemas/SimulateProtocolOverride"
           },
           "txn-groups": {
             "description": "A result object for each transaction group that was simulated at this round. Absent when error is present.",
@@ -9718,6 +9802,9 @@
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
+                    "protocol-override": {
+                      "$ref": "#/components/schemas/SimulateProtocolOverride"
+                    },
                     "round-results": {
                       "description": "Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.",
                       "items": {
@@ -9762,6 +9849,9 @@
                       "description": "The round immediately preceding this simulation. State changes through this round were used to run this simulation. 0 when round-results is present.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
+                    },
+                    "protocol-override": {
+                      "$ref": "#/components/schemas/SimulateProtocolOverride"
                     },
                     "round-results": {
                       "description": "Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.",

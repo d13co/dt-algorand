@@ -87,6 +87,7 @@ var (
 	simulateAppStateChange        bool
 	simulateAllowUnnamedResources bool
 	simulateParallelGroups        bool
+	simulateProtocol              string
 )
 
 func init() {
@@ -172,6 +173,7 @@ func init() {
 	simulateCmd.Flags().BoolVar(&simulateAppStateChange, "state", false, "Report application state changes during simulation time")
 	simulateCmd.Flags().BoolVar(&simulateAllowUnnamedResources, "allow-unnamed-resources", false, "Allow access to unnamed resources during simulation")
 	simulateCmd.Flags().BoolVar(&simulateParallelGroups, "parallel-groups", false, "Simulate every transaction group of --txfile alone against the start state, concurrently, instead of in order as groups of one block")
+	simulateCmd.Flags().StringVar(&simulateProtocol, "protocol", "", "Simulate under this consensus protocol, as if an upgrade to it took effect right after the start round: a consensus version, v24 to v42, latest (the protocol of the block after the node's latest one), or future (needs EnableDeveloperAPI). It must be a later protocol than the round's own")
 }
 
 var clerkCmd = &cobra.Command{
@@ -1154,6 +1156,9 @@ var simulateCmd = &cobra.Command{
 		if requestProvided && cmd.Flags().Changed("parallel-groups") {
 			reportErrorf("--parallel-groups and --request are mutually exclusive")
 		}
+		if requestProvided && cmd.Flags().Changed("protocol") {
+			reportErrorf("--protocol and --request are mutually exclusive")
+		}
 
 		extraBudgetProvided := cmd.Flags().Changed("extra-opcode-budget")
 		if simulateAllowMoreOpcodeBudget && extraBudgetProvided {
@@ -1234,6 +1239,7 @@ func makeSimulateRequest(txns []transactions.SignedTxn) v2.PreEncodedSimulateReq
 		ExtraOpcodeBudget:     simulateExtraOpcodeBudget,
 		ExecTraceConfig:       traceCmdOptionToSimulateTraceConfigModel(),
 		ParallelGroups:        simulateParallelGroups,
+		Protocol:              simulateProtocol,
 	}
 }
 
