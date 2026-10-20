@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/algorand/avm-abi/apps"
 	"github.com/stretchr/testify/require"
+
+	"github.com/algorand/avm-abi/apps"
 
 	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"

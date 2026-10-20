@@ -27,6 +27,7 @@ import (
 
 	"github.com/algorand/msgp/msgp"
 
+	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
@@ -423,7 +424,8 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 				if err = protocol.Decode(val, &ba); err != nil {
 					return Version{}, 0, err
 				}
-				proto, err := histProto(hdr)
+				var proto config.ConsensusParams
+				proto, err = histProto(hdr)
 				if err != nil {
 					return Version{}, 0, err
 				}

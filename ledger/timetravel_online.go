@@ -150,8 +150,11 @@ func maxUnexpired(accts int) int {
 // unexpiredHeap orders accounts by VoteLastValid (container/heap). It keeps
 // stale entries for accounts that went offline or changed keys since, which
 // advance skips.
+//
+//msgp:ignore unexpiredHeap
 type unexpiredHeap []unexpiredEntry
 
+//msgp:ignore unexpiredEntry
 type unexpiredEntry struct {
 	voteLastValid basics.Round
 	addr          basics.Address

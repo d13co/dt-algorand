@@ -408,7 +408,7 @@ func keepBlocks(src *sql.DB, dstPath string, lo, hi basics.Round) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }() // a no-op once committed
 	err = blockdb.BlockInit(tx, nil)
 	if err != nil {
 		return false, err

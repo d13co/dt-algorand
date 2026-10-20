@@ -109,12 +109,12 @@ func decodeOrdered(dec *json.Decoder) (any, error) {
 	case '{':
 		obj := []member{}
 		for dec.More() {
-			k, err := dec.Token()
-			if err != nil {
+			var k json.Token
+			if k, err = dec.Token(); err != nil {
 				return nil, err
 			}
-			v, err := decodeOrdered(dec)
-			if err != nil {
+			var v any
+			if v, err = decodeOrdered(dec); err != nil {
 				return nil, err
 			}
 			obj = append(obj, member{k.(string), v})
@@ -124,8 +124,8 @@ func decodeOrdered(dec *json.Decoder) (any, error) {
 	case '[':
 		arr := []any{}
 		for dec.More() {
-			v, err := decodeOrdered(dec)
-			if err != nil {
+			var v any
+			if v, err = decodeOrdered(dec); err != nil {
 				return nil, err
 			}
 			arr = append(arr, v)
