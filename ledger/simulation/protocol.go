@@ -122,6 +122,7 @@ var shortProtocolNames = map[string]protocol.ConsensusVersion{
 	"v40": protocol.ConsensusV40,
 	"v41": protocol.ConsensusV41,
 	"v42": protocol.ConsensusV42,
+	"v43": protocol.ConsensusV43,
 }
 
 // extraUpgrades are upgrades a chain really made that the ApprovedUpgrades of config.Consensus
@@ -240,7 +241,7 @@ var semanticParams = []string{
 	"EnableStateProofKeyregCheck", "MaxKeyregValidPeriod", "UnifyInnerTxIDs", "UnfundedSenders",
 	"EnablePrecheckECDSACurve", "EnableBareBudgetError", "AppForbidLowResources", "EnableBoxRefNameError",
 	"Payouts", "Heartbeat", "AppSizeUpdates", "AllowZeroLocalAppRef",
-	"PerByteTxnSurcharge", "EnablePQSchemeFalcon1024",
+	"PerByteTxnSurcharge", "EnablePQSchemeFalcon1024", "CloseRequiresBaseMinBalance",
 }
 
 // ignoredParams are the ConsensusParams fields of agreement, upgrades, block format, state proofs
