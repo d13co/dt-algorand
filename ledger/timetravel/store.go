@@ -143,9 +143,12 @@ type Store struct {
 	boxGen  atomic.Uint64 // odd while boxFrom changes; see setBoxFrom
 
 	// closeMu is held for reading by every operation, including while Versions,
-	// BoxChanges and the like run their callbacks, which may call the store
-	// again (ttdump versions reads headers). go-deadlock reports such nested
-	// read locks as recursive locking, so it stays a sync.RWMutex.
+	// BoxChanges and the like run their callbacks. A callback that reads the
+	// store takes it again, which deadlocks if Close is waiting in between
+	// (a waiting writer blocks new readers), so algod callbacks must not do
+	// that. ttdump versions does (it reads headers), which is safe only
+	// because nothing closes its store concurrently; go-deadlock would report
+	// it as recursive locking in ttdump's tests, so it stays a sync.RWMutex.
 	closeMu sync.RWMutex `algofix:"allow sync.Mutex"`
 	closed  bool
 }
