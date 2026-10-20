@@ -841,7 +841,6 @@ func (e P2PHybridConfigError) Error() string {
 	return e.msg
 }
 
-// ensureAbsGenesisDir will convert a path to absolute, and will attempt to make a genesis directory there
 // TimeTravelGenesisDir returns the directory of the time travel store as
 // EnsureAndResolveGenesisDirs resolves it (TimeTravelGenesisDir), without
 // creating directories or moving files: for tools that only read a node's
@@ -866,6 +865,7 @@ func (cfg *Local) TimeTravelGenesisDir(rootDir, genesisID string) (string, error
 	return filepath.Join(abs, genesisID), nil
 }
 
+// ensureAbsGenesisDir will convert a path to absolute, and will attempt to make a genesis directory there
 func ensureAbsGenesisDir(path string, genesisID string) (string, error) {
 	pathAbs, err := filepath.Abs(path)
 	if err != nil {

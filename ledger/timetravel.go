@@ -143,7 +143,7 @@ func (l *Ledger) checkAccountsNotAhead() error {
 // pebbleLog demotes the engine's informational messages to debug.
 type pebbleLog struct{ logging.Logger }
 
-func (p pebbleLog) Infof(format string, args ...interface{}) { p.Debugf(format, args...) }
+func (p pebbleLog) Infof(format string, args ...any) { p.Debugf(format, args...) }
 
 func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round) error {
 	ht.mu.Lock()
@@ -788,7 +788,9 @@ func histLatest(h *histView, rnd basics.Round, addr basics.Address) (basics.Acco
 	}
 	for _, cv := range createdAssets {
 		var p basics.AssetParams
-		creator, ok, err := histParams(h, rnd, timetravel.AssetParamsKey(basics.AssetIndex(cv.id)), &p)
+		var creator basics.Address
+		var ok bool
+		creator, ok, err = histParams(h, rnd, timetravel.AssetParamsKey(basics.AssetIndex(cv.id)), &p)
 		if err != nil {
 			return out, 0, withoutRewards, err
 		}

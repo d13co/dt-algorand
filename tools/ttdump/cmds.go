@@ -413,14 +413,14 @@ func cmdVersions(e *env, args []string) error {
 			seen[label] = true
 			var before any // absent before the store's first round
 			if lo > e.first {
-				v, err := e.valueAt(en.obj, lo-1)
-				if err != nil {
-					return err
+				v, verr := e.valueAt(en.obj, lo-1)
+				if verr != nil {
+					return verr
 				}
 				before = v
 			}
-			if err := h.Baseline(label, before); err != nil {
-				return err
+			if berr := h.Baseline(label, before); berr != nil {
+				return berr
 			}
 		}
 		return h.Add(uint64(rnd), ts, label, en.deleted, en.value)
@@ -433,15 +433,14 @@ func cmdVersions(e *env, args []string) error {
 		// not served by the REST API: the store's versions as they are
 		var ferr error
 		err = e.store.Versions(o.key, uint64(lo), uint64(hi), *desc, func(rnd uint64, val []byte, ok bool) bool {
-			hdr, err := e.header(basics.Round(rnd))
-			if err != nil {
-				ferr = err
+			hdr, herr := e.header(basics.Round(rnd))
+			if herr != nil {
+				ferr = herr
 				return false
 			}
 			en := versionEntry{obj: o, deleted: !ok}
 			if ok {
-				if en.value, err = e.model(o, val, basics.Round(rnd)); err != nil {
-					ferr = err
+				if en.value, ferr = e.model(o, val, basics.Round(rnd)); ferr != nil {
 					return false
 				}
 			}
@@ -700,8 +699,8 @@ func cmdLs(e *env, args []string) error {
 	}
 	var afterKey []byte
 	if *after != "" {
-		o, err := parseSpec(*after)
-		if err != nil {
+		var o object
+		if o, err = parseSpec(*after); err != nil {
 			return usageError{err}
 		}
 		afterKey = o.key
@@ -724,9 +723,9 @@ func cmdLs(e *env, args []string) error {
 			return false
 		}
 		o := objectOf(obj)
-		m, err := e.model(o, val, rnd)
-		if err != nil {
-			ferr = fmt.Errorf("%s: %w", o, err)
+		m, merr := e.model(o, val, rnd)
+		if merr != nil {
+			ferr = fmt.Errorf("%s: %w", o, merr)
 			return false
 		}
 		count++

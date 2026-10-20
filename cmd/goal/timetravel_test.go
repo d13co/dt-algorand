@@ -55,6 +55,7 @@ func TestProbeRound(t *testing.T) {
 		}, "requires EnableTimeTravel"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				tc.answer(w, r)
