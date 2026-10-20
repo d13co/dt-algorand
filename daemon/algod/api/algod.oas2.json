@@ -1439,6 +1439,30 @@
         }
       }
     },
+    "/v2/transactions/simulate/limits": {
+      "get": {
+        "description": "Returns the limits this node places on simulate requests, and the simulate features it allows. The values are the ones the node applies, after it clamps its configuration. Two limits are not reported: a request body may be at most 1,000,000 bytes, and groups simulated in order share one block, so together they may take at most the protocol's MaxTxnBytesPerBlock. A node that answers 404 does not have this endpoint: a stock algod simulates one transaction group per request with at most 320,000 extra opcode budget, takes no rounds, and keeps unnamed resources within the consensus limits. Non-standard fork feature.",
+        "tags": ["dtalgorand"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the limits of simulate requests on this node.",
+        "operationId": "SimulateLimits",
+        "responses": {
+          "200": {
+            "$ref": "#/responses/SimulateLimitsResponse"
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
     "/v2/transactions/params": {
       "get": {
         "tags": ["public", "nonparticipating"],
@@ -5814,6 +5838,51 @@
             "description": "TotalMoney",
             "type": "integer",
             "x-go-type": "uint64"
+          }
+        }
+      }
+    },
+    "SimulateLimitsResponse": {
+      "description": "The limits of simulate requests on this node. Non-standard fork feature.",
+      "schema": {
+        "description": "The limits of simulate requests on this node, and the simulate features it allows.",
+        "type": "object",
+        "required": [
+          "max-txn-groups",
+          "max-rounds",
+          "max-extra-opcode-budget",
+          "resource-limit-multiplier",
+          "time-travel",
+          "developer-api"
+        ],
+        "properties": {
+          "max-txn-groups": {
+            "description": "The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-rounds": {
+            "description": "The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-extra-opcode-budget": {
+            "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "resource-limit-multiplier": {
+            "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "time-travel": {
+            "description": "If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).",
+            "type": "boolean"
+          },
+          "developer-api": {
+            "description": "If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+            "type": "boolean"
           }
         }
       }

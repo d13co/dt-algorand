@@ -109,10 +109,10 @@ type BoxStat struct {
 // Non-standard fork feature.
 const MaxResourceLimitMultiplier = 1024
 
-// effectiveMultiplier returns the factor applied to the unnamed resource limits for a requested
-// multiplier m: values below 1 count as 1 (the consensus limits), and values above
+// EffectiveResourceLimitMultiplier returns the factor applied to the unnamed resource limits for
+// a requested multiplier m: values below 1 count as 1 (the consensus limits), and values above
 // MaxResourceLimitMultiplier count as MaxResourceLimitMultiplier.
-func effectiveMultiplier(m uint64) int {
+func EffectiveResourceLimitMultiplier(m uint64) int {
 	if m <= 1 {
 		return 1
 	}
@@ -120,8 +120,8 @@ func effectiveMultiplier(m uint64) int {
 }
 
 // makeTxnResourceTracker returns the resources that txn could reference beyond those it lists.
-// The consensus limits are multiplied by m (see effectiveMultiplier) before the listed references
-// are subtracted.
+// The consensus limits are multiplied by m (see EffectiveResourceLimitMultiplier) before the
+// listed references are subtracted.
 func makeTxnResourceTracker(txn *transactions.Transaction, proto *config.ConsensusParams, m int) ResourceTracker {
 	if txn.Type != protocol.ApplicationCallTx {
 		return ResourceTracker{}
@@ -141,7 +141,8 @@ func makeTxnResourceTracker(txn *transactions.Transaction, proto *config.Consens
 // makeGlobalResourceTracker populates a tracker so that it knows what are the
 // bounds on how many new references of various types that could potentially be
 // allowed for the group. The consensus-derived limits are multiplied by m (see
-// effectiveMultiplier); the group size is not, so unused group slots are not multiplied.
+// EffectiveResourceLimitMultiplier); the group size is not, so unused group slots are not
+// multiplied.
 func makeGlobalResourceTracker(perTxnResources []ResourceTracker, nonAppCalls int, proto *config.ConsensusParams, m int) ResourceTracker {
 	// Calculate the maximum number of cross-product resources that can be accessed by one app call
 	// under normal circumstances. This is calculated using the case of an app call with a full set
@@ -621,7 +622,7 @@ type groupResourceTracker struct {
 }
 
 // makeGroupResourceTracker sets up the resource trackers for a group, with the consensus limits
-// on unnamed resources multiplied by m (see effectiveMultiplier).
+// on unnamed resources multiplied by m (see EffectiveResourceLimitMultiplier).
 func makeGroupResourceTracker(txns []transactions.SignedTxnWithAD, proto *config.ConsensusParams, m int) groupResourceTracker {
 	var startingBoxes int
 	var nonAppCalls int
@@ -850,10 +851,11 @@ type resourcePolicy struct {
 }
 
 // newResourcePolicy makes the unnamed resource policy for a top-level group. multiplier scales the
-// consensus limits on unnamed resources (Request.ResourceLimitMultiplier, see effectiveMultiplier).
+// consensus limits on unnamed resources (Request.ResourceLimitMultiplier, see
+// EffectiveResourceLimitMultiplier).
 func newResourcePolicy(ep *logic.EvalParams, groupResult *TxnGroupResult, multiplier uint64) *resourcePolicy {
 	policy := resourcePolicy{
-		tracker: makeGroupResourceTracker(ep.TxnGroup, ep.Proto, effectiveMultiplier(multiplier)),
+		tracker: makeGroupResourceTracker(ep.TxnGroup, ep.Proto, EffectiveResourceLimitMultiplier(multiplier)),
 		ep:      ep,
 	}
 	groupResult.UnnamedResourcesAccessed = &policy.tracker.globalResources

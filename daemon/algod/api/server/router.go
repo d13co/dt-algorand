@@ -32,6 +32,7 @@ import (
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v1/routes"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/data"
+	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/dtalgorand"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/experimental"
 	npprivate "github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/nonparticipating/private"
 	nppublic "github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/nonparticipating/public"
@@ -147,6 +148,8 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 	npprivate.RegisterHandlers(e, &v2Handler, adminMiddleware...)
 	ppublic.RegisterHandlers(e, &v2Handler, publicMiddleware...)
 	pprivate.RegisterHandlers(e, &v2Handler, adminMiddleware...)
+	// Non-standard fork endpoints that every node serves.
+	dtalgorand.RegisterHandlers(e, &v2Handler, publicMiddleware...)
 
 	if node.Config().EnableFollowMode {
 		data.RegisterHandlers(e, &v2Handler, publicMiddleware...)

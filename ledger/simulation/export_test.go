@@ -20,9 +20,6 @@ import (
 	"context"
 )
 
-// EffectiveMultiplier exposes effectiveMultiplier to the external simulation_test package.
-var EffectiveMultiplier = effectiveMultiplier
-
 // WithParallelGroupHook returns a copy of r that runs hook in the worker before each parallel
 // group. An error from hook is a fatal error of the request.
 func WithParallelGroupHook(r Request, hook func(g int) error) Request {

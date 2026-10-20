@@ -674,10 +674,7 @@ func (node *AlgorandFullNode) Simulate(request simulation.Request) (result simul
 // and the follower node use it, so the limits are set in one place.
 func simulate(l *data.Ledger, cfg config.Local, request simulation.Request) (simulation.Result, error) {
 	simulator := simulation.MakeSimulator(l, cfg.EnableDeveloperAPI)
-	request.ResourceLimitMultiplier = cfg.SimulateResourceLimitMultiplier
-	request.MaxGroups = cfg.MaxAPISimulateGroups
-	request.MaxExtraOpcodeBudget = cfg.MaxAPISimulateExtraOpcodeBudget
-	return simulator.Simulate(request)
+	return simulator.Simulate(request.WithNodeLimits(cfg))
 }
 
 // GetPendingTransaction looks for the required txID in the recent ledger

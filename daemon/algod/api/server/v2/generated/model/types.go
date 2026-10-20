@@ -1784,6 +1784,27 @@ type PostTransactionsResponse struct {
 	TxId string `json:"txId"`
 }
 
+// SimulateLimitsResponse The limits of simulate requests on this node, and the simulate features it allows.
+type SimulateLimitsResponse struct {
+	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	DeveloperApi bool `json:"developer-api"`
+
+	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
+	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
+
+	// MaxRounds The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).
+	MaxRounds uint64 `json:"max-rounds"`
+
+	// MaxTxnGroups The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).
+	MaxTxnGroups uint64 `json:"max-txn-groups"`
+
+	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
+	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
+
+	// TimeTravel If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).
+	TimeTravel bool `json:"time-travel"`
+}
+
 // SimulateResponse defines model for SimulateResponse.
 type SimulateResponse struct {
 	// EvalOverrides The set of parameters and limits override during simulation. If this set of parameters is present, then evaluation parameters may differ from standard evaluation in certain ways.

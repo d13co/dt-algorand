@@ -8718,7 +8718,7 @@ func testUnnamedBoxOperationsWithMultiplier(t *testing.T, env simulationtesting.
 
 	proto := env.TxnInfo.CurrentProtocolParams()
 	// The consensus limits are scaled by the multiplier before the listed refs are subtracted.
-	m := simulation.EffectiveMultiplier(multiplier)
+	m := simulation.EffectiveResourceLimitMultiplier(multiplier)
 	expectedUnnamedResources := &simulation.ResourceTracker{
 		MaxAccounts:  m * len(boxOps) * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
 		MaxAssets:    m*len(boxOps)*proto.MaxAppTxnForeignAssets - otherAssets,
@@ -9949,7 +9949,7 @@ func testUnnamedResourceLimitsWithMultiplier(t *testing.T, env simulationtesting
 	proto := env.TxnInfo.CurrentProtocolParams()
 	// The group is padded to MaxTxGroupSize, so its limits are the sum of those of its app calls
 	// (assumed to list no refs), scaled by the multiplier.
-	m := simulation.EffectiveMultiplier(multiplier)
+	m := simulation.EffectiveResourceLimitMultiplier(multiplier)
 	appCalls := 1
 	for i := range otherTxns {
 		if otherTxns[i].Type == protocol.ApplicationCallTx {

@@ -119,17 +119,19 @@ const MaxSimulateGroups = 256
 // and the most of its rounds simulated at once. Non-standard fork feature.
 const MaxSimulateRounds = 256
 
-// effectiveMaxExtraOpcodeBudget returns the most extra opcode budget a request may ask for, per
-// group, for the value m of Request.MaxExtraOpcodeBudget: 0 counts as MaxExtraOpcodeBudget, and
-// values above MaxExtraOpcodeBudgetCeiling count as that.
-func effectiveMaxExtraOpcodeBudget(m uint64) int {
+// EffectiveMaxExtraOpcodeBudget returns the most extra opcode budget a request may ask for, per
+// top-level group, for the value m of Request.MaxExtraOpcodeBudget: 0 counts as
+// MaxExtraOpcodeBudget, and values above MaxExtraOpcodeBudgetCeiling count as that.
+func EffectiveMaxExtraOpcodeBudget(m uint64) int {
 	if m == 0 {
 		return MaxExtraOpcodeBudget
 	}
 	return int(min(m, MaxExtraOpcodeBudgetCeiling))
 }
 
-func effectiveMaxGroups(m uint64) int {
+// EffectiveMaxGroups returns the most transaction groups a request may hold for the value m of
+// Request.MaxGroups: values below 1 count as 1, and values above MaxSimulateGroups count as that.
+func EffectiveMaxGroups(m uint64) int {
 	if m < 1 {
 		return 1
 	}
@@ -137,6 +139,17 @@ func effectiveMaxGroups(m uint64) int {
 		return MaxSimulateGroups
 	}
 	return int(m)
+}
+
+// WithNodeLimits returns r with the limits of a node configured with cfg: ResourceLimitMultiplier,
+// MaxGroups and MaxExtraOpcodeBudget. The nodes, the REST handlers that check a request before
+// passing it to the node, and GET /v2/transactions/simulate/limits all take the limits from it, so
+// the limits the endpoint reports are the ones simulate enforces. Non-standard fork feature.
+func (r Request) WithNodeLimits(cfg config.Local) Request {
+	r.ResourceLimitMultiplier = cfg.SimulateResourceLimitMultiplier
+	r.MaxGroups = cfg.MaxAPISimulateGroups
+	r.MaxExtraOpcodeBudget = cfg.MaxAPISimulateExtraOpcodeBudget
+	return r
 }
 
 // Validate checks the parts of a request that do not depend on the round it is simulated at. The
@@ -172,7 +185,7 @@ func (r Request) Validate(developerAPI bool) error {
 			},
 		}
 	}
-	if maxGroups := effectiveMaxGroups(r.MaxGroups); len(r.TxnGroups) > maxGroups {
+	if maxGroups := EffectiveMaxGroups(r.MaxGroups); len(r.TxnGroups) > maxGroups {
 		return InvalidRequestError{
 			SimulatorError{
 				fmt.Errorf("too many transaction groups: got %d, the limit is %d", len(r.TxnGroups), maxGroups),
@@ -201,7 +214,7 @@ func (r Request) Validate(developerAPI bool) error {
 		}
 	}
 	// The limit applies to each group: every group gets the extra budget, as a lone group does.
-	if maxBudget := effectiveMaxExtraOpcodeBudget(r.MaxExtraOpcodeBudget); r.ExtraOpcodeBudget > maxBudget {
+	if maxBudget := EffectiveMaxExtraOpcodeBudget(r.MaxExtraOpcodeBudget); r.ExtraOpcodeBudget > maxBudget {
 		return InvalidRequestError{
 			SimulatorError{
 				fmt.Errorf(

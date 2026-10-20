@@ -306,7 +306,7 @@ func TestGlobalVsLocalResources(t *testing.T) {
 	})
 }
 
-func TestEffectiveMultiplier(t *testing.T) {
+func TestEffectiveResourceLimitMultiplier(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
@@ -321,7 +321,7 @@ func TestEffectiveMultiplier(t *testing.T) {
 		{MaxResourceLimitMultiplier + 1, MaxResourceLimitMultiplier},
 		{^uint64(0), MaxResourceLimitMultiplier},
 	} {
-		require.Equal(t, tc.expected, effectiveMultiplier(tc.m), "m=%d", tc.m)
+		require.Equal(t, tc.expected, EffectiveResourceLimitMultiplier(tc.m), "m=%d", tc.m)
 	}
 }
 
