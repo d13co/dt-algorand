@@ -67,6 +67,12 @@ type Request struct {
 	// (MaxAPISimulateGroups), never by API clients. Non-standard fork feature.
 	MaxGroups uint64
 
+	// MaxExtraOpcodeBudget is the most ExtraOpcodeBudget the request may ask for, per group. 0 counts
+	// as MaxExtraOpcodeBudget (the upstream limit) and values above MaxExtraOpcodeBudgetCeiling are
+	// clamped to it. It is set by the node from its config (MaxAPISimulateExtraOpcodeBudget), never
+	// by API clients. Non-standard fork feature.
+	MaxExtraOpcodeBudget uint64
+
 	hooks *testHooks
 }
 
@@ -87,6 +93,16 @@ const MaxSimulateGroups = 256
 // values: the most entries the "rounds" of a REST simulate request may hold, duplicates included,
 // and the most of its rounds simulated at once. Non-standard fork feature.
 const MaxSimulateRounds = 256
+
+// effectiveMaxExtraOpcodeBudget returns the most extra opcode budget a request may ask for, per
+// group, for the value m of Request.MaxExtraOpcodeBudget: 0 counts as MaxExtraOpcodeBudget, and
+// values above MaxExtraOpcodeBudgetCeiling count as that.
+func effectiveMaxExtraOpcodeBudget(m uint64) int {
+	if m == 0 {
+		return MaxExtraOpcodeBudget
+	}
+	return int(min(m, MaxExtraOpcodeBudgetCeiling))
+}
 
 func effectiveMaxGroups(m uint64) int {
 	if m < 1 {
@@ -137,13 +153,20 @@ func (r Request) Validate(developerAPI bool) error {
 		}
 	}
 
+	if r.ExtraOpcodeBudget < 0 {
+		return InvalidRequestError{
+			SimulatorError{
+				fmt.Errorf("extra budget %d is negative", r.ExtraOpcodeBudget),
+			},
+		}
+	}
 	// The limit applies to each group: every group gets the extra budget, as a lone group does.
-	if r.ExtraOpcodeBudget > MaxExtraOpcodeBudget {
+	if maxBudget := effectiveMaxExtraOpcodeBudget(r.MaxExtraOpcodeBudget); r.ExtraOpcodeBudget > maxBudget {
 		return InvalidRequestError{
 			SimulatorError{
 				fmt.Errorf(
 					"extra budget %d > simulation extra budget limit %d",
-					r.ExtraOpcodeBudget, MaxExtraOpcodeBudget),
+					r.ExtraOpcodeBudget, maxBudget),
 			},
 		}
 	}

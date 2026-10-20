@@ -61,6 +61,7 @@ import (
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/node"
@@ -2311,6 +2312,41 @@ func TestSimulateTransactionMultipleGroups(t *testing.T) {
 		rec = simulate(stxn1, stxn2)
 		require.Equal(t, 400, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), "too many transaction groups: got 2, the limit is 1")
+	})
+
+	t.Run("MaxAPISimulateExtraOpcodeBudget", func(t *testing.T) {
+		for _, tc := range []struct {
+			limit  uint64
+			budget int
+			err    string
+		}{
+			{0, simulation.MaxExtraOpcodeBudget, ""},
+			{0, simulation.MaxExtraOpcodeBudget + 1, "extra budget 320001 \\u003e simulation extra budget limit 320000"},
+			{1_000_000, 1_000_000, ""},
+			{1_000_000, 1_000_001, "extra budget 1000001 \\u003e simulation extra budget limit 1000000"},
+			{100, 101, "extra budget 101 \\u003e simulation extra budget limit 100"},
+		} {
+			cfg := config.GetDefaultLocal()
+			cfg.MaxAPISimulateExtraOpcodeBudget = tc.limit
+			handler := v2.Handlers{
+				Node:     makeMockNodeWithConfig(mockLedger, t.Name(), nil, cannedStatusReportGolden, false, cfg),
+				Log:      logging.Base(),
+				Shutdown: make(chan struct{}),
+			}
+			request := v2.PreEncodedSimulateRequest{
+				TxnGroups:         []v2.PreEncodedSimulateRequestTransactionGroup{{Txns: []transactions.SignedTxn{stxn1}}},
+				ExtraOpcodeBudget: tc.budget,
+			}
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&request)))
+			rec := httptest.NewRecorder()
+			require.NoError(t, handler.SimulateTransaction(echo.New().NewContext(req, rec), model.SimulateTransactionParams{}))
+			if tc.err == "" {
+				require.Equal(t, 200, rec.Code, "limit %d budget %d: %s", tc.limit, tc.budget, rec.Body.String())
+				continue
+			}
+			require.Equal(t, 400, rec.Code, "limit %d budget %d: %s", tc.limit, tc.budget, rec.Body.String())
+			require.Contains(t, rec.Body.String(), tc.err)
+		}
 	})
 }
 

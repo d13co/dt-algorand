@@ -96,8 +96,9 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	base := convertSimulationRequest(request)
-	// Node.Simulate sets the same limit for every round; set it here so the check covers it.
+	// Node.Simulate sets the same limits for every round; set them here so the check covers them.
 	base.MaxGroups = cfg.MaxAPISimulateGroups
+	base.MaxExtraOpcodeBudget = cfg.MaxAPISimulateExtraOpcodeBudget
 	if err := base.Validate(cfg.EnableDeveloperAPI); err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}

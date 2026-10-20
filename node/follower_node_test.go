@@ -72,7 +72,10 @@ func followNodeDefaultGenesis() bookkeeping.Genesis {
 }
 
 func setupFollowNode(t *testing.T) *AlgorandFollowerNode {
-	cfg := config.GetDefaultLocal()
+	return setupFollowNodeWithConfig(t, config.GetDefaultLocal())
+}
+
+func setupFollowNodeWithConfig(t *testing.T, cfg config.Local) *AlgorandFollowerNode {
 	cfg.EnableFollowMode = true
 	genesis := followNodeDefaultGenesis()
 	root := t.TempDir()
@@ -333,4 +336,48 @@ func TestSimulate(t *testing.T) {
 	require.Len(t, result.TxnGroups[0].Txns, 1)
 	require.Equal(t, stxn, result.TxnGroups[0].Txns[0].Txn.SignedTxn)
 	require.Empty(t, result.TxnGroups[0].FailureMessage)
+}
+
+// TestSimulateExtraOpcodeBudgetLimit checks that the node passes MaxAPISimulateExtraOpcodeBudget to
+// the simulator. The full node uses the same simulate helper.
+func TestSimulateExtraOpcodeBudgetLimit(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	request := func(node *AlgorandFollowerNode) simulation.Request {
+		round := node.ledger.LastRound()
+		stxn := txntest.Txn{
+			Type:        protocol.PaymentTx,
+			Sender:      testAddr,
+			Receiver:    poolAddr,
+			Amount:      1,
+			Fee:         config.Consensus[protocol.ConsensusFuture].MinTxnFee,
+			FirstValid:  round,
+			LastValid:   round + 1000,
+			GenesisHash: node.ledger.GenesisHash(),
+		}.SignedTxn()
+		return simulation.Request{
+			TxnGroups:            [][]transactions.SignedTxn{{stxn}},
+			AllowEmptySignatures: true,
+			ExtraOpcodeBudget:    simulation.MaxExtraOpcodeBudget + 1,
+		}
+	}
+
+	t.Run("default", func(t *testing.T) {
+		t.Parallel()
+		node := setupFollowNode(t)
+		_, err := node.Simulate(request(node))
+		require.ErrorContains(t, err, "extra budget 320001 > simulation extra budget limit 320000")
+	})
+
+	t.Run("raised", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.GetDefaultLocal()
+		cfg.MaxAPISimulateExtraOpcodeBudget = 1_000_000
+		node := setupFollowNodeWithConfig(t, cfg)
+		result, err := node.Simulate(request(node))
+		require.NoError(t, err)
+		require.Equal(t, simulation.MaxExtraOpcodeBudget+1, result.EvalOverrides.ExtraOpcodeBudget)
+		require.Empty(t, result.TxnGroups[0].FailureMessage)
+	})
 }

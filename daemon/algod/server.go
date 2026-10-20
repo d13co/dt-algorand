@@ -127,6 +127,11 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			"MaxAPISimulateGroups %d exceeds the maximum %d; simulate uses %d",
 			cfg.MaxAPISimulateGroups, simulation.MaxSimulateGroups, simulation.MaxSimulateGroups)
 	}
+	if cfg.MaxAPISimulateExtraOpcodeBudget > simulation.MaxExtraOpcodeBudgetCeiling {
+		s.log.Warnf(
+			"MaxAPISimulateExtraOpcodeBudget %d exceeds the maximum %d; simulate uses %d",
+			cfg.MaxAPISimulateExtraOpcodeBudget, simulation.MaxExtraOpcodeBudgetCeiling, simulation.MaxExtraOpcodeBudgetCeiling)
+	}
 	if cfg.MaxAPISimulateRounds > simulation.MaxSimulateRounds {
 		s.log.Warnf(
 			"MaxAPISimulateRounds %d exceeds the maximum %d; simulate uses %d",

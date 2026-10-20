@@ -1157,7 +1157,7 @@ var simulateCmd = &cobra.Command{
 
 		extraBudgetProvided := cmd.Flags().Changed("extra-opcode-budget")
 		if simulateAllowMoreOpcodeBudget && extraBudgetProvided {
-			reportErrorf("--allow-extra-opcode-budget and --extra-opcode-budget are mutually exclusive")
+			reportErrorf("--allow-more-opcode-budget and --extra-opcode-budget are mutually exclusive")
 		}
 		if simulateAllowMoreOpcodeBudget {
 			simulateExtraOpcodeBudget = simulation.MaxExtraOpcodeBudget

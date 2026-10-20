@@ -407,6 +407,31 @@ func TestLocal_MaxAPISimulateGroups(t *testing.T) {
 	a.Equal(uint64(16), load(`{"Version": 38}`).MaxAPISimulateGroups)
 }
 
+// TestLocal_MaxAPISimulateExtraOpcodeBudget checks that a v39 config file without
+// MaxAPISimulateExtraOpcodeBudget loads the default 320000 (the upstream limit), and that an explicit 0
+// is kept as 0 (the simulator treats it as 320000).
+func TestLocal_MaxAPISimulateExtraOpcodeBudget(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.Equal(uint64(320000), GetDefaultLocal().MaxAPISimulateExtraOpcodeBudget)
+
+	load := func(contents string) Local {
+		name := filepath.Join(t.TempDir(), ConfigFilename)
+		a.NoError(os.WriteFile(name, []byte(contents), 0o600))
+		c, _, err := loadConfigFromFile(name)
+		a.NoError(err)
+		return c
+	}
+
+	a.Equal(uint64(320000), load(`{"Version": 39}`).MaxAPISimulateExtraOpcodeBudget)
+	a.Equal(uint64(0), load(`{"Version": 39, "MaxAPISimulateExtraOpcodeBudget": 0}`).MaxAPISimulateExtraOpcodeBudget)
+	a.Equal(uint64(5000000), load(`{"Version": 39, "MaxAPISimulateExtraOpcodeBudget": 5000000}`).MaxAPISimulateExtraOpcodeBudget)
+	// an older file never has the field, and keeps the default
+	a.Equal(uint64(320000), load(`{"Version": 38}`).MaxAPISimulateExtraOpcodeBudget)
+}
+
 // TestLocal_SimulateRounds checks that a v39 config file without MaxAPISimulateRounds and
 // SimulateRoundsParallelism loads their defaults, and that explicit values, 0 included, are kept
 // as written (the handler disables rounds at 0, treats a parallelism below 1 as 1 and clamps the

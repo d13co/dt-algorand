@@ -112,6 +112,7 @@ var defaultLocal = Local{
 	LogSizeLimit:                               1073741824,
 	MaxAPIBoxPerApplication:                    100000,
 	MaxAPIResourcesPerAccount:                  100000,
+	MaxAPISimulateExtraOpcodeBudget:            320000,
 	MaxAPISimulateGroups:                       16,
 	MaxAPISimulateRounds:                       16,
 	MaxAcctLookback:                            4,

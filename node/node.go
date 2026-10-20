@@ -667,9 +667,16 @@ func (node *AlgorandFullNode) broadcastSignedTxGroup(txgroup []transactions.Sign
 // Simulate speculatively runs a transaction group against the current
 // blockchain state and returns the effects and/or errors that would result.
 func (node *AlgorandFullNode) Simulate(request simulation.Request) (result simulation.Result, err error) {
-	simulator := simulation.MakeSimulator(node.ledger, node.config.EnableDeveloperAPI)
-	request.ResourceLimitMultiplier = node.config.SimulateResourceLimitMultiplier
-	request.MaxGroups = node.config.MaxAPISimulateGroups
+	return simulate(node.ledger, node.config, request)
+}
+
+// simulate runs a simulate request on l with the node's simulate limits from cfg. Both the full
+// and the follower node use it, so the limits are set in one place.
+func simulate(l *data.Ledger, cfg config.Local, request simulation.Request) (simulation.Result, error) {
+	simulator := simulation.MakeSimulator(l, cfg.EnableDeveloperAPI)
+	request.ResourceLimitMultiplier = cfg.SimulateResourceLimitMultiplier
+	request.MaxGroups = cfg.MaxAPISimulateGroups
+	request.MaxExtraOpcodeBudget = cfg.MaxAPISimulateExtraOpcodeBudget
 	return simulator.Simulate(request)
 }
 

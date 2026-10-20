@@ -602,6 +602,15 @@ type Local struct {
 	// below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
 	MaxAPISimulateGroups uint64 `version[39]:"16"`
 
+	// MaxAPISimulateExtraOpcodeBudget is the most extra-opcode-budget a simulate request may ask for. It
+	// applies to each top-level transaction group of the request. 0 counts as 320000, the upstream limit;
+	// values above 320000000 are clamped to 320000000 when used. A larger budget lets one group run longer (roughly
+	// 60 ns to 2 µs per unit): the node evaluates it to the end even if the client has gone away or the
+	// REST write timeout has passed. Execution traces (EnableDeveloperAPI) take over 100 bytes per opcode
+	// run, so a raised limit and EnableDeveloperAPI together can exhaust the node's memory. A value below
+	// 320000 rejects clients that ask for the upstream maximum. Non-standard fork feature.
+	MaxAPISimulateExtraOpcodeBudget uint64 `version[39]:"320000"`
+
 	// MaxAPISimulateRounds is the most rounds one simulate request may list in "rounds", which simulates
 	// the request once per distinct listed round; duplicates count against the limit. 0 disables "rounds";
 	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.

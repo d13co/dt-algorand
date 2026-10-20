@@ -484,6 +484,7 @@ func TestSimulateRoundsBadRequest(t *testing.T) {
 		{"fix signers", nil, v2.PreEncodedSimulateRequest{FixSigners: true}, "FixSigners requires AllowEmptySignatures to be enabled"},
 		{"trace without developer API", nil, v2.PreEncodedSimulateRequest{ExecTraceConfig: simulation.ExecTraceConfig{Enable: true}}, "the local configuration of the node has `EnableDeveloperAPI` turned off, while requesting for execution trace"},
 		{"extra budget", nil, v2.PreEncodedSimulateRequest{ExtraOpcodeBudget: simulation.MaxExtraOpcodeBudget + 1}, "extra budget 320001 \\u003e simulation extra budget limit 320000"},
+		{"extra budget over config limit", func(c *config.Local) { c.MaxAPISimulateExtraOpcodeBudget = 100 }, v2.PreEncodedSimulateRequest{ExtraOpcodeBudget: 101}, "extra budget 101 \\u003e simulation extra budget limit 100"},
 		{"no groups", nil, v2.PreEncodedSimulateRequest{TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{}}, "expected at least 1 transaction group, got 0"},
 		{"too many groups", func(c *config.Local) { c.MaxAPISimulateGroups = 1 }, v2.PreEncodedSimulateRequest{TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{{Txns: []transactions.SignedTxn{stxn}}, {Txns: []transactions.SignedTxn{stxn}}}}, "too many transaction groups: got 2, the limit is 1"},
 	} {

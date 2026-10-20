@@ -107,7 +107,12 @@ const LogBytesLimit = 65536
 
 // MaxExtraOpcodeBudget hardcode limit of how much extra budget one can add to one transaction group (which is group-size * logic-sig-budget).
 // In a request with several groups, each group gets up to this much.
+// A node can change the limit with Request.MaxExtraOpcodeBudget (non-standard fork feature).
 const MaxExtraOpcodeBudget = 20000 * 16
+
+// MaxExtraOpcodeBudgetCeiling is the ceiling for Request.MaxExtraOpcodeBudget: 1000 times
+// MaxExtraOpcodeBudget. Non-standard fork feature.
+const MaxExtraOpcodeBudgetCeiling = 1000 * MaxExtraOpcodeBudget
 
 // AllowMoreLogging method modify the log limits from lift option:
 // - if lift log limits, then overload result from local Config

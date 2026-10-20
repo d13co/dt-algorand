@@ -177,6 +177,7 @@ func (m *mockNode) Simulate(request simulation.Request) (simulation.Result, erro
 	simulator := simulation.MakeSimulator(m.ledger.(*data.Ledger), m.config.EnableDeveloperAPI)
 	request.ResourceLimitMultiplier = m.config.SimulateResourceLimitMultiplier
 	request.MaxGroups = m.config.MaxAPISimulateGroups
+	request.MaxExtraOpcodeBudget = m.config.MaxAPISimulateExtraOpcodeBudget
 	return simulator.Simulate(request)
 }
 
