@@ -29,6 +29,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-deadlock"
+
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
@@ -52,7 +54,7 @@ type ttFixture struct {
 	app   basics.AppIndex
 	first basics.Round // the first recorded round
 
-	mu     sync.Mutex
+	mu     deadlock.Mutex
 	last   basics.Round // the last recorded round
 	snaps  map[basics.Round]ttSnapshot
 	lists  map[basics.Round]ttListings

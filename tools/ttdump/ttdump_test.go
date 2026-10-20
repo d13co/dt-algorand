@@ -174,7 +174,7 @@ func ttdumpErr(t *testing.T, args ...string) error {
 
 func jsonLines(t *testing.T, s string) []map[string]any {
 	var out []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(s), "\n") {
 		if line == "" {
 			continue
 		}
