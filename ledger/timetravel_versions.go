@@ -29,6 +29,7 @@ import (
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
 	"github.com/algorand/go-algorand/ledger/timetravel"
@@ -50,8 +51,21 @@ type VersionRange struct {
 	MaxBytes uint64
 	// MaxObjects bounds the resources (holdings, local states, created assets
 	// and apps) an account lookup merges, counting every one the account ever
-	// had (0: no limit).
+	// had (0: no limit). With Rounds, it bounds an app's boxes likewise.
 	MaxObjects uint64
+	// Rounds, if set, asks for the objects as of each of these rounds, in
+	// page order, instead of their versions in Min..Max: per round, each
+	// object's latest version at or before it, with its round as Changed.
+	// Min and Max must bound them. Limit counts rounds.
+	Rounds []basics.Round
+	// MaxEntries ends a Rounds page of an app's boxes early once it holds
+	// that many boxes (0: no limit). A round is never split: one that holds
+	// more boxes, or more values than MaxBytes, fails with ErrRoundTooLarge.
+	MaxEntries uint64
+	// MaxSeeks ends a Rounds page early, before a round that would take its
+	// lookups (one per object per round) past it (0: no limit). A page always
+	// has at least one round.
+	MaxSeeks uint64
 }
 
 // VersionPage is a page of versions, in page order.
@@ -84,6 +98,7 @@ type Version struct {
 // balance before them.
 type AccountVersion struct {
 	Deleted        bool
+	Changed        *basics.Round // with Rounds: the round of the version in effect; nil if none
 	Data           *ledgercore.AccountData
 	WithoutRewards basics.MicroAlgos
 }
@@ -92,6 +107,7 @@ type AccountVersion struct {
 type HoldingVersion struct {
 	Asset   basics.AssetIndex
 	Deleted bool
+	Changed *basics.Round // with Rounds, as for AccountVersion
 	Holding *basics.AssetHolding
 }
 
@@ -101,6 +117,7 @@ type HoldingVersion struct {
 type LocalStateVersion struct {
 	App         basics.AppIndex
 	Deleted     bool
+	Changed     *basics.Round // with Rounds, as for AccountVersion
 	State       *basics.AppLocalState
 	ChangedKeys [][]byte
 }
@@ -112,6 +129,7 @@ type LocalStateVersion struct {
 type AssetVersion struct {
 	Asset   basics.AssetIndex
 	Deleted bool
+	Changed *basics.Round // with Rounds, as for AccountVersion
 	Creator basics.Address
 	Params  *basics.AssetParams
 }
@@ -122,6 +140,7 @@ type AssetVersion struct {
 type AppVersion struct {
 	App         basics.AppIndex
 	Deleted     bool
+	Changed     *basics.Round // with Rounds, as for AccountVersion
 	Creator     basics.Address
 	Params      *basics.AppParams
 	ChangedKeys [][]byte
@@ -130,6 +149,7 @@ type AppVersion struct {
 // BoxVersion is a version of a box.
 type BoxVersion struct {
 	Deleted bool
+	Changed *basics.Round // with Rounds, as for AccountVersion
 	Value   []byte
 }
 
@@ -137,7 +157,8 @@ type BoxVersion struct {
 type BoxChange struct {
 	Name    []byte
 	Deleted bool
-	Value   []byte // nil when deleted or values were not requested
+	Changed *basics.Round // with Rounds: the round of the box's version in effect
+	Value   []byte        // nil when deleted or values were not requested
 }
 
 // AccountVersionsExclude narrows an account's versions the way exclude
@@ -151,6 +172,11 @@ type AccountVersionsExclude struct {
 // ErrTooManyVersionObjects is returned when an account has more objects
 // than VersionRange.MaxObjects.
 var ErrTooManyVersionObjects = errors.New("too many objects to merge")
+
+// ErrRoundTooLarge is returned when a Rounds page of an app's boxes would
+// hold a round with more boxes than VersionRange.MaxEntries or more values
+// than MaxBytes.
+var ErrRoundTooLarge = errors.New("too many boxes at one round")
 
 // AccountVersions lists the versions of everything GET /v2/accounts/{addr}
 // returns: its base record, holdings, local states, and the params of the
@@ -197,7 +223,7 @@ func histAccountVersions(h *histView, addr basics.Address, ex AccountVersionsExc
 	if r.MaxObjects > 0 && uint64(len(srcs)-1) > r.MaxObjects {
 		return VersionPage{}, fmt.Errorf("%w: account %s has had more than %d resources", ErrTooManyVersionObjects, addr, r.MaxObjects)
 	}
-	return versions(h, srcs, r)
+	return versions(h, srcs, r, true)
 }
 
 // AccountAssetVersions lists the versions of an account's holding of an
@@ -240,7 +266,7 @@ func histAccountResourceVersions(h *histView, addr basics.Address, cidx basics.C
 	if created {
 		srcs = append(srcs, paramsKey)
 	}
-	return versions(h, srcs, r)
+	return versions(h, srcs, r, false)
 }
 
 // AssetVersions lists the versions of an asset's params.
@@ -274,6 +300,9 @@ func (l *Ledger) AppBoxVersions(app basics.AppIndex, r VersionRange) (VersionPag
 }
 
 func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, error) {
+	if r.Rounds != nil {
+		return appBoxesAt(h, app, r)
+	}
 	var page VersionPage
 	var cur Version // the round being read, not yet in the page
 	var curSize, size uint64
@@ -338,7 +367,7 @@ func (l *Ledger) objectVersions(obj []byte, r VersionRange) (VersionPage, error)
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
-	return versions(h, [][]byte{obj}, r)
+	return versions(h, [][]byte{obj}, r, true)
 }
 
 // objID is the asset or app id that ends a holding, local state, params or
@@ -354,7 +383,13 @@ type srcChange struct {
 // finds the page's rounds, keeping no more than Limit+1 of them at any time
 // and stopping each object's scan once it passes them, then reads the values
 // of only the page's versions.
-func versions(h *histView, srcs [][]byte, r VersionRange) (VersionPage, error) {
+//
+// With r.Rounds it builds a page of the objects as of those rounds instead
+// (versionsAt); first then reports srcs[0] at every round.
+func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPage, error) {
+	if r.Rounds != nil {
+		return versionsAt(h, srcs, r, first)
+	}
 	keep := int(r.Limit) + 1 // one more tells whether there are more
 	rounds := map[basics.Round][]srcChange{}
 	kept := &pageHeap{desc: r.Desc}
@@ -413,126 +448,289 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 	v := Version{Round: rnd, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
 	var size uint64
 	for _, ch := range changes {
-		obj := srcs[ch.src]
-		// the keys of a state come from its value and the one before
-		withKeys := keys && ch.ok && (obj[0] == timetravel.KindAppParams || obj[0] == timetravel.KindLocal)
-		var val, prev []byte
-		if (values || withKeys) && ch.ok {
+		o := objRead{obj: srcs[ch.src], round: rnd, ok: ch.ok}
+		if o.needsValue(values, keys) {
 			var ok bool
-			if val, ok, err = h.Get(obj, uint64(rnd)); err != nil {
+			if o.val, ok, err = h.Get(o.obj, uint64(rnd)); err != nil {
 				return Version{}, 0, err
 			}
 			if !ok {
-				return Version{}, 0, fmt.Errorf("history object %x has a version at round %d but no value", obj, rnd)
+				return Version{}, 0, fmt.Errorf("history object %x has a version at round %d but no value", o.obj, rnd)
 			}
-			size += uint64(len(val))
 		}
-		if withKeys && rnd > 0 {
-			var ok bool
-			if prev, ok, err = h.Get(obj, uint64(rnd)-1); err != nil {
-				return Version{}, 0, err
-			}
-			if !ok {
-				prev = nil // created: every key is new
-			}
-			size += uint64(len(prev))
+		n, err := addObject(h, &v, &hdr, o, values, keys)
+		if err != nil {
+			return Version{}, 0, err
 		}
-		deleted := !ch.ok
-		switch obj[0] {
-		case timetravel.KindAccount:
-			av := &AccountVersion{Deleted: deleted}
-			if val != nil {
-				var ba trackerdb.BaseAccountData
-				if err = protocol.Decode(val, &ba); err != nil {
-					return Version{}, 0, err
-				}
-				var proto config.ConsensusParams
-				proto, err = histProto(hdr)
-				if err != nil {
-					return Version{}, 0, err
-				}
-				ad := ba.GetLedgerCoreAccountData()
-				av.WithoutRewards = ad.MicroAlgos
-				ad = ad.WithUpdatedRewards(proto.RewardUnit, hdr.RewardsLevel)
-				av.Data = &ad
-			}
-			v.Account = av
-		case timetravel.KindHolding:
-			hv := HoldingVersion{Asset: basics.AssetIndex(objID(obj)), Deleted: deleted}
-			if val != nil {
-				hv.Holding = new(basics.AssetHolding)
-				if err = protocol.Decode(val, hv.Holding); err != nil {
-					return Version{}, 0, err
-				}
-			}
-			v.Holdings = append(v.Holdings, hv)
-		case timetravel.KindLocal:
-			lv := LocalStateVersion{App: basics.AppIndex(objID(obj)), Deleted: deleted}
-			if val != nil {
-				lv.State = new(basics.AppLocalState)
-				if err = protocol.Decode(val, lv.State); err != nil {
-					return Version{}, 0, err
-				}
-			}
-			if withKeys {
-				var before basics.AppLocalState
-				if prev != nil {
-					if err = protocol.Decode(prev, &before); err != nil {
-						return Version{}, 0, err
-					}
-				}
-				lv.ChangedKeys = changedKeys(before.KeyValue, lv.State.KeyValue)
-			}
-			if !values {
-				lv.State = nil
-			}
-			v.LocalStates = append(v.LocalStates, lv)
-		case timetravel.KindAssetParams:
-			av := AssetVersion{Asset: basics.AssetIndex(objID(obj)), Deleted: deleted}
-			if val != nil {
-				av.Params = new(basics.AssetParams)
-				if av.Creator, err = decodeParams(obj, val, av.Params); err != nil {
-					return Version{}, 0, err
-				}
-			}
-			v.Assets = append(v.Assets, av)
-		case timetravel.KindAppParams:
-			av := AppVersion{App: basics.AppIndex(objID(obj)), Deleted: deleted}
-			if val != nil {
-				av.Params = new(basics.AppParams)
-				if av.Creator, err = decodeParams(obj, val, av.Params); err != nil {
-					return Version{}, 0, err
-				}
-			}
-			if withKeys {
-				var before basics.AppParams
-				if prev != nil {
-					if _, err = decodeParams(obj, prev, &before); err != nil {
-						return Version{}, 0, err
-					}
-				}
-				av.ChangedKeys = changedKeys(before.GlobalState, av.Params.GlobalState)
-			}
-			if !values {
-				av.Creator, av.Params = basics.Address{}, nil
-			}
-			v.Apps = append(v.Apps, av)
-		case timetravel.KindCreated: // CreatedKey: kind, creator, creatable type, id
-			var creator basics.Address
-			copy(creator[:], obj[1:])
-			id := objID(obj)
-			if basics.CreatableType(obj[1+len(creator)]) == basics.AssetCreatable {
-				v.Assets = append(v.Assets, AssetVersion{Asset: basics.AssetIndex(id), Deleted: deleted, Creator: creator})
-			} else {
-				v.Apps = append(v.Apps, AppVersion{App: basics.AppIndex(id), Deleted: deleted, Creator: creator})
-			}
-		case timetravel.KindKv:
-			v.Box = &BoxVersion{Deleted: deleted, Value: val}
-		default:
-			return Version{}, 0, fmt.Errorf("no versions for history object %x", obj)
-		}
+		size += n
 	}
 	return v, size, nil
+}
+
+// objRead is an object's version to add to a Version.
+type objRead struct {
+	obj   []byte
+	round basics.Round // the version's round
+	ok    bool         // false: deleted
+	val   []byte       // the new value, if needsValue
+	// asOf reports round as the objects' Changed (a Rounds lookup). With
+	// absent, the object had no version by then: it is reported deleted,
+	// with no Changed.
+	asOf, absent bool
+}
+
+// keyed reports whether the version lists changed state keys with keys.
+func (o objRead) keyed(keys bool) bool {
+	return keys && o.ok && (o.obj[0] == timetravel.KindAppParams || o.obj[0] == timetravel.KindLocal)
+}
+
+// needsValue reports whether addObject needs the new value.
+func (o objRead) needsValue(values, keys bool) bool {
+	return o.ok && (values || o.keyed(keys))
+}
+
+// addObject decodes o into v. hdr is v's round's header: the account's
+// pending rewards are those at v's round. It returns the size of the values
+// read: o.val, and with keys the value before o.round, which it reads.
+func addObject(h *histView, v *Version, hdr *bookkeeping.BlockHeader, o objRead, values, keys bool) (uint64, error) {
+	obj, val, deleted := o.obj, o.val, !o.ok
+	size := uint64(len(val))
+	var changed *basics.Round
+	if o.asOf && !o.absent {
+		changed = &o.round
+	}
+	// the keys of a state come from its value and the one before
+	withKeys := o.keyed(keys)
+	var prev []byte
+	if withKeys && o.round > 0 {
+		var ok bool
+		var err error
+		if prev, ok, err = h.Get(obj, uint64(o.round)-1); err != nil {
+			return 0, err
+		}
+		if !ok {
+			prev = nil // created: every key is new
+		}
+		size += uint64(len(prev))
+	}
+	var err error
+	switch obj[0] {
+	case timetravel.KindAccount:
+		av := &AccountVersion{Deleted: deleted, Changed: changed}
+		if val != nil {
+			var ba trackerdb.BaseAccountData
+			if err = protocol.Decode(val, &ba); err != nil {
+				return 0, err
+			}
+			var proto config.ConsensusParams
+			proto, err = histProto(*hdr)
+			if err != nil {
+				return 0, err
+			}
+			ad := ba.GetLedgerCoreAccountData()
+			av.WithoutRewards = ad.MicroAlgos
+			ad = ad.WithUpdatedRewards(proto.RewardUnit, hdr.RewardsLevel)
+			av.Data = &ad
+		}
+		v.Account = av
+	case timetravel.KindHolding:
+		hv := HoldingVersion{Asset: basics.AssetIndex(objID(obj)), Deleted: deleted, Changed: changed}
+		if val != nil {
+			hv.Holding = new(basics.AssetHolding)
+			if err = protocol.Decode(val, hv.Holding); err != nil {
+				return 0, err
+			}
+		}
+		v.Holdings = append(v.Holdings, hv)
+	case timetravel.KindLocal:
+		lv := LocalStateVersion{App: basics.AppIndex(objID(obj)), Deleted: deleted, Changed: changed}
+		if val != nil {
+			lv.State = new(basics.AppLocalState)
+			if err = protocol.Decode(val, lv.State); err != nil {
+				return 0, err
+			}
+		}
+		if withKeys {
+			var before basics.AppLocalState
+			if prev != nil {
+				if err = protocol.Decode(prev, &before); err != nil {
+					return 0, err
+				}
+			}
+			lv.ChangedKeys = changedKeys(before.KeyValue, lv.State.KeyValue)
+		}
+		if !values {
+			lv.State = nil
+		}
+		v.LocalStates = append(v.LocalStates, lv)
+	case timetravel.KindAssetParams:
+		av := AssetVersion{Asset: basics.AssetIndex(objID(obj)), Deleted: deleted, Changed: changed}
+		if val != nil {
+			av.Params = new(basics.AssetParams)
+			if av.Creator, err = decodeParams(obj, val, av.Params); err != nil {
+				return 0, err
+			}
+		}
+		v.Assets = append(v.Assets, av)
+	case timetravel.KindAppParams:
+		av := AppVersion{App: basics.AppIndex(objID(obj)), Deleted: deleted, Changed: changed}
+		if val != nil {
+			av.Params = new(basics.AppParams)
+			if av.Creator, err = decodeParams(obj, val, av.Params); err != nil {
+				return 0, err
+			}
+		}
+		if withKeys {
+			var before basics.AppParams
+			if prev != nil {
+				if _, err = decodeParams(obj, prev, &before); err != nil {
+					return 0, err
+				}
+			}
+			av.ChangedKeys = changedKeys(before.GlobalState, av.Params.GlobalState)
+		}
+		if !values {
+			av.Creator, av.Params = basics.Address{}, nil
+		}
+		v.Apps = append(v.Apps, av)
+	case timetravel.KindCreated: // CreatedKey: kind, creator, creatable type, id
+		var creator basics.Address
+		copy(creator[:], obj[1:])
+		id := objID(obj)
+		if basics.CreatableType(obj[1+len(creator)]) == basics.AssetCreatable {
+			v.Assets = append(v.Assets, AssetVersion{Asset: basics.AssetIndex(id), Deleted: deleted, Changed: changed, Creator: creator})
+		} else {
+			v.Apps = append(v.Apps, AppVersion{App: basics.AppIndex(id), Deleted: deleted, Changed: changed, Creator: creator})
+		}
+	case timetravel.KindKv:
+		v.Box = &BoxVersion{Deleted: deleted, Changed: changed, Value: val}
+	default:
+		return 0, fmt.Errorf("no versions for history object %x", obj)
+	}
+	return size, nil
+}
+
+// latestVersion finds obj's latest version at or before rnd: its round, and
+// its value (ok false: deleted). found is false if it has none.
+func latestVersion(h *histView, obj []byte, rnd basics.Round) (at basics.Round, val []byte, ok, found bool, err error) {
+	err = h.Versions(obj, 0, uint64(rnd), true, func(r uint64, v []byte, exists bool) bool {
+		at, val, ok, found = basics.Round(r), v, exists, true
+		return false
+	})
+	return at, val, ok, found, err
+}
+
+// versionsAt builds a Rounds page: per round, each of srcs as of it, from its
+// latest version at or before it. Objects that do not exist at a round are
+// left out, except srcs[0] if first is set, which is then reported deleted.
+func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPage, error) {
+	var page VersionPage
+	var size, seeks uint64
+	for i, R := range r.Rounds {
+		if uint64(i) == r.Limit || (i > 0 && r.MaxSeeks > 0 && seeks+uint64(len(srcs)) > r.MaxSeeks) {
+			page.More, page.Next = true, R
+			break
+		}
+		seeks += uint64(len(srcs))
+		hdr, err := histHeader(h, R)
+		if err != nil {
+			return VersionPage{}, err
+		}
+		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
+		var n uint64
+		for j, obj := range srcs {
+			at, val, ok, found, err := latestVersion(h, obj, R)
+			if err != nil {
+				return VersionPage{}, err
+			}
+			always := j == 0 && first
+			if !always && (!found || !ok) {
+				continue
+			}
+			o := objRead{obj: obj, round: at, ok: found && ok, asOf: true, absent: !found}
+			if o.needsValue(r.Values, r.Keys) {
+				o.val = val
+			}
+			m, err := addObject(h, &v, &hdr, o, r.Values, r.Keys)
+			if err != nil {
+				return VersionPage{}, err
+			}
+			n += m
+		}
+		if r.MaxBytes > 0 && len(page.Versions) > 0 && size+n > r.MaxBytes {
+			page.More, page.Next = true, R
+			break
+		}
+		size += n
+		page.Versions = append(page.Versions, v)
+	}
+	return page, nil
+}
+
+// appBoxesAt builds a Rounds page of an app's boxes: per round, every box
+// that exists at it, in name order. It merges every box the app ever had, at
+// most r.MaxObjects of them.
+func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, error) {
+	type box struct{ obj, name []byte }
+	var boxes []box
+	err := h.Objects(timetravel.BoxKvPrefix(uint64(app)), func(obj []byte) bool {
+		if _, name, ok := timetravel.BoxOf(obj); ok {
+			boxes = append(boxes, box{obj, name})
+		}
+		return r.MaxObjects == 0 || uint64(len(boxes)) <= r.MaxObjects
+	})
+	if err != nil {
+		return VersionPage{}, err
+	}
+	if r.MaxObjects > 0 && uint64(len(boxes)) > r.MaxObjects {
+		return VersionPage{}, fmt.Errorf("%w: app %d has had more than %d boxes", ErrTooManyVersionObjects, app, r.MaxObjects)
+	}
+	var page VersionPage
+	var size, entries, seeks uint64
+	for i, R := range r.Rounds {
+		if uint64(i) == r.Limit || (i > 0 && r.MaxSeeks > 0 && seeks+uint64(len(boxes)) > r.MaxSeeks) {
+			page.More, page.Next = true, R
+			break
+		}
+		seeks += uint64(len(boxes))
+		hdr, err := histHeader(h, R)
+		if err != nil {
+			return VersionPage{}, err
+		}
+		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
+		var n uint64
+		for _, b := range boxes {
+			at, val, ok, found, err := latestVersion(h, b.obj, R)
+			if err != nil {
+				return VersionPage{}, err
+			}
+			if !found || !ok {
+				continue
+			}
+			bc := BoxChange{Name: b.name, Changed: &at}
+			if r.Values {
+				bc.Value = val
+				n += uint64(len(val))
+			}
+			v.Boxes = append(v.Boxes, bc)
+			// a round is never split, so one too large for a page fails
+			if (r.MaxEntries > 0 && uint64(len(v.Boxes)) > r.MaxEntries) || (r.MaxBytes > 0 && n > r.MaxBytes) {
+				if len(page.Versions) == 0 {
+					return VersionPage{}, fmt.Errorf("%w: app %d has more than %d boxes or %d bytes of values at round %d", ErrRoundTooLarge, app, r.MaxEntries, r.MaxBytes, R)
+				}
+				break // the page ends before this round
+			}
+		}
+		if len(page.Versions) > 0 && ((r.MaxBytes > 0 && size+n > r.MaxBytes) ||
+			(r.MaxEntries > 0 && entries+uint64(len(v.Boxes)) > r.MaxEntries)) {
+			page.More, page.Next = true, R
+			break
+		}
+		size += n
+		entries += uint64(len(v.Boxes))
+		page.Versions = append(page.Versions, v)
+	}
+	return page, nil
 }
 
 // changedKeys lists the keys added, removed or changed from prev to cur,

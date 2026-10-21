@@ -22,6 +22,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -269,6 +270,101 @@ func ttPages(t *testing.T, lookup func(VersionRange) (VersionPage, error), r Ver
 			require.Greater(t, p.Next, p.Versions[len(p.Versions)-1].Round)
 			r.Min = p.Next
 		}
+	}
+}
+
+// ttChanges lists, for each of objs, the rounds at which it differs from the
+// round before (round 0 if it exists then).
+func ttChanges(l *Ledger, objs []ttObj) [][]basics.Round {
+	out := make([][]basics.Round, len(objs))
+	for i, o := range objs {
+		for r := basics.Round(0); r <= l.Latest(); r++ {
+			val, ok := o.get(r)
+			changed := ok
+			if r > 0 {
+				pv, pok := o.get(r - 1)
+				changed = ok != pok || (ok && !reflect.DeepEqual(val, pv))
+			}
+			if changed {
+				out[i] = append(out[i], r)
+			}
+		}
+	}
+	return out
+}
+
+// ttVersionsAt is the oracle of a Rounds lookup: per round, each object's
+// entry from its latest change at or before the round (chg, from ttChanges),
+// with that change's round as Changed. Objects that do not exist at a round
+// are left out, except objs[0] if first is set, which is then deleted.
+func ttVersionsAt(t *testing.T, l *Ledger, objs []ttObj, chg [][]basics.Round, inc ttInclude, rounds []basics.Round, first bool) []Version {
+	var out []Version
+	for _, R := range rounds {
+		hdr, err := l.BlockHdr(R)
+		require.NoError(t, err)
+		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
+		for j, o := range objs {
+			always := j == 0 && first
+			i := sort.Search(len(chg[j]), func(i int) bool { return chg[j][i] > R }) - 1
+			if i < 0 {
+				if always {
+					o.put(&v, nil, nil, false, inc)
+				}
+				continue
+			}
+			at := chg[j][i]
+			val, ok := o.get(at)
+			if !ok && !always {
+				continue
+			}
+			var prev any
+			if at > 0 {
+				if pv, pok := o.get(at - 1); pok {
+					prev = pv
+				}
+			}
+			acct, box := v.Account, v.Box
+			nh, nl, nas, nap := len(v.Holdings), len(v.LocalStates), len(v.Assets), len(v.Apps)
+			o.put(&v, val, prev, ok, inc)
+			switch {
+			case v.Account != acct:
+				v.Account.Changed = &at
+			case v.Box != box:
+				v.Box.Changed = &at
+			case len(v.Holdings) > nh:
+				v.Holdings[nh].Changed = &at
+			case len(v.LocalStates) > nl:
+				v.LocalStates[nl].Changed = &at
+			case len(v.Assets) > nas:
+				v.Assets[nas].Changed = &at
+			case len(v.Apps) > nap:
+				v.Apps[nap].Changed = &at
+			default:
+				require.Fail(t, "put added nothing")
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// ttRoundPages pages through a Rounds lookup and returns every entry.
+func ttRoundPages(t *testing.T, lookup func(VersionRange) (VersionPage, error), r VersionRange) []Version {
+	var all []Version
+	for {
+		r.Min, r.Max = min(r.Rounds[0], r.Rounds[len(r.Rounds)-1]), max(r.Rounds[0], r.Rounds[len(r.Rounds)-1])
+		p, err := lookup(r)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(p.Versions), int(r.Limit))
+		all = append(all, p.Versions...)
+		if !p.More {
+			require.Len(t, p.Versions, len(r.Rounds))
+			return all
+		}
+		require.NotEmpty(t, p.Versions)
+		require.Less(t, len(p.Versions), len(r.Rounds))
+		require.Equal(t, r.Rounds[len(p.Versions)], p.Next)
+		r.Rounds = r.Rounds[len(p.Versions):]
 	}
 }
 
@@ -638,6 +734,71 @@ func TestTimeTravelVersions(t *testing.T) {
 					require.Len(t, p.Versions, n, "%+v", inc)
 				}
 
+				// as of rounds: every round, both ways, paged, and a sparse subset
+				var every, sparse []basics.Round
+				for R := basics.Round(0); R <= latest; R++ {
+					every = append(every, R)
+					if R%7 == 3 {
+						sparse = append(sparse, R)
+					}
+				}
+				// the lookups that report their object at every round, existing or not
+				notFirst := map[string]bool{"holding": true, "creator's holding and params": true, "local state": true,
+					"creator's app": true, "kv local state": true, "kv creator": true, "genesis local state": true}
+				for _, c := range cases {
+					chg := ttChanges(l, c.objs)
+					for _, inc := range []ttInclude{{}, {values: true}, {keys: true}, {values: true, keys: true}} {
+						for _, rounds := range [][]basics.Round{every, sparse} {
+							want := ttVersionsAt(t, l, c.objs, chg, inc, rounds, !notFirst[c.name])
+							r := VersionRange{Min: rounds[0], Max: rounds[len(rounds)-1], Limit: 1000, Values: inc.values, Keys: inc.keys, Rounds: rounds}
+							p, err := c.lookup(r)
+							require.NoError(t, err)
+							require.False(t, p.More)
+							require.Equal(t, want, p.Versions, "%s %+v rounds", c.name, inc)
+
+							desc := slices.Clone(want)
+							slices.Reverse(desc)
+							r.Rounds, r.Desc = slices.Clone(rounds), true
+							slices.Reverse(r.Rounds)
+							require.Equal(t, desc, ttRoundPages(t, c.lookup, r), "%s %+v rounds desc", c.name, inc)
+							r.Rounds, r.Desc = rounds, false
+							for _, limit := range []uint64{1, 3} {
+								r.Limit = limit
+								require.Equal(t, want, ttRoundPages(t, c.lookup, r), "%s %+v rounds limit %d", c.name, inc, limit)
+							}
+							// a seek budget below one round's ends every page after one round
+							r.Limit, r.MaxSeeks = 1000, 1
+							p, err = c.lookup(r)
+							require.NoError(t, err)
+							require.Len(t, p.Versions, 1)
+							require.Equal(t, want, ttRoundPages(t, c.lookup, r), "%s %+v rounds seek budget", c.name, inc)
+							r.MaxSeeks = uint64(2 * len(c.objs)) // two rounds a page
+							p, err = c.lookup(r)
+							require.NoError(t, err)
+							require.Len(t, p.Versions, min(2, len(rounds)))
+							r.MaxSeeks = 0
+							if inc.values || inc.keys {
+								r.Limit, r.MaxBytes = 1000, 1
+								require.Equal(t, want, ttRoundPages(t, c.lookup, r), "%s %+v rounds byte budget", c.name, inc)
+							}
+						}
+					}
+				}
+				// by hand: asa2 before its creation, while it exists, after its destruction
+				created, destroyed := ttChanges(l, []ttObj{ttAssetParams(t, l, addrs[0], asa2)})[0][0], ttChanges(l, []ttObj{ttAssetParams(t, l, addrs[0], asa2)})[0][1]
+				p, err = l.AssetVersions(asa2, VersionRange{Max: latest, Limit: 10, Rounds: []basics.Round{0, created, destroyed - 1, destroyed, latest}})
+				require.NoError(t, err)
+				require.Len(t, p.Versions, 5)
+				for i, w := range []struct {
+					deleted bool
+					changed *basics.Round
+				}{{true, nil}, {false, &created}, {false, &created}, {true, &destroyed}, {true, &destroyed}} {
+					require.Len(t, p.Versions[i].Assets, 1)
+					a := p.Versions[i].Assets[0]
+					require.Equal(t, w.deleted, a.Deleted, "entry %d", i)
+					require.Equal(t, w.changed, a.Changed, "entry %d", i)
+				}
+
 				// two holdings and two created assets, one destroyed: they all count
 				_, err = l.AccountVersions(addrs[0], AccountVersionsExclude{}, VersionRange{Max: latest, Limit: 10, MaxObjects: 3})
 				require.ErrorIs(t, err, ErrTooManyVersionObjects)
@@ -811,6 +972,117 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 						require.Len(t, p.Versions, 1)
 					}
 				}
+				// as of rounds: the boxes that exist then, each with its last change
+				boxChanges := map[string][]basics.Round{}
+				for _, name := range sorted {
+					var prev []byte
+					for r := basics.Round(0); r <= latest; r++ {
+						b, err := l.LookupKv(r, apps.MakeBoxKey(uint64(app), name))
+						require.NoError(t, err)
+						if (b != nil) != (prev != nil) || (b != nil && !slices.Equal(b, prev)) {
+							boxChanges[name] = append(boxChanges[name], r)
+						}
+						prev = b
+					}
+				}
+				var every []basics.Round
+				for R := basics.Round(0); R <= latest; R++ {
+					every = append(every, R)
+				}
+				for _, values := range []bool{false, true} {
+					var want []Version
+					var most int
+					for _, R := range every {
+						hdr, err := l.BlockHdr(R)
+						require.NoError(t, err)
+						v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
+						for _, name := range sorted {
+							b, err := l.LookupKv(R, apps.MakeBoxKey(uint64(app), name))
+							require.NoError(t, err)
+							if b == nil {
+								continue
+							}
+							chg := boxChanges[name]
+							at := chg[sort.Search(len(chg), func(i int) bool { return chg[i] > R })-1]
+							bc := BoxChange{Name: []byte(name), Changed: &at}
+							if values {
+								bc.Value = b
+							}
+							v.Boxes = append(v.Boxes, bc)
+						}
+						most = max(most, len(v.Boxes))
+						want = append(want, v)
+					}
+					require.Greater(t, most, 2, "some rounds have several boxes")
+					r := VersionRange{Max: latest, Limit: 1000, Values: values, Rounds: every}
+					p, err := lookup(r)
+					require.NoError(t, err)
+					require.False(t, p.More)
+					require.Equal(t, want, p.Versions, "values=%v rounds", values)
+					for _, limit := range []uint64{1, 3} {
+						r.Limit = limit
+						require.Equal(t, want, ttRoundPages(t, lookup, r), "rounds limit %d", limit)
+					}
+					r.Limit = 1000
+					desc := slices.Clone(want)
+					slices.Reverse(desc)
+					r.Rounds, r.Desc = slices.Clone(every), true
+					slices.Reverse(r.Rounds)
+					require.Equal(t, desc, ttRoundPages(t, lookup, r), "rounds desc")
+					r.Rounds, r.Desc = every, false
+					// a page holds whole rounds: budgets end pages early, and a
+					// round larger than one fails
+					var mostBytes uint64
+					var biggest, heaviest int // the rounds with the most boxes and values
+					for i, v := range want {
+						var n uint64
+						for _, b := range v.Boxes {
+							n += uint64(len(b.Value))
+						}
+						if n > mostBytes {
+							mostBytes, heaviest = n, i
+						}
+						if len(v.Boxes) == most && biggest == 0 {
+							biggest = i
+						}
+					}
+					r.MaxEntries = uint64(most)
+					require.Equal(t, want, ttRoundPages(t, lookup, r), "rounds entry budget")
+					r.MaxEntries = uint64(most) - 1
+					p, err = lookup(r)
+					require.NoError(t, err, "the page ends before the round too large for it")
+					require.True(t, p.More)
+					r.Rounds = every[biggest:]
+					_, err = lookup(r)
+					require.ErrorIs(t, err, ErrRoundTooLarge, "a page cannot hold it")
+					r.Rounds, r.MaxEntries = every, 0
+					if values {
+						r.MaxBytes = mostBytes
+						require.Equal(t, want, ttRoundPages(t, lookup, r), "rounds byte budget")
+						r.MaxBytes, r.Rounds = mostBytes-1, every[heaviest:]
+						_, err = lookup(r)
+						require.ErrorIs(t, err, ErrRoundTooLarge)
+						r.MaxBytes, r.Rounds = 0, every
+					}
+					// the seek budget counts every box, existing or not
+					r.MaxSeeks = 1
+					require.Equal(t, want, ttRoundPages(t, lookup, r), "rounds seek budget")
+					p, err = lookup(r)
+					require.NoError(t, err)
+					require.Len(t, p.Versions, 1)
+					r.MaxSeeks = 0
+					// every box the app ever had a record of counts
+					var recorded uint64
+					require.NoError(t, l.historyNow(latest).Objects(timetravel.BoxKvPrefix(uint64(app)), func([]byte) bool { recorded++; return true }))
+					require.GreaterOrEqual(t, recorded, uint64(len(boxChanges)))
+					r.MaxObjects = recorded - 1
+					_, err = lookup(r)
+					require.ErrorIs(t, err, ErrTooManyVersionObjects)
+					r.MaxObjects = recorded
+					_, err = lookup(r)
+					require.NoError(t, err)
+				}
+
 				p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
 				require.NoError(t, err)
 				require.Empty(t, p.Versions, "an app without boxes")

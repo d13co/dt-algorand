@@ -127,6 +127,21 @@ func TestVersionsParams(t *testing.T) {
 		{model.AccountVersionsParams{MinRound: rnd(5), Next: str("20")}, ledger.VersionRange{Min: 20, Max: 1000, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{}, 1000},
 		{model.AccountVersionsParams{MaxRound: rnd(50), Order: order(model.AccountVersionsParamsOrderDesc), Next: str("20")},
 			ledger.VersionRange{Max: 20, Desc: true, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{}, 20},
+		// rounds: sorted and deduplicated in page order, bounded by Min and
+		// Max, which the response reports
+		{model.AccountVersionsParams{Rounds: &[]basics.Round{30, 5, 30, 7, 1000}},
+			ledger.VersionRange{Min: 5, Max: 1000, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{5, 7, 30, 1000}}, ledger.AccountVersionsExclude{}, 1000},
+		{model.AccountVersionsParams{Rounds: &[]basics.Round{30, 5, 7}, Order: order(model.AccountVersionsParamsOrderDesc), Include: values},
+			ledger.VersionRange{Min: 5, Max: 30, Desc: true, Limit: 100, Values: true, MaxBytes: 1_000_000, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{30, 7, 5}}, ledger.AccountVersionsExclude{}, 30},
+		{model.AccountVersionsParams{Rounds: func() *[]basics.Round { rs := make([]basics.Round, 10_001); return &rs }()},
+			ledger.VersionRange{Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{0}}, ledger.AccountVersionsExclude{}, 0},
+		// next drops the rounds before the token, in page order
+		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Next: str("7")},
+			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
+		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Next: str("6")},
+			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
+		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Order: order(model.AccountVersionsParamsOrderDesc), Next: str("7")},
+			ledger.VersionRange{Min: 5, Max: 7, Desc: true, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 5}}, ledger.AccountVersionsExclude{}, 7},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeAll}},
 			ledger.VersionRange{Max: 1000, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{All: true}, 1000},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeCreatedAppsParams, model.AccountVersionsParamsExcludeCreatedAssetsParams}},
@@ -155,6 +170,19 @@ func TestVersionsParams(t *testing.T) {
 		"all combined":         {Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeAll, model.AccountVersionsParamsExcludeCreatedAppsParams}},
 		"unknown exclude":      {Exclude: &[]model.AccountVersionsParamsExclude{"holdings"}},
 		"time travel disabled": {},
+		"rounds and min-round": {Rounds: &[]basics.Round{5}, MinRound: rnd(1)},
+		"rounds and max-round": {Rounds: &[]basics.Round{5}, MaxRound: rnd(10)},
+		"future round":         {Rounds: &[]basics.Round{5, 1001}},
+		"no rounds":            {Rounds: &[]basics.Round{}},
+		"too many rounds": {Rounds: func() *[]basics.Round {
+			rs := make([]basics.Round, 10_001)
+			for i := range rs {
+				rs[i] = basics.Round(i) // latest is 1000: distinct ones count first
+			}
+			return &rs
+		}()},
+		"next past rounds":      {Rounds: &[]basics.Round{5, 7}, Next: str("8")},
+		"next past rounds desc": {Rounds: &[]basics.Round{5, 7}, Order: order(model.AccountVersionsParamsOrderDesc), Next: str("4")},
 	} {
 		c := cfg
 		if name == "time travel disabled" {
@@ -205,6 +233,29 @@ func TestVersionsParams(t *testing.T) {
 			require.Contains(t, rec.Body.String(), "include=keys applies to application state", name)
 		}
 	}
+
+	// as of rounds, the boxes endpoint merges every box: bounded by
+	// MaxAPIBoxPerApplication, and pages by a box count
+	boxesAt := func(include *[]model.ApplicationBoxesVersionsParamsInclude) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		ctx := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+		require.NoError(t, h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Rounds: &[]basics.Round{5}, Include: include}))
+		return rec
+	}
+	require.Equal(t, http.StatusOK, boxesAt(nil).Code)
+	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, vl.r)
+	require.Equal(t, http.StatusOK, boxesAt(&[]model.ApplicationBoxesVersionsParamsInclude{model.ApplicationBoxesVersionsParamsIncludeValues}).Code)
+	require.EqualValues(t, 1_000, vl.r.MaxEntries)
+	for _, err := range []error{ledger.ErrTooManyVersionObjects, ledger.ErrRoundTooLarge} {
+		vl.err = fmt.Errorf("%w: app 9", err)
+		rec := boxesAt(nil)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Contains(t, rec.Body.String(), "use GET /v2/applications/9/boxes?round=")
+	}
+	vl.err = nil
+	rec := httptest.NewRecorder()
+	require.NoError(t, h.ApplicationBoxesVersions(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec), 9, model.ApplicationBoxesVersionsParams{}))
+	require.Zero(t, vl.r.MaxObjects, "a range of box changes reads the box index")
 
 	vl.err = errors.Join(ledger.ErrTooManyVersionObjects, errors.New("account has more than 77"))
 	code, _ = get(vl, cfg, model.AccountVersionsParams{})
@@ -379,6 +430,52 @@ func TestVersionsResponses(t *testing.T) {
 		return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{})
 	}, &rounds)
 	require.Nil(t, rounds.Versions[0].Boxes[0].Value, "no values unless included")
+
+	// as of rounds: changed-round on every object that has one
+	at := func(r basics.Round) *basics.Round { return &r }
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{
+		{Round: 40, Timestamp: 5,
+			Account:     &ledger.AccountVersion{Changed: at(12)},
+			Holdings:    []ledger.HoldingVersion{{Asset: 7, Changed: at(31)}},
+			LocalStates: []ledger.LocalStateVersion{{App: 9, Changed: at(0)}},
+			Assets:      []ledger.AssetVersion{{Asset: 7, Creator: addr, Changed: at(3)}},
+			Apps:        []ledger.AppVersion{{App: 9, Creator: addr, Changed: at(4)}}},
+		{Round: 41, Timestamp: 6, Account: &ledger.AccountVersion{Deleted: true}},
+	}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.AccountVersions(ctx, addr, model.AccountVersionsParams{Rounds: &[]basics.Round{40, 41}})
+	})
+	require.Contains(t, body, `"base":{"changed-round":12,"deleted":false}`)
+	require.Contains(t, body, `"assets":[{"asset-id":7,"changed-round":31,"deleted":false}]`)
+	require.Contains(t, body, `"apps-local-state":[{"app-id":9,"changed-round":0,"deleted":false}]`, "round 0 is a round")
+	require.Contains(t, body, `"created-assets":[{"asset-id":7,"changed-round":3,"deleted":false}]`)
+	require.Contains(t, body, `"created-apps":[{"app-id":9,"changed-round":4,"deleted":false}]`)
+	require.Contains(t, body, `{"base":{"deleted":true},"round":41,"timestamp":6}`, "never existed: no changed-round")
+	require.Equal(t, "account "+addr.String(), vl.call)
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{{Round: 40, Timestamp: 5, Assets: []ledger.AssetVersion{{Asset: 7, Deleted: true, Changed: at(33)}}}}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.AssetVersions(ctx, 7, model.AssetVersionsParams{Rounds: &[]basics.Round{40}})
+	})
+	require.Contains(t, body, `{"changed-round":33,"deleted":true,"round":40,"timestamp":5}`)
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{{Round: 40, Timestamp: 5, Apps: []ledger.AppVersion{{App: 9, Changed: at(4)}}}}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Rounds: &[]basics.Round{40}})
+	})
+	require.Contains(t, body, `{"changed-round":4,"deleted":false,"round":40,"timestamp":5}`)
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{{Round: 40, Timestamp: 5, Box: &ledger.BoxVersion{Changed: at(8), Value: []byte("v")}}}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.ApplicationBoxVersions(ctx, 9, model.ApplicationBoxVersionsParams{Name: "str:b", Rounds: &[]basics.Round{40}, Include: values})
+	})
+	require.Contains(t, body, `{"changed-round":8,"deleted":false,"round":40,"timestamp":5,"value":"dg=="}`)
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{
+		{Round: 40, Timestamp: 5, Boxes: []ledger.BoxChange{{Name: []byte("a"), Changed: at(8)}, {Name: []byte("b"), Changed: at(39)}}},
+		{Round: 41, Timestamp: 6, Boxes: []ledger.BoxChange{}},
+	}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Rounds: &[]basics.Round{40, 41}})
+	})
+	require.Contains(t, body, `"boxes":[{"changed-round":8,"deleted":false,"name":"YQ=="},{"changed-round":39,"deleted":false,"name":"Yg=="}]`)
+	require.Contains(t, body, `{"boxes":[],"round":41,"timestamp":6}`, "no boxes at a round")
 
 	vl.err = fmt.Errorf("lookup: %w before round 7", ledger.ErrNoBoxIndex)
 	rec = httptest.NewRecorder()

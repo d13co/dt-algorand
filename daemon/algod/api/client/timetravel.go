@@ -18,6 +18,7 @@ package client
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
@@ -35,6 +36,9 @@ type VersionsParams struct {
 	// Keys lists the state keys each app params or local state version
 	// changed; only the app state endpoints take it
 	Keys bool
+	// Rounds asks for the objects as of each of these rounds instead of
+	// their versions; it excludes MinRound and MaxRound
+	Rounds []basics.Round
 }
 
 type versionsQuery struct {
@@ -46,6 +50,7 @@ type versionsQuery struct {
 	Include  string        `url:"include,omitempty"`
 	Exclude  string        `url:"exclude,omitempty"`
 	Name     string        `url:"name,omitempty"`
+	Rounds   string        `url:"rounds,omitempty"`
 }
 
 func (p VersionsParams) query() versionsQuery {
@@ -61,6 +66,11 @@ func (p VersionsParams) query() versionsQuery {
 		inc = append(inc, "keys")
 	}
 	q.Include = strings.Join(inc, ",")
+	rs := make([]string, len(p.Rounds))
+	for i, r := range p.Rounds {
+		rs[i] = strconv.FormatUint(uint64(r), 10)
+	}
+	q.Rounds = strings.Join(rs, ",")
 	return q
 }
 

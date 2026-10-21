@@ -58,6 +58,7 @@ Not versioned: `/v2/ledger/supply` (totals change nearly every round; `?round=` 
 | `order` | `asc` (default) or `desc`. Both are one iterator direction in Pebble. Entries carry new full values, not diffs, so `desc` needs nothing extra ("last 10 changes of X"). |
 | `limit` | versions (rounds) per page; default 100, max 10,000, or 1,000 with `include=values` or `include=keys`. |
 | `next` | the previous page's `next-token`: the round to resume from, opaque to clients. |
+| `rounds` | instead of the versions in a range, the objects as of each of these rounds (comma-separated), see [As of rounds](#as-of-rounds). Excludes `min-round` and `max-round` (400). |
 | `include` | `values`: include new values. `keys` (app state endpoints only: `/v2/accounts/{address}/versions`, `/v2/accounts/{address}/applications/{application-id}/versions`, `/v2/applications/{application-id}/versions`; 400 elsewhere): list the state keys each app params or local state version changed, see [Changed keys](#changed-keys). Comma-separated: `include=values,keys` returns both. |
 | `exclude` | account versions only; same values as `/v2/accounts/{address}`: `all` (base record only), `none`, `created-apps-params`, `created-assets-params` (created ids still version on create/destroy, but params changes don't). |
 
@@ -114,6 +115,30 @@ Account (`/v2/accounts/ABC.../versions?include=values`): each entry lists only w
 
 Without `include=values` the same entries carry ids and `deleted` only (`"base": {"deleted": false}` says the base record changed). Lists that didn't change are omitted. Reconstructing the account at any R in [`min-round`, `max-round`]: fetch `?round=min-round`, apply every entry with `min-round < round ≤ R`, replacing sub-objects by id.
 
+### As of rounds
+
+`rounds=a,b,c` answers "what was X at a, b and c" in one request: each entry is the object as of a requested round, from its latest version at or before it, and `changed-round` is that version's round. Each requested round gets one entry, so `?rounds=R&include=values` returns what `GET ...?round=R` returns, plus when it last changed.
+
+```json
+{
+  "round": 140,
+  "versions": [
+    { "round": 50, "timestamp": 1700000000, "deleted": true },
+    { "round": 125, "timestamp": 1700000150, "changed-round": 120, "deleted": false },
+    { "round": 140, "timestamp": 1700000201, "changed-round": 140, "deleted": true }
+  ]
+}
+```
+
+- Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round (400). `limit` counts rounds (same defaults and maxima), the 1 MB budget applies, and `next-token` is the next requested round: resend the same `rounds` with `next`. The top-level `round` is the largest requested round left after `next`.
+- A page costs a lookup per object per requested round, so it also ends before a round that would take it past 100,000 lookups (`MaxVersionsSeeks`). The first round is always read: at most `MaxAPIResourcesPerAccount` or `MaxAPIBoxPerApplication` lookups.
+- Each entry's `round` and `timestamp` are the requested round's. `changed-round` is at most the store's first round when the object last changed before it (history starts at genesis, so normally never).
+- Leaves (asset, app, box): `deleted` is true when the object does not exist at the round; `changed-round` is then its deletion, or absent if it had not been created yet.
+- Accounts: `base` is always present (as for a leaf), and the lists hold only the objects that exist at the round, each with its own `changed-round`. With values, `base.account` is `GET /v2/accounts/{addr}?exclude=all&round=R`: pending rewards at R, not at the change.
+- The per-resource account endpoints have no `base`, as in range mode: an entry lists the holding or local state, and the params if the account created the asset or app, each only if it exists at the round. An entry with neither means neither exists then.
+- App boxes: each entry lists every box that exists at the round, in name order, each with its `changed-round`. The box index is round-major, so this merges every box the app ever had a record of (option A of [app boxes](#implementation)): it fails with 400 past `MaxAPIBoxPerApplication` of them, pointing to `GET /v2/applications/{id}/boxes?round=`, and pages also end at 10,000 boxes (1,000 with values) or 1 MB of values, never splitting a round: a round with more fails with 400 (`ErrRoundTooLarge`), pointing to the same listing, which pages within a round.
+- `include=keys` lists the keys of the version in effect: those `changed-round` changed.
+
 ### Changed keys
 
 Without values an app version is only `{round, timestamp, deleted}`, and with them it is the whole `Application`, programs included, every version: a 64-key global state is resent in full for a one-key write. `include=keys` adds, on every app params and local state version, the names of the state keys that changed (`changed-keys`, base64, sorted by their bytes), without their values. A client that wants the new values fetches `?round=R` for the versions it cares about, or adds `values`.
@@ -147,6 +172,8 @@ Without values an app version is only `{round, timestamp, deleted}`, and with th
    | E. values in the index | saves a ~5 µs seek per entry | +~1.8 GB | not worth it |
 
 6. **Changed keys** (`include=keys`): `readVersion` reads each app params or local state version's value and, at rounds after 0, the value at the round before (`histView.Get`, which covers the rounds in memory and in the store), decodes both and lists the keys whose `TealValue` differs or that only one has (`changedKeys`). Both values count toward the byte budget. No value is cached between versions: a warm `Get` costs ~5 µs. `TestTimeTravelVersions` checks the keys against the per-round lookups and against a hand-written list per round: creation, set, overwrite, delete, a uint becoming bytes, a key set and deleted within a round, a program update alone, opt-in with and without keys, a clear and opt-in in one round, close-out and app deletion, and a genesis app and local state. `tools/ttlab demo` checks `include=keys` against the live app.
+
+7. **As of rounds** (`rounds`): `versionsAt` reads, per requested round and object, the object's latest version at or before the round with one descending `histView.Versions` step (`latestVersion`), which yields its value too, and decodes it with the same per-object code as a range page (`addObject`), using the requested round's header for the account's rewards. `appBoxesAt` lists the app's boxes with `histView.Objects`, bounded by `MaxObjects`, then does the same per box. Cost: a seek per object per requested round. `TestTimeTravelVersions` and `TestTimeTravelAppBoxVersions` check every lookup at every round and at a sparse subset, both orders, paged, and with a 1-byte budget, against an oracle built from the per-round lookups; `tools/ttlab demo` checks the app, box, boxes and account endpoints against the live state.
 
 Not done: the `tools/ttlab versions` measurements (hot app params, accounts with 1k and 10k holdings, warm and cold), and the box index's size and page latency on fnet after `ttimport -index-boxes`.
 
