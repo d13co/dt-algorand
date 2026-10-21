@@ -41,8 +41,12 @@ type VersionRange struct {
 	Desc     bool         // newest first
 	Limit    uint64       // versions (rounds) per page; must be > 0
 	Values   bool         // include the new values
+	// Keys lists the global or local state keys each app params or local
+	// state version changed against the value at the round before.
+	Keys bool
 	// MaxBytes ends a page early once its values exceed it (0: no limit).
-	// A page always has at least one version.
+	// With Keys, the previous values the keys are found from count too. A
+	// page always has at least one version.
 	MaxBytes uint64
 	// MaxObjects bounds the resources (holdings, local states, created assets
 	// and apps) an account lookup merges, counting every one the account ever
@@ -91,11 +95,14 @@ type HoldingVersion struct {
 	Holding *basics.AssetHolding
 }
 
-// LocalStateVersion is a version of an app local state.
+// LocalStateVersion is a version of an app local state. ChangedKeys, set
+// only with VersionRange.Keys and not on deletions, are the keys added,
+// removed or changed in the round, sorted.
 type LocalStateVersion struct {
-	App     basics.AppIndex
-	Deleted bool
-	State   *basics.AppLocalState
+	App         basics.AppIndex
+	Deleted     bool
+	State       *basics.AppLocalState
+	ChangedKeys [][]byte
 }
 
 // AssetVersion is a version of an asset's params. Params is nil when
@@ -110,11 +117,14 @@ type AssetVersion struct {
 }
 
 // AppVersion is a version of an app's params, like AssetVersion.
+// ChangedKeys are the global state keys the version changed, as for
+// LocalStateVersion; versions from the creator index have none.
 type AppVersion struct {
-	App     basics.AppIndex
-	Deleted bool
-	Creator basics.Address
-	Params  *basics.AppParams
+	App         basics.AppIndex
+	Deleted     bool
+	Creator     basics.Address
+	Params      *basics.AppParams
+	ChangedKeys [][]byte
 }
 
 // BoxVersion is a version of a box.
@@ -379,7 +389,7 @@ func versions(h *histView, srcs [][]byte, r VersionRange) (VersionPage, error) {
 	}
 	var size uint64
 	for _, R := range order {
-		v, n, err := readVersion(h, srcs, R, rounds[R], r.Values)
+		v, n, err := readVersion(h, srcs, R, rounds[R], r.Values, r.Keys)
 		if err != nil {
 			return VersionPage{}, err
 		}
@@ -394,8 +404,8 @@ func versions(h *histView, srcs [][]byte, r VersionRange) (VersionPage, error) {
 }
 
 // readVersion builds the version of round rnd from the sources that changed
-// in it, and returns the size of their values.
-func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChange, values bool) (Version, uint64, error) {
+// in it, and returns the size of the values it read.
+func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChange, values, keys bool) (Version, uint64, error) {
 	hdr, err := histHeader(h, rnd)
 	if err != nil {
 		return Version{}, 0, err
@@ -404,8 +414,10 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 	var size uint64
 	for _, ch := range changes {
 		obj := srcs[ch.src]
-		var val []byte
-		if values && ch.ok {
+		// the keys of a state come from its value and the one before
+		withKeys := keys && ch.ok && (obj[0] == timetravel.KindAppParams || obj[0] == timetravel.KindLocal)
+		var val, prev []byte
+		if (values || withKeys) && ch.ok {
 			var ok bool
 			if val, ok, err = h.Get(obj, uint64(rnd)); err != nil {
 				return Version{}, 0, err
@@ -414,6 +426,16 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 				return Version{}, 0, fmt.Errorf("history object %x has a version at round %d but no value", obj, rnd)
 			}
 			size += uint64(len(val))
+		}
+		if withKeys && rnd > 0 {
+			var ok bool
+			if prev, ok, err = h.Get(obj, uint64(rnd)-1); err != nil {
+				return Version{}, 0, err
+			}
+			if !ok {
+				prev = nil // created: every key is new
+			}
+			size += uint64(len(prev))
 		}
 		deleted := !ch.ok
 		switch obj[0] {
@@ -452,6 +474,18 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 					return Version{}, 0, err
 				}
 			}
+			if withKeys {
+				var before basics.AppLocalState
+				if prev != nil {
+					if err = protocol.Decode(prev, &before); err != nil {
+						return Version{}, 0, err
+					}
+				}
+				lv.ChangedKeys = changedKeys(before.KeyValue, lv.State.KeyValue)
+			}
+			if !values {
+				lv.State = nil
+			}
 			v.LocalStates = append(v.LocalStates, lv)
 		case timetravel.KindAssetParams:
 			av := AssetVersion{Asset: basics.AssetIndex(objID(obj)), Deleted: deleted}
@@ -470,6 +504,18 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 					return Version{}, 0, err
 				}
 			}
+			if withKeys {
+				var before basics.AppParams
+				if prev != nil {
+					if _, err = decodeParams(obj, prev, &before); err != nil {
+						return Version{}, 0, err
+					}
+				}
+				av.ChangedKeys = changedKeys(before.GlobalState, av.Params.GlobalState)
+			}
+			if !values {
+				av.Creator, av.Params = basics.Address{}, nil
+			}
 			v.Apps = append(v.Apps, av)
 		case timetravel.KindCreated: // CreatedKey: kind, creator, creatable type, id
 			var creator basics.Address
@@ -487,6 +533,25 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 		}
 	}
 	return v, size, nil
+}
+
+// changedKeys lists the keys added, removed or changed from prev to cur,
+// sorted by their bytes. It is never nil, so that no changes can be told
+// from keys not requested.
+func changedKeys(prev, cur basics.TealKeyValue) [][]byte {
+	keys := [][]byte{}
+	for k, v := range cur {
+		if pv, ok := prev[k]; !ok || pv != v {
+			keys = append(keys, []byte(k))
+		}
+	}
+	for k := range prev {
+		if _, ok := cur[k]; !ok {
+			keys = append(keys, []byte(k))
+		}
+	}
+	slices.SortFunc(keys, bytes.Compare)
+	return keys
 }
 
 // decodeParams decodes an asset or app params record: creator, then params.

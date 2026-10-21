@@ -275,6 +275,17 @@ done: int 1`)
 	}
 	check(fmt.Sprintf("GET /v2/applications/%d/versions?include=values, %d pages -> rounds %v", app, n, roundsOf(vs)),
 		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+	// the app writes only n: every version lists that key alone
+	vs, n = pages(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=7&include=keys", app, span))
+	keysOK := len(vs) == len(want)
+	for _, v := range vs {
+		_, hasValue := v["application"]
+		keysOK = keysOK && !hasValue && fmt.Sprint(v["changed-keys"]) == fmt.Sprint([]any{base64.StdEncoding.EncodeToString([]byte("n"))})
+	}
+	check(fmt.Sprintf("GET /v2/applications/%d/versions?include=keys, %d pages -> changed-keys [n] at rounds %v", app, n, roundsOf(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && keysOK)
+	code, _ := get(fmt.Sprintf("/v2/applications/%d/box/versions?name=str:b&%s&include=keys", app, span))
+	check(fmt.Sprintf("GET /v2/applications/%d/box/versions?include=keys -> %d", app, code), code == http.StatusBadRequest)
 	desc, n := pages(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=3&order=desc", app, span))
 	reversed := roundsOf(desc)
 	slices.Reverse(reversed)

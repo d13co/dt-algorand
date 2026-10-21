@@ -103,6 +103,7 @@ const (
 
 // Defines values for AccountApplicationVersionsParamsInclude.
 const (
+	AccountApplicationVersionsParamsIncludeKeys   AccountApplicationVersionsParamsInclude = "keys"
 	AccountApplicationVersionsParamsIncludeValues AccountApplicationVersionsParamsInclude = "values"
 )
 
@@ -145,6 +146,7 @@ const (
 
 // Defines values for AccountVersionsParamsInclude.
 const (
+	AccountVersionsParamsIncludeKeys   AccountVersionsParamsInclude = "keys"
 	AccountVersionsParamsIncludeValues AccountVersionsParamsInclude = "values"
 )
 
@@ -183,6 +185,7 @@ const (
 
 // Defines values for ApplicationVersionsParamsInclude.
 const (
+	ApplicationVersionsParamsIncludeKeys   ApplicationVersionsParamsInclude = "keys"
 	ApplicationVersionsParamsIncludeValues ApplicationVersionsParamsInclude = "values"
 )
 
@@ -534,6 +537,9 @@ type ApplicationLocalStateVersion struct {
 	// AppLocalState Stores local state associated with an application.
 	AppLocalState *ApplicationLocalState `json:"app-local-state,omitempty"`
 
+	// ChangedKeys With `include=keys`, the local state keys added, removed or changed in this round, sorted. On an opt-in after no local state, every key of the new state; on a clear and opt-in in the same round, the keys that differ. Absent on deletions.
+	ChangedKeys *[][]byte `json:"changed-keys,omitempty"`
+
 	// Deleted Whether the version is the deletion of the local state (close out or clear).
 	Deleted bool `json:"deleted"`
 }
@@ -605,6 +611,9 @@ type ApplicationStateSchema struct {
 type ApplicationVersion struct {
 	// Application Application index and its parameters
 	Application *Application `json:"application,omitempty"`
+
+	// ChangedKeys With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions.
+	ChangedKeys *[][]byte `json:"changed-keys,omitempty"`
 
 	// Deleted Whether the version is the deletion of the application.
 	Deleted bool `json:"deleted"`
@@ -843,6 +852,9 @@ type CreatedApplicationVersion struct {
 
 	// Application Application index and its parameters
 	Application *Application `json:"application,omitempty"`
+
+	// ChangedKeys With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions and with `exclude=created-apps-params`.
+	ChangedKeys *[][]byte `json:"changed-keys,omitempty"`
 
 	// Deleted Whether the version is the deletion of the application.
 	Deleted bool `json:"deleted"`
@@ -1458,6 +1470,9 @@ type TxType string
 // VersionsInclude defines model for versions-include.
 type VersionsInclude = []string
 
+// VersionsIncludeState defines model for versions-include-state.
+type VersionsIncludeState = []string
+
 // VersionsOrder defines model for versions-order.
 type VersionsOrder string
 
@@ -1952,7 +1967,7 @@ type AccountApplicationVersionsParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.
 	Include *[]AccountApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 
@@ -2045,7 +2060,7 @@ type AccountVersionsParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.
 	Include *[]AccountVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 
@@ -2171,7 +2186,7 @@ type ApplicationVersionsParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.
 	Include *[]ApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 

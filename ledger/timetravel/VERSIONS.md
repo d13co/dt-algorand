@@ -56,12 +56,12 @@ Not versioned: `/v2/ledger/supply` (totals change nearly every round; `?round=` 
 |---|---|
 | `min-round`, `max-round` | inclusive range; defaults 0 and `Latest()`. `max-round > Latest()` or `min-round > max-round`, also once `next` is applied: 400. Names follow the indexer. |
 | `order` | `asc` (default) or `desc`. Both are one iterator direction in Pebble. Entries carry new full values, not diffs, so `desc` needs nothing extra ("last 10 changes of X"). |
-| `limit` | versions (rounds) per page; default 100, max 10,000, or 1,000 with `include=values`. |
+| `limit` | versions (rounds) per page; default 100, max 10,000, or 1,000 with `include=values` or `include=keys`. |
 | `next` | the previous page's `next-token`: the round to resume from, opaque to clients. |
-| `include` | `values`: include new values. |
+| `include` | `values`: include new values. `keys` (app state endpoints only: `/v2/accounts/{address}/versions`, `/v2/accounts/{address}/applications/{application-id}/versions`, `/v2/applications/{application-id}/versions`; 400 elsewhere): list the state keys each app params or local state version changed, see [Changed keys](#changed-keys). Comma-separated: `include=values,keys` returns both. |
 | `exclude` | account versions only; same values as `/v2/accounts/{address}`: `all` (base record only), `none`, `created-apps-params`, `created-assets-params` (created ids still version on create/destroy, but params changes don't). |
 
-A page ends at `limit` versions, or when the stored (msgpack) values reach the 1 MB budget box pages use (`maxBoxFetchBytes`; the JSON is larger), whichever is first; `next-token` is present iff more remain. A round is never split across pages. The top-level `round` is the effective `max-round`: on a descending page resumed from `next`, the token's round. Responses are JSON only, like the other paginated endpoints (`/v2/accounts/{address}/assets`).
+A page ends at `limit` versions, or when the stored (msgpack) values reach the 1 MB budget box pages use (`maxBoxFetchBytes`; the JSON is larger), whichever is first; with `include=keys` the budget counts each version's value and the value at the round before, both of which are read, so an `include=values,keys` page holds about half as many versions; `next-token` is present iff more remain. A round is never split across pages. The top-level `round` is the effective `max-round`: on a descending page resumed from `next`, the token's round. Responses are JSON only, like the other paginated endpoints (`/v2/accounts/{address}/assets`).
 
 ## Response shapes
 
@@ -114,6 +114,21 @@ Account (`/v2/accounts/ABC.../versions?include=values`): each entry lists only w
 
 Without `include=values` the same entries carry ids and `deleted` only (`"base": {"deleted": false}` says the base record changed). Lists that didn't change are omitted. Reconstructing the account at any R in [`min-round`, `max-round`]: fetch `?round=min-round`, apply every entry with `min-round < round ≤ R`, replacing sub-objects by id.
 
+### Changed keys
+
+Without values an app version is only `{round, timestamp, deleted}`, and with them it is the whole `Application`, programs included, every version: a 64-key global state is resent in full for a one-key write. `include=keys` adds, on every app params and local state version, the names of the state keys that changed (`changed-keys`, base64, sorted by their bytes), without their values. A client that wants the new values fetches `?round=R` for the versions it cares about, or adds `values`.
+
+```json
+{ "round": 131, "timestamp": 1700000170, "deleted": false, "changed-keys": ["Y291bnQ=", "b3duZXI="] }
+```
+
+- A key changed if it was added, removed, or its value differs (type or value) between the state at `round − 1` and the new one. It is the **net** change of the round: a key set and deleted again within the round isn't listed, nor is one set back to its old value.
+- Creation or opt-in (no previous state, or a deletion before): every key of the new state, so possibly `[]`. Round 0 has no `round − 1`: genesis states list all their keys.
+- Deletion: no `changed-keys` (`deleted: true` says the state is gone).
+- An app version with `"changed-keys": []` changed something other than global state: programs, schemas, extra pages, `Version`, `SizeSponsor` or box access flags.
+- A local state cleared and opted into again in the same round lists the keys that differ between the old and new states.
+- With `exclude=created-apps-params`, created apps version from the creator index alone, with no params, so they have no `changed-keys`.
+
 ## Implementation
 
 1. **Store** (`ledger/timetravel/store.go`): `Store.Versions(obj, lo, hi, desc, fn)`. N = 1: one iterator over `c obj [0, hi]`, positioned at the record before `lo` (ascending) or walking back past `lo` (descending) so the first in-range record can be compared with its predecessor; emits only value changes. N > 1: the rounds with a `c` or `p` record are the candidates, each compared with the value just before it (two `get`s each; N > 1 is not the recommended setting). `Store.Objects(prefix, fn)` lists every object that ever had a record under a prefix, deleted ones included (the merge loop of `Scan`, now shared). `TestStoreModel` checks both against the in-memory model at N = 1, 4, 4 incremental and 7, with no-op writes in the history.
@@ -131,11 +146,14 @@ Without `include=values` the same entries carry ids and `deleted` only (`"base":
    | D. re-key boxes round-major | good for this endpoint | 0 | breaks one-seek `?round=` box reads and listings |
    | E. values in the index | saves a ~5 µs seek per entry | +~1.8 GB | not worth it |
 
+6. **Changed keys** (`include=keys`): `readVersion` reads each app params or local state version's value and, at rounds after 0, the value at the round before (`histView.Get`, which covers the rounds in memory and in the store), decodes both and lists the keys whose `TealValue` differs or that only one has (`changedKeys`). Both values count toward the byte budget. No value is cached between versions: a warm `Get` costs ~5 µs. `TestTimeTravelVersions` checks the keys against the per-round lookups and against a hand-written list per round: creation, set, overwrite, delete, a uint becoming bytes, a key set and deleted within a round, a program update alone, opt-in with and without keys, a clear and opt-in in one round, close-out and app deletion, and a genesis app and local state. `tools/ttlab demo` checks `include=keys` against the live app.
+
 Not done: the `tools/ttlab versions` measurements (hot app params, accounts with 1k and 10k holdings, warm and cold), and the box index's size and page latency on fnet after `ttimport -index-boxes`.
 
 ## Later, if needed
 
-- `include=state-delta` on app and local-state versions: global/local state changes against the previous version in the `EvalDelta` format clients already decode (action 1/2/3), with a flag when anything else (programs, schema) changed. The server already holds both adjacent values. Plus `key=` to keep only versions where a given global key changed.
+- `include=keys` covers which keys an app or local state version changed (see [Changed keys](#changed-keys)); their new values are one `?round=R` away, so a `state-delta` with values and delete markers isn't planned.
+- `key=` to keep only the versions where a given key changed: it needs the same diff as `include=keys`, so it can be added cheaply.
 - A per-account change index, if composite pages for accounts with very many resources prove too slow: the box index's pattern (`L` addr round → changed constituent keys, written blind in `AddRound`, entries checked against the records on read, rebuilt by one pass over the store, a meta record saying from which round it is complete). Costs an extra record per touched account per round.
 
 ## Non-goals

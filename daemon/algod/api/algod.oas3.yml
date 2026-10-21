@@ -212,6 +212,23 @@
         },
         "style": "form"
       },
+      "versions-include-state": {
+        "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
+        "explode": false,
+        "in": "query",
+        "name": "include",
+        "schema": {
+          "items": {
+            "enum": [
+              "values",
+              "keys"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "style": "form"
+      },
       "versions-order": {
         "description": "List versions oldest first (`asc`, the default) or newest first (`desc`).",
         "in": "query",
@@ -1800,6 +1817,15 @@
           "app-local-state": {
             "$ref": "#/components/schemas/ApplicationLocalState"
           },
+          "changed-keys": {
+            "description": "With `include=keys`, the local state keys added, removed or changed in this round, sorted. On an opt-in after no local state, every key of the new state; on a clear and opt-in in the same round, the keys that differ. Absent on deletions.",
+            "items": {
+              "format": "byte",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+              "type": "string"
+            },
+            "type": "array"
+          },
           "deleted": {
             "description": "Whether the version is the deletion of the local state (close out or clear).",
             "type": "boolean"
@@ -1931,6 +1957,15 @@
         "properties": {
           "application": {
             "$ref": "#/components/schemas/Application"
+          },
+          "changed-keys": {
+            "description": "With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions.",
+            "items": {
+              "format": "byte",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+              "type": "string"
+            },
+            "type": "array"
           },
           "deleted": {
             "description": "Whether the version is the deletion of the application.",
@@ -2394,6 +2429,15 @@
           },
           "application": {
             "$ref": "#/components/schemas/Application"
+          },
+          "changed-keys": {
+            "description": "With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions and with `exclude=created-apps-params`.",
+            "items": {
+              "format": "byte",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+              "type": "string"
+            },
+            "type": "array"
           },
           "deleted": {
             "description": "Whether the version is the deletion of the application.",
@@ -4199,7 +4243,7 @@
     },
     "/v2/accounts/{address}/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
         "operationId": "AccountApplicationVersions",
         "parameters": [
           {
@@ -4281,14 +4325,15 @@
             }
           },
           {
-            "description": "Include additional items in the response. Use `values` to include the new value of each changed object.",
+            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "include",
             "schema": {
               "items": {
                 "enum": [
-                  "values"
+                  "values",
+                  "keys"
                 ],
                 "type": "string"
               },
@@ -5008,7 +5053,7 @@
     },
     "/v2/accounts/{address}/versions": {
       "get": {
-        "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
         "operationId": "AccountVersions",
         "parameters": [
           {
@@ -5097,14 +5142,15 @@
             }
           },
           {
-            "description": "Include additional items in the response. Use `values` to include the new value of each changed object.",
+            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "include",
             "schema": {
               "items": {
                 "enum": [
-                  "values"
+                  "values",
+                  "keys"
                 ],
                 "type": "string"
               },
@@ -5878,7 +5924,7 @@
     },
     "/v2/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version lists the global state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
         "operationId": "ApplicationVersions",
         "parameters": [
           {
@@ -5948,14 +5994,15 @@
             }
           },
           {
-            "description": "Include additional items in the response. Use `values` to include the new value of each changed object.",
+            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "include",
             "schema": {
               "items": {
                 "enum": [
-                  "values"
+                  "values",
+                  "keys"
                 ],
                 "type": "string"
               },

@@ -18,6 +18,7 @@ package client
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
@@ -31,6 +32,9 @@ type VersionsParams struct {
 	Limit              uint64        // 0: the node's default
 	Next               string        // the previous page's next-token
 	Values             bool          // include the new values
+	// Keys lists the state keys each app params or local state version
+	// changed; only the app state endpoints take it
+	Keys bool
 }
 
 type versionsQuery struct {
@@ -49,9 +53,14 @@ func (p VersionsParams) query() versionsQuery {
 	if p.Desc {
 		q.Order = "desc"
 	}
+	var inc []string
 	if p.Values {
-		q.Include = "values"
+		inc = append(inc, "values")
 	}
+	if p.Keys {
+		inc = append(inc, "keys")
+	}
+	q.Include = strings.Join(inc, ",")
 	return q
 }
 
