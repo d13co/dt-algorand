@@ -527,7 +527,7 @@ func cmdVersions(e *env, args []string) error {
 func (e *env) version(o object, v ledger.Version, add func(basics.Round, int64, versionEntry) error) error {
 	switch o.kind {
 	case timetravel.KindAccount, timetravel.KindHolding, timetravel.KindLocal:
-		mv, err := v2.AccountVersionToModel(o.addr, v)
+		mv, err := v2.AccountVersionToModel(o.addr, v, false)
 		if err != nil {
 			return err
 		}
@@ -571,7 +571,7 @@ func (e *env) version(o object, v ledger.Version, add func(basics.Round, int64, 
 		}
 		return add(v.Round, v.Timestamp, versionEntry{o, mv.Deleted, ptrAny(mv.Asset)})
 	case timetravel.KindAppParams:
-		mv, err := v2.ApplicationVersionToModel(v)
+		mv, err := v2.ApplicationVersionToModel(v, false)
 		if err != nil || e.json {
 			return errOr(err, e.emit, mv)
 		}
