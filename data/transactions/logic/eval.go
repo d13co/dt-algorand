@@ -1435,6 +1435,11 @@ func EvalSignature(gi int, params *EvalParams) (bool, error) {
 func eval(program []byte, cx *EvalContext) (pass bool, err error) {
 	defer func() {
 		if x := recover(); x != nil {
+			if abort, ok := x.(EvalAborted); ok {
+				// A Tracer stopped the program on purpose (eval_abort.go).
+				pass, err = false, abort
+				return
+			}
 			buf := make([]byte, 16*1024)
 			stlen := runtime.Stack(buf, false)
 			pass = false
