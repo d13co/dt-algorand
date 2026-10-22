@@ -2,7 +2,7 @@
 
 `ttimport` builds a non-archival [time travel](../../ledger/timetravel/README.md) node (`EnableTimeTravel: true`, `Archival: false`) from an archival node's block database instead of the network. It writes the account DB and the history of every round into a new data directory, then copies over the last blocks algod needs. algod started on that directory continues from the network.
 
-A time travel node must be built from genesis, since the history comes from every round's state delta and fast catchup is refused. Syncing from genesis over the network takes weeks on mainnet. On fnet's first 40k rounds, `ttimport` replayed ~8,700 rounds/s, ~35× a network sync and 1.6× applying the blocks one by one with `AddBlock`, and produced a byte-identical history.
+A time travel node's history comes from every round's state delta since genesis: a node either builds it, or installs another node's with [ttsnap](../ttsnap/README.md) and catches up from a catchpoint. Syncing from genesis over the network takes weeks on mainnet. On fnet's first 40k rounds, `ttimport` replayed ~8,700 rounds/s, ~35× a network sync and 1.6× applying the blocks one by one with `AddBlock`, and produced a byte-identical history.
 
 ## How it works
 
