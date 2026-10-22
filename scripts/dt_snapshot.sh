@@ -18,10 +18,11 @@
 # Usage: dt_snapshot.sh
 # Env: OUT and KEY (required), ROOT (default /mnt/dtalgod-mainnet-hot-root), TTSNAP (default
 # ttsnap on PATH, else /usr/bin/ttsnap), FULL, KEEP (default 2), GC_KEEP (default 3),
-# UPLOAD (a shell command run after a successful publish, with OUT exported)
+# UPLOAD (a shell command run after a successful publish, with OUT exported), LEDGER (the genesis
+# dir's path inside @live, when @live holds a whole data dir; found by itself if there is just one)
 set -euo pipefail
 
-case ${1:-} in -h | --help) sed -n '2,24s/^# \{0,1\}//p' "$0"; exit 2 ;; esac
+case ${1:-} in -h | --help) sed -n '2,23s/^# \{0,1\}//p' "$0"; exit 2 ;; esac
 
 root=${ROOT:-/mnt/dtalgod-mainnet-hot-root}
 root=${root%/}
@@ -40,13 +41,22 @@ command -v btrfs >/dev/null || die "btrfs not found"
 [[ -x $ttsnap ]] || die "ttsnap not found (set TTSNAP)"
 btrfs subvolume show "$root/@live" >/dev/null 2>&1 || die "$root/@live is not a btrfs subvolume: lay the ledger out with scripts/btrfs_hot_ledger.sh"
 [[ -d $root/@snap ]] || die "$root/@snap does not exist"
-[[ -d $root/@live/ledger.timetravel ]] || die "$root/@live holds no time travel store: is TimeTravelDBDir set elsewhere? Keep the store in the genesis dir so one snapshot covers it"
+# @live is the genesis dir, or a data dir holding it (an image laid out on the data dir)
+sub=${LEDGER:-}
+sub=${sub%/}
+if [[ -z $sub && ! -d $root/@live/ledger.timetravel ]]; then
+  mapfile -t found < <(find "$root/@live" -mindepth 2 -maxdepth 2 -type d -name ledger.timetravel -printf '%h\n')
+  ((${#found[@]} <= 1)) || die "$root/@live holds several genesis dirs (${found[*]}); set LEDGER to one"
+  ((${#found[@]} == 0)) || sub=${found[0]#"$root/@live/"}
+fi
+[[ -d $root/@live/${sub:+$sub/}ledger.timetravel ]] || die "$root/@live${sub:+/$sub} holds no time travel store: is TimeTravelDBDir set elsewhere? Keep the store in the genesis dir so one snapshot covers it"
 ((keep >= 1)) || die "KEEP must be at least 1"
 
 exec 9>"$root/@snap/.lock"
 flock -n 9 || die "another dt_snapshot.sh is running"
 
 snap=$root/@snap/$(date -u +%Y%m%dT%H%M%SZ)
+ledger=$snap${sub:+/$sub}
 log "snapshotting $root/@live to $snap"
 btrfs subvolume snapshot "$root/@live" "$snap" >/dev/null
 
@@ -54,12 +64,12 @@ btrfs subvolume snapshot "$root/@live" "$snap" >/dev/null
 trap 'echo "error: failed; the snapshot is kept at $snap" >&2' ERR
 
 log "preparing $snap"
-"$ttsnap" prepare ${full:+-full} "$snap"
+"$ttsnap" prepare ${full:+-full} "$ledger"
 log "publishing the history to $out"
-"$ttsnap" publish -o "$out" -key "$key" "$snap"
+"$ttsnap" publish -o "$out" -key "$key" "$ledger"
 if [[ -n $full ]]; then
   log "publishing the whole ledger to $out"
-  "$ttsnap" publish -o "$out" -key "$key" -full "$snap"
+  "$ttsnap" publish -o "$out" -key "$key" -full "$ledger"
 fi
 btrfs property set -ts "$snap" ro true
 trap - ERR
