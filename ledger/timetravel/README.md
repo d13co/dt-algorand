@@ -67,7 +67,7 @@ The budget is time on the node's CPU. As a rough guide (one core of a desktop CP
 
 A group stops when the client goes away or the request reaches the node's time limit (`RestWriteTimeoutSeconds`, default 120, less a second), so raising the limit beyond what runs in that time also needs a longer write timeout.
 
-Execution traces (`exec-trace-config`, only with `EnableDeveloperAPI`) record every opcode run, at about 112 bytes each before any stack, scratch or state data, and stack tracing copies every byte value pushed. At 320,000,000 that is tens of GB for one group, far more than a node has memory for, and even at 320,000 a stack trace of 4 KB values can reach a GB. Don't combine a raised limit with `EnableDeveloperAPI` on a node others can reach.
+Execution traces (`exec-trace-config`, only with `EnableDeveloperAPI`) record every opcode run, at about 112 bytes each before any stack, scratch or state data, and stack tracing copies every byte value pushed. At 320,000,000 that is tens of GB for one group, and even at 320,000 a stack trace of 4 KB values can reach a GB. `MaxAPISimulateTraceBytes` (node config, default 256 MiB, 0 for no limit) caps the trace one request keeps, across all of its groups and rounds: the node counts an estimate of each recorded opcode and its values, and stops the request with a 400 `execution trace too large` once it goes over. Converting and encoding the response takes a few times the counted bytes, so size it to the memory you can give each of `SimulateParallelism` requests at once.
 
 ### Several transaction groups in one simulation
 
@@ -135,7 +135,7 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 `GET /v2/transactions/simulate/limits` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients what this node's simulate accepts, with each value as the handlers clamp it:
 
 ```json
-{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-travel": true, "developer-api": false }
+{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "max-exec-trace-bytes": 268435456, "time-limit-seconds": 119, "time-travel": true, "developer-api": false }
 ```
 
 | field | node config | meaning |
@@ -144,10 +144,12 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 | `max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
 | `max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
 | `resource-limit-multiplier` | `SimulateResourceLimitMultiplier` | factor on the unnamed-resource limits; 1: the consensus limits; a config of 0 counts as 1 |
+| `max-exec-trace-bytes` | `MaxAPISimulateTraceBytes` | most bytes of execution trace one request may keep, across its groups and rounds, as the node estimates them; over it the request fails with 400; 0: no limit |
+| `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest a request may run: the write timeout less a second (none below 2 s); 0: no limit |
 | `time-travel` | `EnableTimeTravel` | `round` and `rounds` reach back to genesis, not only `MaxAcctLookback` rounds |
 | `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a disabled `exec-trace-config` is accepted either way |
 
-The response holds the values after these rules, so `max-rounds` is the only field that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
+The response holds the values after these rules, so `max-rounds`, `max-exec-trace-bytes` and `time-limit-seconds` are the only fields that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 
 Two limits are not in the response, because they don't come from the node's config:
 

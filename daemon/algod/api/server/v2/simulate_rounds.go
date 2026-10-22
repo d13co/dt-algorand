@@ -80,7 +80,9 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Node.Simulate sets the same limits for every round; set them here so the check covers them.
-	base := convertSimulationRequest(request).WithNodeLimits(cfg)
+	// The rounds share one trace budget.
+	base := convertSimulationRequest(request).WithNodeLimits(cfg).
+		WithTraceBudget(simulation.NewTraceBudget(cfg.MaxAPISimulateTraceBytes))
 	if err := base.Validate(cfg.EnableDeveloperAPI); err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -161,6 +163,13 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		// and try to write it.
 		v2.Log.Debugf("simulate: rounds request canceled: %v", ctx.Request().Context().Err())
 		return nil
+	}
+
+	for _, err := range errs {
+		if errors.Is(err, simulation.ErrTraceTooLarge) {
+			// The budget is shared: the request as a whole asked for too much.
+			return badRequest(ctx, err, err.Error(), v2.Log)
+		}
 	}
 
 	// At the time limit, the rounds that finished keep their results.

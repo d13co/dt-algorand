@@ -28,6 +28,7 @@ import (
 	"github.com/algorand/go-algorand/config"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -158,6 +159,44 @@ func TestSimulateBusy(t *testing.T) {
 			// Every slot the request took was given back.
 			limiter.Release(1)
 			require.True(t, limiter.TryAcquire(2))
+		})
+	}
+}
+
+// TestSimulateTraceTooLarge checks that a request whose execution trace outgrows
+// MaxAPISimulateTraceBytes fails with 400, with or without rounds.
+func TestSimulateTraceTooLarge(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	// the subtests run in parallel, after this function returns
+	t.Cleanup(env.Close)
+	sender := env.Accounts[0]
+	env.TransferAlgos(sender.Addr, sender.Addr, 0)
+	latest := env.Ledger.Latest()
+	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
+	single.ExecTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true}
+	rounds := single
+	rounds.Rounds = []basics.Round{latest - 1, latest}
+
+	for name, request := range map[string]v2.PreEncodedSimulateRequest{"single round": single, "rounds": rounds} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			for _, limit := range []uint64{1_000, 0} {
+				n := newRoundsNode(t, env, func(c *config.Local) {
+					c.EnableDeveloperAPI = true
+					c.MaxAPISimulateTraceBytes = limit
+				})
+				rec := postSimulate(t, newRoundsRouter(t, n), encodeSimulateRequest(t, request, "json"), "json")
+				if limit == 0 {
+					// no limit
+					require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+					continue
+				}
+				require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+				require.Contains(t, rec.Body.String(), "execution trace too large: over 1000 bytes")
+			}
 		})
 	}
 }
