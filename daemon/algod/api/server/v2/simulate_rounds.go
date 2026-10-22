@@ -121,7 +121,8 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	}
 
 	// The workers use only the request's context and values, never the echo.Context.
-	reqCtx := ctx.Request().Context()
+	reqCtx, cancel := requestContext(ctx, cfg)
+	defer cancel()
 	limiter := v2.simulateRoundsLimiter()
 	responses := make([]*PreEncodedSimulateResponse, len(distinct))
 	errs := make([]error, len(distinct))
@@ -143,18 +144,22 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	// Every worker has stopped writing to responses and errs once Wait returns.
 	wg.Wait()
 
-	if err := reqCtx.Err(); err != nil {
-		// The client is gone: there is no one to write the response to. Returning the error would
-		// make echo log a 500 and try to write it.
-		v2.Log.Debugf("simulate: rounds request canceled: %v", err)
+	if clientGone(ctx) {
+		// There is no one to write the response to. Returning the error would make echo log a 500
+		// and try to write it.
+		v2.Log.Debugf("simulate: rounds request canceled: %v", ctx.Request().Context().Err())
 		return nil
 	}
 
+	// At the time limit, the rounds that finished keep their results.
 	roundResults := make([]PreEncodedSimulateRoundResult, len(request.Rounds))
 	var first *PreEncodedSimulateResponse
 	for i, j := range index {
 		if errs[j] != nil {
 			message := errs[j].Error()
+			if errors.Is(errs[j], context.DeadlineExceeded) {
+				message = "not simulated: " + errTimeLimit
+			}
 			roundResults[i] = PreEncodedSimulateRoundResult{LastRound: distinct[j], Error: &message}
 			continue
 		}
@@ -194,7 +199,7 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 // round's error.
 func (v2 *Handlers) simulateRound(ctx context.Context, limiter *semaphore.Weighted, base simulation.Request, round basics.Round) (response *PreEncodedSimulateResponse, err error) {
 	if limiter.Acquire(ctx, 1) != nil {
-		return nil, errors.New("request canceled")
+		return nil, context.Cause(ctx)
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -205,7 +210,7 @@ func (v2 *Handlers) simulateRound(ctx context.Context, limiter *semaphore.Weight
 	}()
 
 	// A copy per round: base, and the slices it shares with the other rounds, are only read.
-	r := base
+	r := base.WithContext(ctx)
 	r.Round = round
 	result, err := v2.Node.Simulate(r)
 	if err != nil {

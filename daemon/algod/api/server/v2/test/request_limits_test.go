@@ -1,0 +1,115 @@
+// Copyright (C) 2019-2026 Algorand Foundation Ltd.
+// This file is part of go-algorand
+//
+// go-algorand is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// go-algorand is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with go-algorand.  If not, see <https://www.gnu.org/licenses/>.
+
+package test
+
+import (
+	"context"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/semaphore"
+
+	"github.com/algorand/go-algorand/config"
+	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
+	"github.com/algorand/go-algorand/data/basics"
+	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
+	"github.com/algorand/go-algorand/logging"
+	"github.com/algorand/go-algorand/test/partitiontest"
+)
+
+// TestSimulateTimeLimit checks that a simulate request stops at RestWriteTimeoutSeconds, and when
+// its client goes away.
+func TestSimulateTimeLimit(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	// the subtests run in parallel, after this function returns
+	t.Cleanup(env.Close)
+	sender := env.Accounts[0]
+	for range 3 {
+		env.TransferAlgos(sender.Addr, sender.Addr, 0)
+	}
+	latest := env.Ledger.Latest()
+	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
+	rounds := single
+	rounds.Rounds = []basics.Round{latest - 2, latest - 1, latest}
+
+	oneSecond := func(cfg *config.Local) { cfg.RestWriteTimeoutSeconds = 1 }
+	newHandler := func(n *roundsNode) *v2.Handlers {
+		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateRoundsLimiter: semaphore.NewWeighted(4)}
+	}
+
+	t.Run("single round", func(t *testing.T) {
+		t.Parallel()
+		n := newRoundsNode(t, env, oneSecond)
+		n.slowAt = map[basics.Round]bool{0: true}
+		start := time.Now()
+		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), single)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, time.Since(start), time.Second)
+		require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "time limit (RestWriteTimeoutSeconds)")
+	})
+
+	t.Run("rounds", func(t *testing.T) {
+		t.Parallel()
+		n := newRoundsNode(t, env, oneSecond)
+		n.slowAt = map[basics.Round]bool{latest - 1: true}
+		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), rounds)
+		require.NoError(t, err)
+		response := decodeSimulateResponse(t, rec, "json")
+		results := *response.RoundResults
+		require.Len(t, results, 3)
+		// The rounds that finished keep their results.
+		for _, i := range []int{0, 2} {
+			require.Nil(t, results[i].Error, i)
+			require.Equal(t, rounds.Rounds[i], results[i].LastRound)
+			require.Len(t, results[i].TxnGroups, 1)
+		}
+		require.NotNil(t, results[1].Error)
+		require.Equal(t, "not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)", *results[1].Error)
+		require.Equal(t, latest-1, results[1].LastRound)
+	})
+
+	t.Run("no time limit", func(t *testing.T) {
+		t.Parallel()
+		n := newRoundsNode(t, env, func(cfg *config.Local) { cfg.RestWriteTimeoutSeconds = 0 })
+		n.delay = 1100 * time.Millisecond
+		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), single)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	})
+
+	t.Run("client gone", func(t *testing.T) {
+		t.Parallel()
+		for _, request := range []v2.PreEncodedSimulateRequest{single, rounds} {
+			n := newRoundsNode(t, env)
+			n.slowAt = map[basics.Round]bool{0: true, latest - 1: true}
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(100*time.Millisecond, cancel)
+			start := time.Now()
+			rec, err := simulateRoundsDirect(ctx, t, newHandler(n), request)
+			require.NoError(t, err)
+			require.Less(t, time.Since(start), 5*time.Second)
+			require.Zero(t, rec.Body.Len())
+			require.False(t, rec.Flushed)
+		}
+	})
+}

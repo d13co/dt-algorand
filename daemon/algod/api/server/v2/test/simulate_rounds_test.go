@@ -63,7 +63,10 @@ type roundsNode struct {
 	inFlight    atomic.Int64
 	maxInFlight atomic.Int64
 	// delay makes every simulation last at least this long, so that they overlap.
-	delay     time.Duration
+	delay time.Duration
+	// slowAt makes the simulations of these rounds (0 for a request without rounds) last until
+	// their request's context is done.
+	slowAt    map[basics.Round]bool
 	panicAt   basics.Round
 	errAt     map[basics.Round]error
 	invalidAt basics.Round
@@ -79,7 +82,16 @@ func (n *roundsNode) Simulate(request simulation.Request) (simulation.Result, er
 			break
 		}
 	}
-	time.Sleep(n.delay)
+	// A simulation stops when its request's context is done, as the simulator does.
+	ctx := request.Context()
+	if n.slowAt[request.Round] {
+		<-ctx.Done()
+	}
+	select {
+	case <-ctx.Done():
+		return simulation.Result{}, context.Cause(ctx)
+	case <-time.After(n.delay):
+	}
 
 	if n.panicAt != 0 && request.Round == n.panicAt {
 		panic(fmt.Sprintf("injected panic at round %d", request.Round))
