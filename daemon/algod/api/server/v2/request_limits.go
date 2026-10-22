@@ -51,12 +51,39 @@ func requestTimeLimit(cfg config.Local) time.Duration {
 	return limit
 }
 
+// arrivalKey is the echo.Context key RecordArrival stores the arrival time of a request under.
+const arrivalKey = "dtalgorand.arrival"
+
+// RecordArrival is a middleware that records when a request arrived, once its header was read: the
+// moment the server's write deadline starts from. A handler's time limit counts from it, so time
+// spent reading a slow request body counts too.
+func RecordArrival(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(ctx echo.Context) error {
+		ctx.Set(arrivalKey, time.Now())
+		return next(ctx)
+	}
+}
+
+// requestDeadline returns when an expensive request must stop: requestTimeLimit after it arrived
+// (RecordArrival; now if not recorded). ok is false when there is no limit.
+func requestDeadline(ctx echo.Context, cfg config.Local) (deadline time.Time, ok bool) {
+	limit := requestTimeLimit(cfg)
+	if limit <= 0 {
+		return time.Time{}, false
+	}
+	arrival, recorded := ctx.Get(arrivalKey).(time.Time)
+	if !recorded {
+		arrival = time.Now()
+	}
+	return arrival.Add(limit), true
+}
+
 // requestContext returns the context an expensive request runs under: the request's own context,
-// canceled when the client goes away, with the deadline of requestTimeLimit. A response written
+// canceled when the client goes away, with the deadline of requestDeadline. A response written
 // after RestWriteTimeoutSeconds is lost, so the work stops before.
 func requestContext(ctx echo.Context, cfg config.Local) (context.Context, context.CancelFunc) {
-	if limit := requestTimeLimit(cfg); limit > 0 {
-		return context.WithTimeout(ctx.Request().Context(), limit)
+	if deadline, ok := requestDeadline(ctx, cfg); ok {
+		return context.WithDeadline(ctx.Request().Context(), deadline)
 	}
 	return context.WithCancel(ctx.Request().Context())
 }
@@ -110,6 +137,8 @@ func EffectiveSimulateParallelism(p int) int {
 }
 
 // admitSimulate takes a slot of limiter for a new simulate request, waiting at most admissionWait.
+// The limiter is FIFO: a new request queues behind the extra workers of admitted rounds requests
+// waiting for a slot, so under load the node refuses new requests before it slows admitted ones.
 // It returns errBusy when no slot was free by then, and the cause of ctx when ctx ended first. A
 // nil limiter admits every request.
 func admitSimulate(ctx context.Context, limiter *semaphore.Weighted) error {

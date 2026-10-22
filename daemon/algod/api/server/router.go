@@ -104,6 +104,7 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 	e.HideBanner = true
 
 	e.Pre(
+		v2.RecordArrival, // first: the time limits of expensive requests count from it
 		middlewares.MakeConnectionLimiter(numConnectionsLimit),
 		middleware.RemoveTrailingSlash())
 	e.Use(

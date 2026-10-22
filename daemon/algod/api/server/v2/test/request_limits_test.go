@@ -17,6 +17,7 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -37,6 +38,7 @@ import (
 	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
+	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
@@ -93,6 +95,24 @@ func TestSimulateTimeLimit(t *testing.T) {
 		require.NotNil(t, results[1].Error)
 		require.Equal(t, "not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)", *results[1].Error)
 		require.Equal(t, latest-1, results[1].LastRound)
+	})
+
+	t.Run("counted from arrival", func(t *testing.T) {
+		t.Parallel()
+		// A request that arrived 800 ms ago, e.g. with a slow body, has 200 ms left.
+		n := newRoundsNode(t, env, oneSecond)
+		n.slowAt = map[basics.Round]bool{0: true}
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&single)))
+		rec := httptest.NewRecorder()
+		c := echo.New().NewContext(req, rec)
+		start := time.Now()
+		handle := v2.RecordArrival(func(c echo.Context) error {
+			c.Set("dtalgorand.arrival", start.Add(-800*time.Millisecond))
+			return newHandler(n).SimulateTransaction(c, model.SimulateTransactionParams{})
+		})
+		require.NoError(t, handle(c))
+		require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
+		require.Less(t, time.Since(start), 700*time.Millisecond)
 	})
 
 	t.Run("no time limit", func(t *testing.T) {

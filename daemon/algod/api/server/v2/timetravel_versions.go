@@ -23,7 +23,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -92,8 +91,8 @@ func (v2 *Handlers) versionsRange(ctx echo.Context, q versionsQuery) (versionsLe
 	r := ledger.VersionRange{Max: l.Latest(), Limit: DefaultVersions}
 	// A page stops when the client goes away or at the node's time limit.
 	r.Ctx = ctx.Request().Context()
-	if limit := requestTimeLimit(v2.Node.Config()); limit > 0 {
-		r.Deadline = time.Now().Add(limit)
+	if deadline, ok := requestDeadline(ctx, v2.Node.Config()); ok {
+		r.Deadline = deadline
 	}
 	for _, inc := range q.include {
 		switch inc {
