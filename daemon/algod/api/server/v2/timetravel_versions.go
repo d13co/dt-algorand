@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -82,13 +83,18 @@ func strs[T ~string](vals *[]T) []string {
 // versionsRange checks a versions query and returns the history and the
 // range to read. Responses report the range's Max as their round: with
 // rounds, the largest requested round left after next.
-func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.VersionRange, error) {
+func (v2 *Handlers) versionsRange(ctx echo.Context, q versionsQuery) (versionsLedger, ledger.VersionRange, error) {
 	l := v2.Node.LedgerForAPI()
 	vl, ok := l.(versionsLedger)
 	if !ok || !v2.Node.Config().EnableTimeTravel {
 		return nil, ledger.VersionRange{}, errors.New("versions require EnableTimeTravel")
 	}
 	r := ledger.VersionRange{Max: l.Latest(), Limit: DefaultVersions}
+	// A page stops when the client goes away or at the node's time limit.
+	r.Ctx = ctx.Request().Context()
+	if limit := requestTimeLimit(v2.Node.Config()); limit > 0 {
+		r.Deadline = time.Now().Add(limit)
+	}
 	for _, inc := range q.include {
 		switch inc {
 		case "values":
@@ -193,6 +199,9 @@ func nextToken(page ledger.VersionPage) *string {
 }
 
 func (v2 *Handlers) versionsError(ctx echo.Context, err error) error {
+	if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
+		return answerErr
+	}
 	if errors.Is(err, ledger.ErrTooManyVersionObjects) {
 		return badRequest(ctx, err, err.Error()+": use exclude or the per-resource versions endpoints", v2.Log)
 	}
@@ -209,7 +218,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -224,7 +233,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 // AccountAssetVersions lists the versions of an account's asset holding.
 // (GET /v2/accounts/{address}/assets/{asset-id}/versions)
 func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Address, assetID basics.AssetIndex, params model.AccountAssetVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -238,7 +247,7 @@ func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Addres
 // AccountApplicationVersions lists the versions of an account's application local state.
 // (GET /v2/accounts/{address}/applications/{application-id}/versions)
 func (v2 *Handlers) AccountApplicationVersions(ctx echo.Context, address basics.Address, applicationID basics.AppIndex, params model.AccountApplicationVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -413,7 +422,7 @@ func BoxVersionToModel(v ledger.Version, values bool) (model.BoxVersion, error) 
 // AssetVersions lists the versions of an asset's params.
 // (GET /v2/assets/{asset-id}/versions)
 func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, params model.AssetVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -435,7 +444,7 @@ func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, p
 // ApplicationVersions lists the versions of an application's params.
 // (GET /v2/applications/{application-id}/versions)
 func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -465,7 +474,7 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -500,7 +509,7 @@ func BoxesVersionToModel(v ledger.Version, values bool) model.BoxesVersion {
 // ApplicationBoxesVersions lists the changes of an application's boxes.
 // (GET /v2/applications/{application-id}/boxes/versions)
 func (v2 *Handlers) ApplicationBoxesVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationBoxesVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}

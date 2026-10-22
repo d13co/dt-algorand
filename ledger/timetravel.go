@@ -939,20 +939,57 @@ func (p pastLedger) OnlineCirculation(rnd, voteRnd basics.Round) (basics.MicroAl
 // delta other than its block being gone.
 var ErrDeltaReevaluation = errors.New("re-evaluating the round's block failed")
 
+// ErrReevalBusy is returned by GetStateDeltaForRoundContext when every slot
+// for re-evaluating old rounds stayed in use for ReevalAdmissionWait.
+var ErrReevalBusy = errors.New("every slot for re-evaluating old rounds is in use")
+
+// ReevalAdmissionWait is how long GetStateDeltaForRoundContext waits for a
+// free re-evaluation slot.
+const ReevalAdmissionWait = 250 * time.Millisecond
+
+// GetStateDeltaForRoundContext is GetStateDeltaForRound for a request: a
+// round re-evaluated from the history waits at most ReevalAdmissionWait for a
+// slot (ErrReevalBusy), and stops when ctx is done.
+func (l *Ledger) GetStateDeltaForRoundContext(ctx context.Context, rnd basics.Round) (ledgercore.StateDelta, error) {
+	l.trackerMu.RLock()
+	sd, err := l.accts.lookupStateDelta(rnd)
+	l.trackerMu.RUnlock()
+	if err != nil && rnd > 0 && l.historyAt(rnd) != nil {
+		return l.reevalDelta(ctx, rnd, ReevalAdmissionWait)
+	}
+	return sd, err
+}
+
 // reevalDelta rebuilds the state delta of round rnd by evaluating its block
 // against the history at rnd-1 the way AddBlock did (no validation: the block
 // is certified), then checks the result against the round's stored changes.
 // Where the history did not record the online stake (online_stake opcode),
 // the evaluation uses an upper bound and can diverge; the check turns that
 // into an error.
-func (l *Ledger) reevalDelta(rnd basics.Round) (ledgercore.StateDelta, error) {
+//
+// It runs in one of the reeval slots. With a positive wait, it returns
+// ErrReevalBusy when no slot is free within wait; otherwise it waits as long
+// as ctx allows. ctx also stops the evaluation between transaction groups.
+func (l *Ledger) reevalDelta(ctx context.Context, rnd basics.Round, wait time.Duration) (ledgercore.StateDelta, error) {
 	blk, err := l.Block(rnd)
 	if err != nil {
 		return ledgercore.StateDelta{}, fmt.Errorf("round %d is older than the in-memory deltas and its block is not stored: %w", rnd, err)
 	}
-	l.history.reeval <- struct{}{}
+	var timeout <-chan time.Time
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case l.history.reeval <- struct{}{}:
+	case <-ctx.Done():
+		return ledgercore.StateDelta{}, context.Cause(ctx)
+	case <-timeout:
+		return ledgercore.StateDelta{}, ErrReevalBusy
+	}
 	defer func() { <-l.history.reeval }()
-	sd, err := eval.Eval(context.Background(), pastLedger{l, rnd - 1}, blk, false, nil, nil, nil)
+	sd, err := eval.Eval(ctx, pastLedger{l, rnd - 1}, blk, false, nil, nil, nil)
 	if err != nil {
 		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
 	}

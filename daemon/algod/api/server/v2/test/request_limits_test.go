@@ -18,16 +18,22 @@ package test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/algorand/go-algorand/config"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
+	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
@@ -199,4 +205,63 @@ func TestSimulateTraceTooLarge(t *testing.T) {
 			}
 		})
 	}
+}
+
+// deltaLedger serves state deltas the way a time travel ledger rebuilding an old round does:
+// busy refuses every rebuild, and slow waits until the request's context is done.
+type deltaLedger struct {
+	v2.LedgerForAPI
+	busy, slow bool
+}
+
+func (l deltaLedger) GetStateDeltaForRoundContext(ctx context.Context, rnd basics.Round) (ledgercore.StateDelta, error) {
+	switch {
+	case l.busy:
+		return ledgercore.StateDelta{}, ledger.ErrReevalBusy
+	case l.slow:
+		<-ctx.Done()
+		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: %w", ledger.ErrDeltaReevaluation, rnd, context.Cause(ctx))
+	}
+	return l.LedgerForAPI.GetStateDeltaForRound(rnd)
+}
+
+// TestStateDeltaLimits checks that GET /v2/deltas/{round} answers 503 with Retry-After while every
+// rebuild slot is busy, 504 at the time limit, and nothing once the client is gone.
+func TestStateDeltaLimits(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	defer env.Close()
+	env.TransferAlgos(env.Accounts[0].Addr, env.Accounts[0].Addr, 0)
+	round := env.Ledger.Latest()
+
+	get := func(l deltaLedger, ctx context.Context, configure func(*config.Local)) *httptest.ResponseRecorder {
+		cfg := config.GetDefaultLocal()
+		if configure != nil {
+			configure(&cfg)
+		}
+		n := makeMockNodeWithConfig(l, t.Name(), nil, cannedStatusReportGolden, false, cfg)
+		handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{})}
+		req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		require.NoError(t, handler.GetLedgerStateDelta(echo.New().NewContext(req, rec), round, model.GetLedgerStateDeltaParams{}))
+		return rec
+	}
+
+	rec := get(deltaLedger{LedgerForAPI: env.Ledger}, context.Background(), nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = get(deltaLedger{LedgerForAPI: env.Ledger, busy: true}, context.Background(), nil)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Equal(t, "1", rec.Header().Get("Retry-After"))
+
+	rec = get(deltaLedger{LedgerForAPI: env.Ledger, slow: true}, context.Background(), func(c *config.Local) { c.RestWriteTimeoutSeconds = 1 })
+	require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	rec = get(deltaLedger{LedgerForAPI: env.Ledger, slow: true}, ctx, nil)
+	require.Zero(t, rec.Body.Len())
+	require.False(t, rec.Flushed)
 }

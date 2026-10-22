@@ -93,6 +93,7 @@ Every simulate request, with or without `rounds`, is bounded in time and stops w
 - **Client gone.** When the client disconnects (or a load balancer closes the connection), the simulation stops and no response is written.
 - Both stop the simulation between groups, between rounds, and inside a running program every 1024 opcodes, so a large extra opcode budget can't keep the node busy after either.
 - **Node-wide concurrency.** `SimulateParallelism` (default 0 = GOMAXPROCS) is the most simulations that run at once across the node: one per request without `rounds`, one per round being simulated. A request that can't get a slot within 250 ms gets a 503 with `Retry-After: 1`, so a load balancer can send it to another node. A `rounds` request keeps its first slot until it ends, and its other rounds wait for slots within the time limit.
+- **Time travel reads.** The versions endpoints stop at the same time limit (504) and when the client goes away. A `/v2/deltas/{round}` older than the in-memory deltas is rebuilt by re-evaluating its block in one of two node-wide slots: it waits at most 250 ms for one, then gets a 503 with `Retry-After: 1`, and it stops at the time limit or when the client goes away.
 
 #### Validity window modes
 

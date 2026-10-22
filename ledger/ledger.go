@@ -556,7 +556,7 @@ func (l *Ledger) GetStateDeltaForRound(rnd basics.Round) (ledgercore.StateDelta,
 	sd, err := l.accts.lookupStateDelta(rnd)
 	l.trackerMu.RUnlock()
 	if err != nil && rnd > 0 && l.historyAt(rnd) != nil {
-		return l.reevalDelta(rnd)
+		return l.reevalDelta(context.Background(), rnd, 0)
 	}
 	return sd, err
 }

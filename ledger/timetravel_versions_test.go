@@ -17,6 +17,7 @@
 package ledger
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"maps"
@@ -670,6 +671,21 @@ func TestTimeTravelVersions(t *testing.T) {
 						require.False(t, p.More)
 						require.Equal(t, want, p.Versions, "%s %+v", c.name, inc)
 
+						// a page, by range or by rounds, stops when its
+						// context is done or past its deadline
+						canceled, cancel := context.WithCancel(context.Background())
+						cancel()
+						for _, rounds := range [][]basics.Round{nil, {latest}} {
+							r := all
+							r.Rounds = rounds
+							r.Ctx = canceled
+							_, err = c.lookup(r)
+							require.ErrorIs(t, err, context.Canceled, c.name)
+							r.Ctx, r.Deadline = nil, time.Now().Add(-time.Second)
+							_, err = c.lookup(r)
+							require.ErrorIs(t, err, context.DeadlineExceeded, c.name)
+						}
+
 						desc := slices.Clone(want)
 						slices.Reverse(desc)
 						var mid []Version // a range that cuts versions off both ends
@@ -1086,6 +1102,19 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 				p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
 				require.NoError(t, err)
 				require.Empty(t, p.Versions, "an app without boxes")
+
+				// a page, by range or by rounds, stops when its context is
+				// done or past its deadline
+				canceled, cancel := context.WithCancel(context.Background())
+				cancel()
+				for _, rounds := range [][]basics.Round{nil, {latest}} {
+					r := VersionRange{Max: latest, Limit: 10, Rounds: rounds, Ctx: canceled}
+					_, err = l.AppBoxVersions(app, r)
+					require.ErrorIs(t, err, context.Canceled)
+					r.Ctx, r.Deadline = nil, time.Now().Add(-time.Second)
+					_, err = l.AppBoxVersions(app, r)
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+				}
 				_, err = l.AppBoxVersions(app, VersionRange{Max: latest + 1, Limit: 10})
 				require.ErrorIs(t, err, errHistoryUnavailable)
 			}

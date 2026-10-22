@@ -19,11 +19,13 @@ package ledger
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/algorand/msgp/msgp"
 
@@ -66,6 +68,26 @@ type VersionRange struct {
 	// lookups (one per object per round) past it (0: no limit). A page always
 	// has at least one round.
 	MaxSeeks uint64
+	// Ctx and Deadline stop a page that takes too long: it fails with the
+	// cause of Ctx once Ctx is done (the client went away), or with
+	// context.DeadlineExceeded after Deadline. Either may be unset.
+	Ctx      context.Context
+	Deadline time.Time
+}
+
+// stopCheckInterval is how many lookups a page makes between two checks of
+// its Ctx and Deadline.
+const stopCheckInterval = 256
+
+// stopped returns why the page must stop, or nil.
+func (r *VersionRange) stopped() error {
+	if r.Ctx != nil && r.Ctx.Err() != nil {
+		return context.Cause(r.Ctx)
+	}
+	if !r.Deadline.IsZero() && time.Now().After(r.Deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // VersionPage is a page of versions, in page order.
@@ -303,6 +325,9 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 	if r.Rounds != nil {
 		return appBoxesAt(h, app, r)
 	}
+	if err := r.stopped(); err != nil {
+		return VersionPage{}, err
+	}
 	var page VersionPage
 	var cur Version // the round being read, not yet in the page
 	var curSize, size uint64
@@ -319,7 +344,14 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 	}
 	// the callback must not read the store: it runs inside the store's read
 	// lock, which Close waits for while blocking new readers
+	var stopErr error
+	changes := 0
 	err := h.BoxChanges(uint64(app), uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		if changes++; changes%stopCheckInterval == 0 {
+			if stopErr = r.stopped(); stopErr != nil {
+				return false
+			}
+		}
 		if R := basics.Round(rnd); len(cur.Boxes) == 0 || R != cur.Round {
 			if len(cur.Boxes) > 0 && !add() {
 				return false
@@ -338,6 +370,9 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 		cur.Boxes = append(cur.Boxes, bc)
 		return true
 	})
+	if stopErr != nil {
+		return VersionPage{}, stopErr
+	}
 	// a descending page that reached rounds the box index lacks ends with
 	// the changes it found, all of those since; the next page fails
 	partial := errors.Is(err, ErrNoBoxIndex) && r.Desc && (len(page.Versions) > 0 || len(cur.Boxes) > 0)
@@ -394,6 +429,11 @@ func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPa
 	rounds := map[basics.Round][]srcChange{}
 	kept := &pageHeap{desc: r.Desc}
 	for i, obj := range srcs {
+		if i%stopCheckInterval == 0 {
+			if err := r.stopped(); err != nil {
+				return VersionPage{}, err
+			}
+		}
 		err := h.Versions(obj, uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, _ []byte, ok bool) bool {
 			R := basics.Round(rnd)
 			if _, seen := rounds[R]; !seen {
@@ -423,7 +463,12 @@ func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPa
 		order = order[:r.Limit]
 	}
 	var size uint64
-	for _, R := range order {
+	for i, R := range order {
+		if i%stopCheckInterval == 0 {
+			if err := r.stopped(); err != nil {
+				return VersionPage{}, err
+			}
+		}
 		v, n, err := readVersion(h, srcs, R, rounds[R], r.Values, r.Keys)
 		if err != nil {
 			return VersionPage{}, err
@@ -639,6 +684,11 @@ func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (Version
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
 		var n uint64
 		for j, obj := range srcs {
+			if j%stopCheckInterval == 0 {
+				if err := r.stopped(); err != nil {
+					return VersionPage{}, err
+				}
+			}
 			at, val, ok, found, err := latestVersion(h, obj, R)
 			if err != nil {
 				return VersionPage{}, err
@@ -699,7 +749,12 @@ func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, 
 		}
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
 		var n uint64
-		for _, b := range boxes {
+		for j, b := range boxes {
+			if j%stopCheckInterval == 0 {
+				if err := r.stopped(); err != nil {
+					return VersionPage{}, err
+				}
+			}
 			at, val, ok, found, err := latestVersion(h, b.obj, R)
 			if err != nil {
 				return VersionPage{}, err

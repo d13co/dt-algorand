@@ -1708,7 +1708,10 @@ func (v2 *Handlers) GetLedgerStateDelta(ctx echo.Context, round basics.Round, pa
 	if err != nil {
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
-	sDelta, err := v2.Node.LedgerForAPI().GetStateDeltaForRound(round)
+	sDelta, answered, err := v2.stateDeltaForRound(ctx, round)
+	if answered {
+		return err
+	}
 	if errors.Is(err, ledger.ErrDeltaReevaluation) {
 		return internalError(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
 	}

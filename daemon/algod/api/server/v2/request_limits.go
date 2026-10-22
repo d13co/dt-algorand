@@ -30,6 +30,9 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/logging"
 )
@@ -175,4 +178,35 @@ func (v2 *Handlers) simulateOnce(ctx echo.Context, request simulation.Request) (
 		}
 	}
 	return result, false, err
+}
+
+// stateDeltaContextLedger is implemented by ledgers that can stop rebuilding an old round's state
+// delta (ledger.Ledger, with time travel).
+type stateDeltaContextLedger interface {
+	GetStateDeltaForRoundContext(ctx context.Context, rnd basics.Round) (ledgercore.StateDelta, error)
+}
+
+// stateDeltaForRound returns the state delta of round rnd. A delta rebuilt from the time travel
+// history stops when the client goes away or at the node's time limit, and is refused with 503 when
+// every rebuild slot stays busy. answered reports that it already answered the request, with err
+// the handler's return value; otherwise err is the lookup's error.
+func (v2 *Handlers) stateDeltaForRound(ctx echo.Context, rnd basics.Round) (sd ledgercore.StateDelta, answered bool, err error) {
+	l := v2.Node.LedgerForAPI()
+	cl, ok := l.(stateDeltaContextLedger)
+	if !ok {
+		sd, err = l.GetStateDeltaForRound(rnd)
+		return sd, false, err
+	}
+	reqCtx, cancel := requestContext(ctx, v2.Node.Config())
+	defer cancel()
+	sd, err = cl.GetStateDeltaForRoundContext(reqCtx, rnd)
+	if err != nil {
+		if errors.Is(err, ledger.ErrReevalBusy) {
+			return sd, true, answerBusy(ctx, err, v2.Log)
+		}
+		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
+			return sd, true, answerErr
+		}
+	}
+	return sd, false, err
 }
