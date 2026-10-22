@@ -72,6 +72,17 @@ type historyTracker struct {
 	// reeval bounds concurrent re-evaluations of old state deltas.
 	// ponytail: fixed at 2, a config knob if delta-heavy clients need more
 	reeval chan struct{}
+
+	log logging.Logger
+
+	// genesisHdr is the encoded genesis block header, which the store's
+	// round 0 must hold. Nil skips the check (tools without the genesis).
+	genesisHdr []byte
+
+	// untrusted is why the history is not served: the store differs from
+	// the chain (see verifyReplayed). Guarded by mu; set once, kept across
+	// restarts by the store's diverged mark.
+	untrusted error
 }
 
 type historyRound struct {
@@ -119,7 +130,7 @@ func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger
 	if err != nil {
 		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
 	}
-	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2)}, nil
+	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2), log: log}, nil
 }
 
 // checkAccountsNotAhead refuses an account DB ahead of the block DB, which
@@ -158,7 +169,13 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 		if basics.Round(last) < dbRound {
 			return fmt.Errorf("time travel store %s ends at round %d but the ledger is at round %d", ht.path, last, dbRound)
 		}
-		return nil
+		if err := ht.checkStart(); err != nil {
+			return err
+		}
+		if err := ht.checkHeader(l, dbRound); err != nil {
+			return err
+		}
+		return ht.loadDiverged()
 	}
 	if dbRound != 0 {
 		return fmt.Errorf("time travel store %s is empty but the ledger is at round %d: if the store was moved, remove this empty one and point TimeTravelDBDir at it; otherwise the node must sync from genesis (no fast catchup)", ht.path, dbRound)
@@ -238,6 +255,9 @@ func (ht *historyTracker) newBlock(blk bookkeeping.Block, delta ledgercore.State
 		r.idx[string(ch.Key)] = i
 	}
 	r.expired = ht.expiredStake(blk, &delta)
+	if last, ok := ht.store.Last(); ok && uint64(r.rnd) <= last {
+		ht.verifyReplayed(r)
+	}
 	ht.mu.Lock()
 	ht.pending = append(ht.pending, r)
 	ht.mu.Unlock()
@@ -341,10 +361,19 @@ func (l *Ledger) historyAt(rnd basics.Round) *histView {
 	if l.history == nil {
 		return nil
 	}
+	// an installed store (tools/ttsnap) reaches past the ledger: its later
+	// rounds are not the chain's until the ledger replays them
+	if rnd > l.Latest() {
+		return nil
+	}
 	ht := l.history
 	ht.mu.Lock()
+	untrusted := ht.untrusted
 	v := &histView{store: ht.store, pending: ht.pending}
 	ht.mu.Unlock()
+	if untrusted != nil {
+		return nil
+	}
 	// Read last after taking pending: rounds leave pending only once they are
 	// in the store, so pending holds every round in (last, latest].
 	last, ok := ht.store.Last()
@@ -956,7 +985,12 @@ func (l *Ledger) reevalDelta(rnd basics.Round) (ledgercore.StateDelta, error) {
 	if err != nil {
 		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
 	}
-	if err := verifyDelta(l.historyAt(rnd), rnd, &sd); err != nil {
+	h := l.historyAt(rnd)
+	if h == nil {
+		// marked untrusted since the caller found the round in the history
+		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: the history is not served", ErrDeltaReevaluation, rnd)
+	}
+	if err := verifyDelta(h, rnd, &sd); err != nil {
 		return ledgercore.StateDelta{}, err
 	}
 	return sd, nil

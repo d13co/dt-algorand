@@ -111,6 +111,31 @@ func TestAccountInformationAtRound(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, code, "time travel disabled")
 }
 
+// untrustedLedger has a history found to differ from the chain.
+type untrustedLedger struct{ historyLedger }
+
+func (untrustedLedger) HistoryUntrusted() error {
+	return fmt.Errorf("%w: round 5 has a different header", ledger.ErrHistoryUntrusted)
+}
+
+// TestUntrustedHistory checks that an untrusted history is not served: 503
+// for past rounds, while the latest state still is.
+func TestUntrustedHistory(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	addr := ledgertesting.RandomAddress()
+	ml := &mockLedger{accounts: map[basics.Address]basics.AccountData{addr: {MicroAlgos: basics.MicroAlgos{Raw: 1}}}, latest: 10}
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	h := v2.Handlers{Node: makeMockNodeWithConfig(untrustedLedger{historyLedger{ml}}, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
+
+	rec := serve(&h, "/v2/accounts/"+addr.String()+"?round=7")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "differs from the chain")
+	rec = serve(&h, "/v2/accounts/"+addr.String())
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
 // supplyLedger answers OnlineCirculation with stake, or err.
 type supplyLedger struct {
 	historyLedger

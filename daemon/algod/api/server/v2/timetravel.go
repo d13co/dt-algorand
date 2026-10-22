@@ -19,6 +19,8 @@ package v2
 import (
 	"errors"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
@@ -83,5 +85,25 @@ func (v2 *Handlers) ledgerFor(rnd *basics.Round) (LedgerForAPI, error) {
 	if !ok || !v2.Node.Config().EnableTimeTravel {
 		return nil, errors.New("looking up past rounds requires EnableTimeTravel")
 	}
+	if hu, ok := l.(historyTrust); ok {
+		if err := hu.HistoryUntrusted(); err != nil {
+			return nil, err
+		}
+	}
 	return roundView{LedgerForAPI: l, h: h, rnd: *rnd}, nil
+}
+
+// historyTrust is implemented by the node's ledger: a history found to differ
+// from the chain is not served.
+type historyTrust interface {
+	HistoryUntrusted() error
+}
+
+// historyError answers a request whose ledgerFor or versionsRange failed: 503
+// for an untrusted history, 400 otherwise.
+func (v2 *Handlers) historyError(ctx echo.Context, err error) error {
+	if errors.Is(err, ledger.ErrHistoryUntrusted) {
+		return serviceUnavailable(ctx, err, err.Error(), v2.Log)
+	}
+	return badRequest(ctx, err, err.Error(), v2.Log)
 }

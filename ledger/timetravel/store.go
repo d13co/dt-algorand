@@ -159,6 +159,10 @@ var commitBatch = func(b *pebble.Batch) error { return b.Commit(pebble.NoSync) }
 // ErrClosed is returned by operations on a closed store.
 var ErrClosed = errors.New("timetravel: store closed")
 
+// ErrCorrupt is wrapped by the errors of reads that find a record they can't
+// decode.
+var ErrCorrupt = errors.New("timetravel: corrupt record")
+
 // ErrReadOnly is returned by writes to a store opened with Options.ReadOnly.
 var ErrReadOnly = errors.New("timetravel: store opened read-only")
 
@@ -1110,7 +1114,7 @@ func applyRecord(base []byte, ok bool, rec []byte) ([]byte, bool, error) {
 		v, err := Apply(base, rec[1:])
 		return v, err == nil, err
 	}
-	return nil, false, fmt.Errorf("timetravel: bad record %q", rec)
+	return nil, false, fmt.Errorf("%w: bad record %q", ErrCorrupt, rec)
 }
 
 // Get returns the value of obj at round rnd; ok is false if it did not exist.
@@ -1181,6 +1185,11 @@ func (s *Store) ExpiredStake(rnd uint64) (uint64, bool, error) {
 		return 0, false, err
 	}
 	defer s.closeMu.RUnlock()
+	return s.expiredStakeLocked(rnd)
+}
+
+// expiredStakeLocked is ExpiredStake for callers that hold closeMu.
+func (s *Store) expiredStakeLocked(rnd uint64) (uint64, bool, error) {
 	v, closer, err := s.db.Get(binary.BigEndian.AppendUint64([]byte{pfxExpired}, rnd))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return 0, false, nil
@@ -1191,7 +1200,7 @@ func (s *Store) ExpiredStake(rnd uint64) (uint64, bool, error) {
 	defer closer.Close()
 	e, n := binary.Uvarint(v)
 	if n <= 0 {
-		return 0, false, fmt.Errorf("timetravel: bad expired stake record for round %d", rnd)
+		return 0, false, fmt.Errorf("%w: bad expired stake record for round %d", ErrCorrupt, rnd)
 	}
 	return e, true, nil
 }
@@ -1201,6 +1210,11 @@ func (s *Store) headerRecord(rnd uint64) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	defer s.closeMu.RUnlock()
+	return s.headerRecordLocked(rnd)
+}
+
+// headerRecordLocked is headerRecord for callers that hold closeMu.
+func (s *Store) headerRecordLocked(rnd uint64) ([]byte, bool, error) {
 	v, closer, err := s.db.Get(binary.BigEndian.AppendUint64([]byte{pfxHeader}, rnd))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return nil, false, nil
@@ -1210,7 +1224,7 @@ func (s *Store) headerRecord(rnd uint64) ([]byte, bool, error) {
 	}
 	defer closer.Close()
 	if len(v) < DigestLen {
-		return nil, false, fmt.Errorf("timetravel: short header record for round %d", rnd)
+		return nil, false, fmt.Errorf("%w: short header record for round %d", ErrCorrupt, rnd)
 	}
 	return append([]byte(nil), v...), true, nil
 }
