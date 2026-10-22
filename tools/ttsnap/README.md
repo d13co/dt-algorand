@@ -65,6 +65,8 @@ The commands it runs:
 - `ttsnap gc -o <out> -keep N` keeps the newest N snapshots of each kind and deletes the blobs no manifest lists.
 - `ttsnap info [-full] <genesis dir>` prints what a genesis directory holds.
 
+The long commands (`prepare`, `publish`, `fetch`, `verify`) report progress on stderr: what they are doing and, while they copy, download or check, how far they are every 10 seconds (with the rate and about how long is left where they can tell). Results stay on stdout.
+
 ## Snapshot tree
 
 ```

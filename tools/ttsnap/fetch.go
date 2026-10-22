@@ -79,7 +79,7 @@ type fetchOpts struct {
 
 func cmdFetch(args []string) error {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
-	o := fetchOpts{progressLog: os.Stdout}
+	o := fetchOpts{progressLog: os.Stderr}
 	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree")
 	fs.StringVar(&o.dataDir, "d", "", "data directory of the new node: genesis.json, and config.json with EnableTimeTravel")
 	fs.StringVar(&o.manifest, "manifest", "", "path of a manifest in the tree to install instead of the latest, e.g. snapshots/mainnet-v1.0/history-123.json")
@@ -437,24 +437,15 @@ func checkSpace(targets []target) error {
 
 // download fetches every target that isn't complete yet, o.parallel at once.
 func (o fetchOpts) download(ctx context.Context, m *Manifest, targets []target) error {
-	var total, done atomic.Int64
+	var total int64
 	for _, t := range targets {
-		total.Add(t.Size)
+		total += t.Size
 	}
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		tick := time.NewTicker(10 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-tick.C:
-				fmt.Fprintf(o.progressLog, "downloaded %d of %d MiB\n", done.Load()>>20, total.Load()>>20)
-			}
-		}
-	}()
+	// the workers and the progress reports write at once
+	o.progressLog = &syncWriter{w: o.progressLog}
+	fmt.Fprintf(o.progressLog, "downloading %d files, %s, of rounds 0..%d\n", len(targets), size(total), m.History.Last)
+	prog := startProgress(o.progressLog, "downloaded", total, nil)
+	defer prog.Stop()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	work := make(chan target)
@@ -470,7 +461,7 @@ func (o fetchOpts) download(ctx context.Context, m *Manifest, targets []target) 
 					if try > 0 {
 						time.Sleep(time.Duration(try) * 2 * time.Second)
 					}
-					if err = o.downloadFile(ctx, t, &done); err == nil || ctx.Err() != nil {
+					if err = o.downloadFile(ctx, t, prog); err == nil || ctx.Err() != nil {
 						break
 					}
 					fmt.Fprintf(o.progressLog, "%s: %v; retrying\n", t.Path, err)
@@ -491,13 +482,19 @@ func (o fetchOpts) download(ctx context.Context, m *Manifest, targets []target) 
 	close(work)
 	wg.Wait()
 	close(errs)
-	return <-errs
+	if err := <-errs; err != nil {
+		return err
+	}
+	prog.Stop()
+	fmt.Fprintf(o.progressLog, "downloaded %s in %s, %s of it transferred by this run\n", size(total), roundDuration(time.Since(prog.start)), size(prog.moved.Load()))
+	return nil
 }
 
 // downloadFile brings t.stage to t's content: it resumes a partial file with a
 // range request and checks the SHA-256 of the whole file. A file that fails
-// the check is removed, so that a retry starts over.
-func (o fetchOpts) downloadFile(ctx context.Context, t target, done *atomic.Int64) error {
+// the check is removed, so that a retry starts over. It counts into prog what
+// it completes.
+func (o fetchOpts) downloadFile(ctx context.Context, t target, prog *progress) error {
 	var have int64
 	fi, err := os.Lstat(t.stage)
 	exists := err == nil
@@ -527,12 +524,26 @@ func (o fetchOpts) downloadFile(ctx context.Context, t target, done *atomic.Int6
 	}
 	if exists && have == t.Size {
 		if hex.EncodeToString(h.Sum(nil)) == t.SHA256 {
-			done.Add(t.Size)
+			prog.done.Add(t.Size)
 			return nil
 		}
 		have = 0
 		h.Reset()
 	}
+	// what is here counts as done until this attempt fails; a retry
+	// downloads it again, or resumes after it
+	prog.done.Add(have)
+	credited := have
+	var body *progressReader
+	complete := false
+	defer func() {
+		if !complete {
+			if body != nil {
+				credited += body.n
+			}
+			prog.done.Add(-credited)
+		}
+	}()
 
 	u, err := joinURL(o.base, blobPath(t.SHA256))
 	if err != nil {
@@ -560,6 +571,8 @@ func (o fetchOpts) downloadFile(ctx context.Context, t target, done *atomic.Int6
 	case resp.StatusCode == http.StatusOK:
 		have = 0 // no range support: start over
 		h.Reset()
+		prog.done.Add(-credited)
+		credited = 0
 	default:
 		return fmt.Errorf("GET %s: %s", u, resp.Status)
 	}
@@ -595,7 +608,7 @@ func (o fetchOpts) downloadFile(ctx context.Context, t target, done *atomic.Int6
 			}
 		}
 	}()
-	body := &progressReader{r: io.LimitReader(resp.Body, t.Size-have+1), last: &last, done: done}
+	body = &progressReader{r: io.LimitReader(resp.Body, t.Size-have+1), last: &last, prog: prog}
 	n, err := io.Copy(io.MultiWriter(f, h), body)
 	if err != nil {
 		return err
@@ -611,21 +624,27 @@ func (o fetchOpts) downloadFile(ctx context.Context, t target, done *atomic.Int6
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	done.Add(have)
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	complete = true
+	return nil
 }
 
+// progressReader notes when it last read, and counts what it reads.
 type progressReader struct {
 	r    io.Reader
 	last *atomic.Int64
-	done *atomic.Int64
+	prog *progress
+	n    int64
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	if n > 0 {
 		p.last.Store(time.Now().UnixNano())
-		p.done.Add(int64(n))
+		p.prog.add(int64(n))
+		p.n += int64(n)
 	}
 	return n, err
 }

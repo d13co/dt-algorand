@@ -162,9 +162,9 @@ func (n *testNet) serveDelta(w http.ResponseWriter, rnd string) {
 }
 
 func (n *testNet) publish() *Manifest {
-	_, _, err := prepare(n.producer, false)
+	_, _, err := prepare(n.producer, false, nil)
 	require.NoError(n.t, err)
-	m, err := publish(n.producer, n.out, n.key, false)
+	m, err := publish(n.producer, n.out, n.key, false, nil)
 	require.NoError(n.t, err)
 	return m
 }
@@ -490,10 +490,10 @@ func TestVerifySample(t *testing.T) {
 	st, err := timetravel.Open(filepath.Join(n.producer, historyDir), timetravel.Options{ReadOnly: true})
 	require.NoError(t, err)
 	defer st.Close()
-	require.NoError(t, verifySample(st, n.srv.URL, 20, 1, http.DefaultClient))
+	require.NoError(t, verifySample(st, n.srv.URL, 20, 1, http.DefaultClient, nil))
 
 	n.tamper.Store(true)
-	err = verifySample(st, n.srv.URL, 1, 1, http.DefaultClient)
+	err = verifySample(st, n.srv.URL, 1, 1, http.DefaultClient, nil)
 	require.ErrorIs(t, err, timetravel.ErrDiverged)
 
 	_, err = fetchDelta(http.DefaultClient, n.srv.URL, 999)
@@ -506,14 +506,14 @@ func TestPublishOrder(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	n := newTestNet(t)
 	n.publish()
-	_, err := publish(n.producer, n.out, n.key, false)
+	_, err := publish(n.producer, n.out, n.key, false, nil)
 	require.ErrorContains(t, err, "is published already")
 
 	old := t.TempDir()
 	require.NoError(t, os.CopyFS(filepath.Join(old, historyDir), os.DirFS(filepath.Join(n.producer, historyDir))))
 	n.addRounds(5)
 	n.publish()
-	_, err = publish(old, n.out, n.key, false)
+	_, err = publish(old, n.out, n.key, false, nil)
 	require.ErrorContains(t, err, "publish only newer snapshots")
 }
 

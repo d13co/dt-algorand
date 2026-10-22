@@ -87,7 +87,7 @@ func cmdVerify(args []string) error {
 		if *seed == 0 {
 			*seed = time.Now().UnixNano()
 		}
-		if err := verifySample(st, *deltas, *sample, *seed, &http.Client{Timeout: time.Minute}); err != nil {
+		if err := verifySample(st, *deltas, *sample, *seed, &http.Client{Timeout: time.Minute}, os.Stderr); err != nil {
 			return err
 		}
 		fmt.Printf("%d sampled rounds (seed %d) match %s\n", *sample, *seed, *deltas)
@@ -147,7 +147,9 @@ func verifyHeaders(st *timetravel.Store, genesisHash crypto.Digest, progress io.
 		prev = hdr.Hash()
 		next++
 		if progress != nil && next%1_000_000 == 0 {
-			fmt.Fprintf(progress, "checked headers up to round %d (%.0f rounds/s)\n", r, float64(next)/time.Since(start).Seconds())
+			rate := float64(next) / time.Since(start).Seconds()
+			fmt.Fprintf(progress, "checked headers up to round %d of %d (%d%%), %.0f rounds/s, about %s left\n",
+				r, last, min(r, last)*100/max(last, 1), rate, roundDuration(time.Duration(float64(last-min(r, last))/rate*float64(time.Second))))
 		}
 	}
 	if err := it.Error(); err != nil {
@@ -161,14 +163,21 @@ func verifyHeaders(st *timetravel.Store, genesisHash crypto.Digest, progress io.
 
 // verifySample compares n random rounds of the store with their state deltas
 // as the algod at api serves them: the round's digest and the stored value of
-// every object the delta changes.
-func verifySample(st *timetravel.Store, api string, n int, seed int64, client *http.Client) error {
+// every object the delta changes. It reports its progress to progress, if
+// not nil.
+func verifySample(st *timetravel.Store, api string, n int, seed int64, client *http.Client, progress io.Writer) error {
 	last, _ := st.Last()
 	if last == 0 {
 		return errors.New("the history has no rounds to sample")
 	}
 	rng := rand.New(rand.NewSource(seed))
+	start, reported := time.Now(), time.Now()
 	for i := 0; i < n; i++ {
+		if progress != nil && i > 0 && time.Since(reported) >= progressEvery {
+			reported = time.Now()
+			fmt.Fprintf(progress, "compared %d of %d sampled rounds with %s, about %s left\n",
+				i, n, api, roundDuration(time.Since(start)/time.Duration(i)*time.Duration(n-i)))
+		}
 		r := 1 + uint64(rng.Int63n(int64(last)))
 		sd, err := fetchDelta(client, api, r)
 		if err != nil {

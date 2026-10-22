@@ -22,8 +22,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
@@ -285,7 +287,7 @@ func cmdPrepare(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	info, nw, err := prepare(fs.Arg(0), *full)
+	info, nw, err := prepare(fs.Arg(0), *full, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -296,17 +298,26 @@ func cmdPrepare(args []string) error {
 	}{nw.id, nw.hash, info})
 }
 
-// prepare is cmdPrepare without the flags.
-func prepare(dir string, full bool) (Info, network, error) {
+// prepare is cmdPrepare without the flags. It says what it is doing to log,
+// if not nil.
+func prepare(dir string, full bool, log io.Writer) (Info, network, error) {
+	say := func(format string, args ...any) {
+		if log != nil {
+			fmt.Fprintf(log, format+"\n", args...)
+		}
+	}
+	start := time.Now()
 	hdir := filepath.Join(dir, historyDir)
 	// check it is a store before opening it writable, which would create one
 	if _, _, err := readHistory(hdir); err != nil {
 		return Info{}, network{}, err
 	}
+	say("opening %s, which replays its WAL", hdir)
 	st, err := timetravel.Open(hdir, timetravel.Options{})
 	if err != nil {
 		return Info{}, network{}, err
 	}
+	say("flushing it into tables")
 	err = st.DB().Flush()
 	if cerr := st.Close(); err == nil {
 		err = cerr
@@ -319,10 +330,12 @@ func prepare(dir string, full bool) (Info, network, error) {
 		if _, err = os.Stat(p); os.IsNotExist(err) && !full {
 			continue
 		}
+		say("folding the WAL of %s into it", p)
 		if err = checkpointWAL(p); err != nil {
 			return Info{}, network{}, err
 		}
 	}
+	say("reading what %s holds", dir)
 	info, nw, err := readInfo(dir, full)
 	if err != nil {
 		return Info{}, network{}, err
@@ -330,5 +343,6 @@ func prepare(dir string, full bool) (Info, network, error) {
 	if err := info.check(); err != nil {
 		return Info{}, network{}, err
 	}
+	say("prepared in %s", roundDuration(time.Since(start)))
 	return info, nw, nil
 }

@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/algorand/go-algorand/config"
@@ -47,7 +48,7 @@ func cmdPublish(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	m, err := publish(fs.Arg(0), *out, *key, *full)
+	m, err := publish(fs.Arg(0), *out, *key, *full, os.Stderr)
 	if errors.Is(err, errPublished) {
 		fmt.Println("nothing to publish:", err)
 		return nil
@@ -62,8 +63,8 @@ func cmdPublish(args []string) error {
 // publish adds the ledger in dir to the snapshot tree out: every file as a
 // blob named by its SHA-256 (files already there, such as the tables an
 // earlier snapshot shares, are not copied again), then the signed manifest,
-// then the signed latest pointer.
-func publish(dir, out, key string, full bool) (*Manifest, error) {
+// then the signed latest pointer. It reports its progress to log, if not nil.
+func publish(dir, out, key string, full bool, log io.Writer) (*Manifest, error) {
 	info, nw, err := readInfo(dir, full)
 	if err != nil {
 		return nil, err
@@ -88,13 +89,31 @@ func publish(dir, out, key string, full bool) (*Manifest, error) {
 		Producer:    config.GetCurrentVersion().String(),
 		Info:        info,
 	}
+	var total int64
 	for _, p := range paths {
-		f, berr := addBlob(filepath.Join(dir, filepath.FromSlash(p)), out)
+		fi, serr := os.Stat(filepath.Join(dir, filepath.FromSlash(p)))
+		if serr != nil {
+			return nil, serr
+		}
+		total += fi.Size()
+	}
+	if log != nil {
+		fmt.Fprintf(log, "publishing %d files, %s, of rounds 0..%d\n", len(paths), size(total), info.History.Last)
+	}
+	var copied atomic.Int64
+	prog := startProgress(log, "hashed", total, func() string { return size(copied.Load()) + " copied to new blobs" })
+	defer prog.Stop()
+	for _, p := range paths {
+		f, berr := addBlob(filepath.Join(dir, filepath.FromSlash(p)), out, prog, &copied)
 		if berr != nil {
 			return nil, berr
 		}
 		f.Path = p
 		m.Files = append(m.Files, f)
+	}
+	prog.Stop()
+	if log != nil {
+		fmt.Fprintf(log, "hashed %s in %s, %s of it new\n", size(prog.done.Load()), roundDuration(time.Since(prog.start)), size(copied.Load()))
 	}
 	latest := filepath.Join(out, filepath.FromSlash(latestPath(m.GenesisID, kind)))
 	if cur, rerr := os.ReadFile(latest); rerr == nil {
@@ -172,21 +191,22 @@ func snapshotFiles(dir string, full bool) ([]string, error) {
 }
 
 // addBlob copies the file at src into out's blobs, unless a blob with its
-// content is there already, and returns its size and SHA-256.
-func addBlob(src, out string) (File, error) {
+// content is there already, and returns its size and SHA-256. It counts the
+// bytes it hashes into prog and those it copies into copied.
+func addBlob(src, out string, prog *progress, copied *atomic.Int64) (File, error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return File{}, err
 	}
 	defer in.Close()
 	h := sha256.New()
-	size, err := io.Copy(h, in)
+	n, err := io.Copy(countingWriter{h, prog}, in)
 	if err != nil {
 		return File{}, err
 	}
-	f := File{Size: size, SHA256: hex.EncodeToString(h.Sum(nil))}
+	f := File{Size: n, SHA256: hex.EncodeToString(h.Sum(nil))}
 	dst := filepath.Join(out, filepath.FromSlash(blobPath(f.SHA256)))
-	if fi, err := os.Stat(dst); err == nil && fi.Size() == size {
+	if fi, err := os.Stat(dst); err == nil && fi.Size() == n {
 		return f, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -202,6 +222,7 @@ func addBlob(src, out string) (File, error) {
 		os.Remove(tmp)
 		return File{}, fmt.Errorf("%s changed while it was published: %w", src, err)
 	}
+	copied.Add(n)
 	return f, os.Rename(tmp, dst)
 }
 
