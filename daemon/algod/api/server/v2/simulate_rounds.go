@@ -27,7 +27,6 @@ import (
 	"sync"
 
 	"github.com/labstack/echo/v4"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/algorand/go-codec/codec"
 
@@ -53,26 +52,10 @@ func effectiveMaxSimulateRounds(m uint64) int {
 	return int(min(m, simulation.MaxSimulateRounds))
 }
 
-// EffectiveSimulateRoundsParallelism returns the most per-round simulations of "rounds" requests
-// run at once for the config value SimulateRoundsParallelism: 1 up to simulation.MaxSimulateRounds.
+// EffectiveSimulateRoundsParallelism returns the most rounds of one "rounds" request simulated at
+// once for the config value SimulateRoundsParallelism: 1 up to simulation.MaxSimulateRounds.
 func EffectiveSimulateRoundsParallelism(p int) int {
 	return min(max(1, p), simulation.MaxSimulateRounds)
-}
-
-// fallbackSimulateRoundsLimiter is used by Handlers built without a SimulateRoundsLimiter, so the
-// limit stays node-wide.
-var fallbackSimulateRoundsLimiter = semaphore.NewWeighted(1)
-
-var fallbackSimulateRoundsLimiterWarning sync.Once
-
-func (v2 *Handlers) simulateRoundsLimiter() *semaphore.Weighted {
-	if v2.SimulateRoundsLimiter != nil {
-		return v2.SimulateRoundsLimiter
-	}
-	fallbackSimulateRoundsLimiterWarning.Do(func() {
-		v2.Log.Warn("simulate: Handlers has no SimulateRoundsLimiter; rounds requests run one round at a time")
-	})
-	return fallbackSimulateRoundsLimiter
 }
 
 // simulateRounds simulates request once per distinct round of request.Rounds, in a pool of
@@ -123,17 +106,45 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	// The workers use only the request's context and values, never the echo.Context.
 	reqCtx, cancel := requestContext(ctx, cfg)
 	defer cancel()
-	limiter := v2.simulateRoundsLimiter()
+	limiter := v2.SimulateLimiter
+	if err := admitSimulate(reqCtx, limiter); err != nil {
+		return answerAdmission(ctx, err, v2.Log)
+	}
+	defer releaseSimulate(limiter)
 	responses := make([]*PreEncodedSimulateResponse, len(distinct))
 	errs := make([]error, len(distinct))
 	work := make(chan int)
+	// waiting is canceled once every round has been handed out, so that the workers waiting for a
+	// slot stop: there is nothing left for them.
+	waiting, stopWaiting := context.WithCancel(reqCtx)
+	defer stopWaiting()
 	var wg sync.WaitGroup
-	for range min(EffectiveSimulateRoundsParallelism(cfg.SimulateRoundsParallelism), len(distinct)) {
+	for w := range min(EffectiveSimulateRoundsParallelism(cfg.SimulateRoundsParallelism), len(distinct)) {
 		wg.Add(1)
+		if w == 0 {
+			// The first worker runs its rounds in the request's admission slot, so the request
+			// always progresses.
+			go func() {
+				defer wg.Done()
+				for j := range work {
+					responses[j], errs[j] = v2.simulateRound(reqCtx, base, distinct[j])
+				}
+			}()
+			continue
+		}
+		// The others take a slot before each round they take, so that a worker never holds a round
+		// while it waits.
 		go func() {
 			defer wg.Done()
-			for j := range work {
-				responses[j], errs[j] = v2.simulateRound(reqCtx, limiter, base, distinct[j])
+			for acquireSimulate(waiting, limiter) == nil {
+				j, ok := <-work
+				if ok {
+					responses[j], errs[j] = v2.simulateRound(reqCtx, base, distinct[j])
+				}
+				releaseSimulate(limiter)
+				if !ok {
+					return
+				}
 			}
 		}()
 	}
@@ -141,6 +152,7 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		work <- j
 	}
 	close(work)
+	stopWaiting()
 	// Every worker has stopped writing to responses and errs once Wait returns.
 	wg.Wait()
 
@@ -195,19 +207,19 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	return v2.writeSimulateResponse(ctx, handle, contentType, &response)
 }
 
-// simulateRound simulates base at round in a slot of limiter. An error, a panic included, is that
-// round's error.
-func (v2 *Handlers) simulateRound(ctx context.Context, limiter *semaphore.Weighted, base simulation.Request, round basics.Round) (response *PreEncodedSimulateResponse, err error) {
-	if limiter.Acquire(ctx, 1) != nil {
-		return nil, context.Cause(ctx)
-	}
+// simulateRound simulates base at round under ctx, in a slot of the node's limiter its caller holds.
+// An error, a panic included, is that round's error.
+func (v2 *Handlers) simulateRound(ctx context.Context, base simulation.Request, round basics.Round) (response *PreEncodedSimulateResponse, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			v2.Log.Errorf("recovered from panic simulating round %d: %v\n%s", round, r, debug.Stack())
 			response, err = nil, fmt.Errorf("simulating round %d: panic: %v", round, r)
 		}
-		limiter.Release(1)
 	}()
+	if ctx.Err() != nil {
+		// Don't start a round the request no longer waits for.
+		return nil, context.Cause(ctx)
+	}
 
 	// A copy per round: base, and the slices it shares with the other rounds, are only read.
 	r := base.WithContext(ctx)

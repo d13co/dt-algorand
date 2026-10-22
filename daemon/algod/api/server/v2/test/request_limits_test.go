@@ -53,7 +53,7 @@ func TestSimulateTimeLimit(t *testing.T) {
 
 	oneSecond := func(cfg *config.Local) { cfg.RestWriteTimeoutSeconds = 1 }
 	newHandler := func(n *roundsNode) *v2.Handlers {
-		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateRoundsLimiter: semaphore.NewWeighted(4)}
+		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: semaphore.NewWeighted(4)}
 	}
 
 	t.Run("single round", func(t *testing.T) {
@@ -112,4 +112,52 @@ func TestSimulateTimeLimit(t *testing.T) {
 			require.False(t, rec.Flushed)
 		}
 	})
+}
+
+// TestSimulateBusy checks that a simulate request that can't get a slot of the node's limiter
+// within 250 ms is refused with 503 and Retry-After.
+func TestSimulateBusy(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	// the subtests run in parallel, after this function returns
+	t.Cleanup(env.Close)
+	sender := env.Accounts[0]
+	env.TransferAlgos(sender.Addr, sender.Addr, 0)
+	latest := env.Ledger.Latest()
+	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
+	rounds := single
+	rounds.Rounds = []basics.Round{latest - 1, latest}
+
+	for name, request := range map[string]v2.PreEncodedSimulateRequest{"single round": single, "rounds": rounds} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			n := newRoundsNode(t, env)
+			limiter := semaphore.NewWeighted(2)
+			handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
+
+			// Every slot is taken.
+			require.True(t, limiter.TryAcquire(2))
+			start := time.Now()
+			rec, err := simulateRoundsDirect(context.Background(), t, handler, request)
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			require.Equal(t, "1", rec.Header().Get("Retry-After"))
+			require.Contains(t, rec.Body.String(), "the node is busy")
+			require.Zero(t, n.calls.Load())
+
+			// A slot freed while the request waits is taken.
+			time.AfterFunc(50*time.Millisecond, func() { limiter.Release(1) })
+			rec, err = simulateRoundsDirect(context.Background(), t, handler, request)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Empty(t, rec.Header().Get("Retry-After"))
+
+			// Every slot the request took was given back.
+			limiter.Release(1)
+			require.True(t, limiter.TryAcquire(2))
+		})
+	}
 }

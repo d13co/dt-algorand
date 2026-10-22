@@ -23,11 +23,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/logging"
 )
 
@@ -78,4 +81,94 @@ func answerStopped(ctx echo.Context, err error, log logging.Logger) (bool, error
 		return true, internalError(ctx, err, err.Error(), log)
 	}
 	return false, nil
+}
+
+// admissionWait is how long a new expensive request waits for capacity before it is refused with
+// 503. It is short so that a load balancer can try another node.
+const admissionWait = 250 * time.Millisecond
+
+// errBusy is the error of a request refused because the node has no capacity left for it.
+var errBusy = errors.New("the node is busy: try again later or on another node")
+
+// answerBusy refuses a request with 503 and Retry-After, which a load balancer takes as "busy, try
+// another node", not as a failure of this node.
+func answerBusy(ctx echo.Context, err error, log logging.Logger) error {
+	ctx.Response().Header().Set("Retry-After", "1")
+	return serviceUnavailable(ctx, err, err.Error(), log)
+}
+
+// EffectiveSimulateParallelism returns the most simulations that run at once across the node for
+// the config value SimulateParallelism: GOMAXPROCS when it is 0 or less.
+func EffectiveSimulateParallelism(p int) int {
+	if p <= 0 {
+		return runtime.GOMAXPROCS(0)
+	}
+	return p
+}
+
+// admitSimulate takes a slot of limiter for a new simulate request, waiting at most admissionWait.
+// It returns errBusy when no slot was free by then, and the cause of ctx when ctx ended first. A
+// nil limiter admits every request.
+func admitSimulate(ctx context.Context, limiter *semaphore.Weighted) error {
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	if limiter == nil || limiter.TryAcquire(1) {
+		return nil
+	}
+	wait, cancel := context.WithTimeout(ctx, admissionWait)
+	defer cancel()
+	if limiter.Acquire(wait, 1) != nil {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		return errBusy
+	}
+	return nil
+}
+
+// acquireSimulate takes a slot of limiter for more work of an admitted request, waiting as long as
+// ctx allows.
+func acquireSimulate(ctx context.Context, limiter *semaphore.Weighted) error {
+	if limiter != nil && limiter.Acquire(ctx, 1) != nil {
+		return context.Cause(ctx)
+	}
+	return nil
+}
+
+func releaseSimulate(limiter *semaphore.Weighted) {
+	if limiter != nil {
+		limiter.Release(1)
+	}
+}
+
+// answerAdmission answers a request that admitSimulate refused with err.
+func answerAdmission(ctx echo.Context, err error, log logging.Logger) error {
+	if errors.Is(err, errBusy) {
+		return answerBusy(ctx, err, log)
+	}
+	if stopped, answerErr := answerStopped(ctx, err, log); stopped {
+		return answerErr
+	}
+	return internalError(ctx, err, err.Error(), log)
+}
+
+// simulateOnce simulates a request without rounds in a slot of the node's simulate limiter, under
+// requestContext. answered reports that it already answered the request (busy, client gone or time
+// limit), with err the handler's return value; otherwise err is the simulation's error.
+func (v2 *Handlers) simulateOnce(ctx echo.Context, request simulation.Request) (result simulation.Result, answered bool, err error) {
+	reqCtx, cancel := requestContext(ctx, v2.Node.Config())
+	defer cancel()
+	if admitErr := admitSimulate(reqCtx, v2.SimulateLimiter); admitErr != nil {
+		return simulation.Result{}, true, answerAdmission(ctx, admitErr, v2.Log)
+	}
+	defer releaseSimulate(v2.SimulateLimiter)
+
+	result, err = v2.Node.Simulate(request.WithContext(reqCtx))
+	if err != nil {
+		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
+			return simulation.Result{}, true, answerErr
+		}
+	}
+	return result, false, err
 }

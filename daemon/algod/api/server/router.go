@@ -141,8 +141,8 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 		Log:           logger,
 		Shutdown:      shutdown,
 		KeygenLimiter: semaphore.NewWeighted(1),
-		// node-wide: shared by every simulate request with "rounds"
-		SimulateRoundsLimiter: semaphore.NewWeighted(int64(v2.EffectiveSimulateRoundsParallelism(node.Config().SimulateRoundsParallelism))),
+		// node-wide: shared by every simulate request
+		SimulateLimiter: semaphore.NewWeighted(int64(v2.EffectiveSimulateParallelism(node.Config().SimulateParallelism))),
 	}
 	nppublic.RegisterHandlers(e, &v2Handler, publicMiddleware...)
 	npprivate.RegisterHandlers(e, &v2Handler, adminMiddleware...)

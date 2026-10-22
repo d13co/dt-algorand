@@ -145,6 +145,7 @@ var defaultLocal = Local{
 	RestReadTimeoutSeconds:                     15,
 	RestWriteTimeoutSeconds:                    120,
 	RunHosted:                                  false,
+	SimulateParallelism:                        0,
 	SimulateResourceLimitMultiplier:            1,
 	SimulateRoundsParallelism:                  4,
 	StatefulVoteCompressionTableSize:           2048,

@@ -616,10 +616,16 @@ type Local struct {
 	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
 	MaxAPISimulateRounds uint64 `version[39]:"16"`
 
-	// SimulateRoundsParallelism is the most per-round simulations of "rounds" requests that run at once,
-	// across all requests of the node. Values below 1 count as 1; values above simulation.MaxSimulateRounds
-	// (256) count as that. Non-standard fork feature.
+	// SimulateRoundsParallelism is the most rounds of one "rounds" simulate request that are simulated at
+	// once. They also take slots of SimulateParallelism, the limit of the whole node. Values below 1 count
+	// as 1; values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
 	SimulateRoundsParallelism int `version[39]:"4"`
+
+	// SimulateParallelism is the most simulations that run at once across the node: one for each simulate
+	// request without "rounds", one for each round of a "rounds" request being simulated. A request that
+	// can't get a slot within 250 ms is refused with 503 and Retry-After, so a load balancer can send it to
+	// another node. 0 or less means GOMAXPROCS, the CPUs the process may use. Non-standard fork feature.
+	SimulateParallelism int `version[39]:"0"`
 
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation

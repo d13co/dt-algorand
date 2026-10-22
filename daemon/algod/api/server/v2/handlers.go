@@ -116,9 +116,10 @@ type Handlers struct {
 	// KeygenLimiter is used to limit the number of concurrent key generation requests.
 	KeygenLimiter *semaphore.Weighted
 
-	// SimulateRoundsLimiter limits the per-round simulations of simulate requests with "rounds" that
-	// run at once, across all requests (SimulateRoundsParallelism). Non-standard fork feature.
-	SimulateRoundsLimiter *semaphore.Weighted
+	// SimulateLimiter limits the simulations that run at once across the node (SimulateParallelism):
+	// one per simulate request without "rounds", one per round being simulated. Nil means no limit.
+	// Non-standard fork feature.
+	SimulateLimiter *semaphore.Weighted
 }
 
 // LedgerForAPI describes the Ledger methods used by the v2 API.
@@ -1639,13 +1640,11 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Simulate transaction
-	reqCtx, cancel := requestContext(ctx, v2.Node.Config())
-	defer cancel()
-	simulationResult, err := v2.Node.Simulate(convertSimulationRequest(simulateRequest).WithContext(reqCtx))
+	simulationResult, answered, err := v2.simulateOnce(ctx, convertSimulationRequest(simulateRequest))
+	if answered {
+		return err
+	}
 	if err != nil {
-		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
-			return answerErr
-		}
 		var invalidTxErr simulation.InvalidRequestError
 		switch {
 		case errors.As(err, &invalidTxErr):

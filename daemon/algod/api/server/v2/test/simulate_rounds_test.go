@@ -685,7 +685,7 @@ func TestSimulateRoundsLimiter(t *testing.T) {
 	const slots = 4
 	newHandler := func(n *roundsNode) (*v2.Handlers, *semaphore.Weighted) {
 		limiter := semaphore.NewWeighted(slots)
-		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateRoundsLimiter: limiter}, limiter
+		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}, limiter
 	}
 
 	t.Run("canceled request", func(t *testing.T) {
@@ -901,10 +901,12 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 		ParallelGroups: true,
 		Rounds:         rounds,
 	}
-	const parallelism = 2
+	// Each request would run 2 rounds at once, but the node runs at most 3 simulations.
+	const parallelism = 3
 	n := newRoundsNode(t, env, func(c *config.Local) {
 		c.MaxAPISimulateRounds = uint64(numRounds)
-		c.SimulateRoundsParallelism = parallelism
+		c.SimulateRoundsParallelism = 2
+		c.SimulateParallelism = parallelism
 	})
 	n.delay = 5 * time.Millisecond
 	router := newRoundsRouter(t, n)
@@ -947,7 +949,8 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 	}
 	require.True(t, strings.HasPrefix(recs[0].Header().Get("Content-Type"), "application/msgpack"))
 	// The router's limiter is shared by all requests: their rounds never ran more than
-	// SimulateRoundsParallelism at once.
-	require.Equal(t, int64(parallelism), n.maxInFlight.Load())
+	// SimulateParallelism at once.
+	require.LessOrEqual(t, n.maxInFlight.Load(), int64(parallelism))
+	require.GreaterOrEqual(t, n.maxInFlight.Load(), int64(2))
 	require.Equal(t, int64(requests*numRounds), n.calls.Load())
 }
