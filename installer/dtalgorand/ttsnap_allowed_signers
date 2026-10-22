@@ -6,3 +6,6 @@
 # A producer's private key stays on the producer. To retire a key, remove its line (and ship a
 # package update); to trust a key of your own, pass `ttsnap fetch -keys <your file>` instead of
 # editing this one.
+
+# xtah (mainnet producer)
+snapshots@dtalgorand namespaces="dtalgorand-ttsnap" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFWATUn54Bkj1jRzjz1Ll+Kw8/X6/Z24IwmuUMr1hqsJ xtah
