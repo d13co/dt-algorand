@@ -14,6 +14,10 @@ name: release
 #
 # The .deb is built on the runner (cgo, host architecture only), so this
 # publishes amd64 for now. Build arm64 on an arm64 host/runner to add it.
+#
+# The darwin job builds the macOS (Apple silicon) tarball on a Mac runner in
+# parallel, darwin-release attaches it to the same release, and homebrew points
+# the d13co/tap formula at it.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+-dt[0-9]+"]
@@ -66,6 +70,114 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.deb dist/checksums.txt
           fi
+
+  darwin:
+    if: github.repository == 'd13co/dt-algorand'
+    runs-on: macos-14 # arm64; the binaries run on this macOS release and later ones
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the build stamps the version from git describe
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-prefix: buildsrc
+      - uses: ./.github/actions/setup-test
+      - name: Fetch upstream's release tags
+        run: git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'
+      - name: Build the tarball
+        env:
+          BRANCH: dtalgorand # else a tag checkout stamps the branch as HEAD
+        run: installer/dtalgorand/build_darwin.sh dist
+      - name: Check the versions
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          base=${v%-dt*}
+          f=dist/dtalgorand_${v}_darwin-arm64.tar.gz
+          [ -f "$f" ] || { echo "no $f; built: $(ls dist)"; exit 1; }
+          tar -xzf "$f" -C "$RUNNER_TEMP"
+          d=$(cat "$RUNNER_TEMP/dtalgorand-$v/VERSION")
+          [ "$d" = "$v" ] || { echo "the tarball says $d, tag is $GITHUB_REF_NAME"; exit 1; }
+          b=$("$RUNNER_TEMP/dtalgorand-$v/bin/algod" -v | sed -n 2p)
+          case "$b" in "$base".*) ;; *) echo "algod says $b, tag is $GITHUB_REF_NAME"; exit 1 ;; esac
+          (cd dist && shasum -a 256 ./*.tar.gz > checksums-darwin.txt && cat checksums-darwin.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin
+          path: |
+            dist/*.tar.gz
+            dist/checksums-darwin.txt
+          if-no-files-found: error
+
+  # Separate from darwin so that the slow Mac build runs alongside the .deb's,
+  # and the upload waits for release to create the release.
+  darwin-release:
+    needs: [release, darwin]
+    if: github.repository == 'd13co/dt-algorand'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin
+          path: dist
+      - name: Attach the tarball to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum -c checksums-darwin.txt)
+          gh release upload --repo "$GITHUB_REPOSITORY" --clobber "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums-darwin.txt
+
+  # Separate from darwin-release so a failed publish can be re-run on its own.
+  homebrew:
+    needs: darwin-release
+    if: github.repository == 'd13co/dt-algorand'
+    environment: homebrew # holds the tap's deploy key; v* tags only, needs approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency: homebrew # one formula update at a time
+    permissions:
+      contents: read # the release's checksum; the tap is pushed with its deploy key
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the tarball's checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" -D dist -p checksums-darwin.txt
+      - uses: actions/checkout@v4
+        with:
+          repository: d13co/homebrew-tap
+          path: tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }} # write access to the tap only
+      - name: Update the formula
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          name=dtalgorand_${v}_darwin-arm64.tar.gz
+          sha=$(awk -v f="./$name" '$2 == f { print $1 }' dist/checksums-darwin.txt)
+          [ -n "$sha" ] || { echo "no checksum for $name"; exit 1; }
+          url=https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$name
+          # the published tarball is the one the checksum describes
+          curl -fsSL "$url" -o "$RUNNER_TEMP/$name"
+          echo "$sha  $RUNNER_TEMP/$name" | sha256sum -c
+          mkdir -p tap/Formula
+          # an older tag's run, approved after a newer one's, leaves the formula alone
+          cur=$(sed -n 's/^  version "\(.*\)"$/\1/p' tap/Formula/dtalgorand.rb 2>/dev/null || true)
+          if [ -n "$cur" ] && [ "$cur" != "$v" ] && [ "$(printf '%s\n' "$cur" "$v" | sort -V | tail -n 1)" = "$cur" ]; then
+            echo "the formula is at $cur, newer than $v"; exit 0
+          fi
+          installer/dtalgorand/homebrew/render.sh "$v" "$url" "$sha" > tap/Formula/dtalgorand.rb
+          cd tap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Formula/dtalgorand.rb
+          if git diff --cached --quiet; then echo "the formula is already at $v"; exit 0; fi
+          git commit -m "dtalgorand $v"
+          git push
 
   # Separate from release so a failed publish can be re-run on its own.
   apt:
