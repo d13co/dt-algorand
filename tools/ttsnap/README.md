@@ -50,7 +50,7 @@ The producer is a time travel node whose genesis directory, history included, li
 2. Make a signing key, and give its public key line to the consumers (in the package's [keys file](../../installer/dtalgorand/ttsnap_keys)):
 
    ```sh
-   ttsnap keygen -o /root/ttsnap_key -name xtah -role producer
+   ttsnap keygen -o /root/ttsnap_key -name d13 -role producer
    ```
 3. Run [scripts/dt_snapshot.sh](../../scripts/dt_snapshot.sh) from a timer, daily: it looks up the network's latest catchpoint label, snapshots `@live`, runs `ttsnap prepare` and `ttsnap publish` on the snapshot, keeps a few snapshots and garbage-collects the tree. Serve `OUT` as static files (anything that answers range requests), or copy it to a bucket with `UPLOAD`: blobs first, then the manifests, then the latest pointers, and deletions last, so that a reader never finds a manifest whose blobs aren't there yet. Manifests and blobs never change once written; only the pointers do.
 
