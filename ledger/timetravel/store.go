@@ -97,6 +97,10 @@ const (
 	recPatch   = 'X'
 )
 
+// MaxOpenFiles is how many files a store keeps open at most. algod counts
+// them when it raises its file descriptor limit.
+const MaxOpenFiles = 4096
+
 // Options configure a new store. Existing stores keep the parameters they
 // were created with.
 type Options struct {
@@ -225,7 +229,7 @@ func Open(dir string, o Options) (*Store, error) {
 		L0StopWritesThreshold:      64,
 		LBaseMaxBytes:              512 << 20,
 		FormatMajorVersion:         pebble.FormatNewest,
-		MaxOpenFiles:               4096,
+		MaxOpenFiles:               MaxOpenFiles,
 		Logger:                     o.Logger,
 		ReadOnly:                   o.ReadOnly,
 	}
