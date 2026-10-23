@@ -35,6 +35,7 @@ import (
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/data/transactions/verify"
+	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/logging"
@@ -94,6 +95,11 @@ type Request struct {
 
 	// protocolGaps is set by Simulate when Protocol applies, for the tracers.
 	protocolGaps *protocolGaps
+
+	// ctx and traceBudget stop the simulation early: when ctx is done, or when the execution trace
+	// outgrows traceBudget (abort.go). Non-standard fork feature.
+	ctx         context.Context
+	traceBudget *TraceBudget
 
 	hooks *testHooks
 }
@@ -243,6 +249,9 @@ type simulatorLedger struct {
 
 	// upgradeTo, when set, is the protocol that the round after start switches to (Request.Protocol).
 	upgradeTo protocol.ConsensusVersion
+
+	// counted is the ledger whose reads count in the request's Effort (effort.go). Set by Simulate.
+	counted ledger.CountedLedger
 }
 
 // BlockHdr is part of the ledger.Ledger interface.
@@ -261,7 +270,7 @@ func (l simulatorLedger) BlockHdr(rnd basics.Round) (bookkeeping.BlockHeader, er
 	if rnd > l.start {
 		return bookkeeping.BlockHeader{}, fmt.Errorf("round %d is after the simulation start round %d", rnd, l.start)
 	}
-	hdr, err := l.Ledger.BlockHdr(rnd)
+	hdr, err := l.lookups().BlockHdr(rnd)
 	if err != nil || l.upgradeTo == "" || rnd != l.start {
 		return hdr, err
 	}
@@ -549,6 +558,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 		}
 	}
 	for n, g := range idxs {
+		if err := tracer.abortError(); err != nil {
+			return committed, false, err
+		}
 		tracer.startGroup(g)
 		group := tracer.groups[g]
 		groupResult := tracer.currentGroup()
@@ -587,6 +599,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 				groupResult.FailedAt = tracer.failedAt
 			}
 			if evaluatorCorrupted(evaluator, err) {
+				if err := tracer.abortError(); err != nil {
+					return committed, false, err
+				}
 				// The evaluator state may hold part of this group, so no later group can run on it.
 				notSimulated(n, fmt.Sprintf("group index %d left the evaluator state corrupted", g))
 				return committed, true, nil
@@ -599,6 +614,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 		// Full PQ placeholders need the final AuthAddr after FixSigners has run through evaluation.
 		if overrides.AllowEmptySignatures && overrides.FixSigners {
 			if failedAt, message := checkFixedPlaceholderPQEnvelopes(hdr, group); message != "" {
+				if err := tracer.abortError(); err != nil {
+					return committed, false, err
+				}
 				groupResult.FailureMessage = message
 				groupResult.FailedAt = failedAt
 				// The group is already part of the shared state, so later groups would see the
@@ -607,6 +625,10 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 				return committed, true, nil
 			}
 		}
+	}
+	// The last group may have been stopped part way.
+	if err := tracer.abortError(); err != nil {
+		return committed, false, err
 	}
 	return committed, false, nil
 }
@@ -760,9 +782,9 @@ func (s Simulator) simulateOneGroup(hdr bookkeeping.BlockHeader, request Request
 // returned as an error: it would otherwise crash the node, since it happens off the handler's
 // goroutine.
 func (s Simulator) simulateParallelGroup(hdr bookkeeping.BlockHeader, request Request, g int) (result *Result, err error) {
-	// The simulator has no request context: like any simulation, it runs to the end even if the
-	// client goes away. Acquire can't fail with context.Background.
-	_ = parallelGroupSlots.Acquire(context.Background(), 1)
+	if parallelGroupSlots.Acquire(request.Context(), 1) != nil {
+		return nil, context.Cause(request.Context())
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Base().Errorf("recovered from panic simulating transaction group %d: %v\n%s", g, r, debug.Stack())
@@ -853,6 +875,7 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 	// s is a copy, so these hold for this call only.
 	s.ledger.skipValidityWindow = simulateRequest.SkipValidityWindow
 	s.ledger.rewriteValidityWindow = simulateRequest.RewriteValidityWindow
+	s.ledger.counted = s.ledger.Ledger.Ledger.Counted(ledgercore.EffortFromContext(simulateRequest.Context()))
 
 	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
 	if err != nil {

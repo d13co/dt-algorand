@@ -464,6 +464,11 @@ func TestLocal_SimulateRounds(t *testing.T) {
 	a.Equal(uint64(300), c.MaxAPISimulateRounds)
 	a.Equal(-2, c.SimulateRoundsParallelism)
 
+	// SimulateParallelism defaults to 0 (GOMAXPROCS) and keeps what is written
+	a.Equal(0, GetDefaultLocal().SimulateParallelism)
+	a.Equal(0, load(`{"Version": 39}`).SimulateParallelism)
+	a.Equal(12, load(`{"Version": 39, "SimulateParallelism": 12}`).SimulateParallelism)
+
 	// an older file never has the fields, and keeps the defaults
 	c = load(`{"Version": 38}`)
 	a.Equal(uint64(16), c.MaxAPISimulateRounds)

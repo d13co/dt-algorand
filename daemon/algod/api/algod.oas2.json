@@ -5966,6 +5966,8 @@
           "max-rounds",
           "max-extra-opcode-budget",
           "resource-limit-multiplier",
+          "max-exec-trace-bytes",
+          "time-limit-seconds",
           "time-travel",
           "developer-api"
         ],
@@ -5987,6 +5989,16 @@
           },
           "resource-limit-multiplier": {
             "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-exec-trace-bytes": {
+            "description": "The most bytes of execution trace one request may keep, across all its groups and rounds, as the node estimates them; a request that goes over fails with 400. 0 means no limit (node config MaxAPISimulateTraceBytes).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "time-limit-seconds": {
+            "description": "The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a second to write the response).",
             "type": "integer",
             "x-go-type": "uint64"
           },

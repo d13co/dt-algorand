@@ -123,6 +123,10 @@ type evalTracer struct {
 	protocolGaps *protocolGaps
 	pendingGap   string
 
+	// abortState stops the simulation when the request is canceled or the trace grows too large
+	// (abort.go).
+	abortState
+
 	hooks *testHooks
 }
 
@@ -133,6 +137,7 @@ func makeEvalTracer(lastRound basics.Round, groups [][]transactions.SignedTxnWit
 		groups:                  groups,
 		resourceLimitMultiplier: request.ResourceLimitMultiplier,
 		protocolGaps:            request.protocolGaps,
+		abortState:              makeAbortState(request),
 		hooks:                   request.hooks,
 	}
 	if request.FixSigners {
@@ -384,6 +389,7 @@ func (o *OpcodeTraceUnit) computeStackValueDeletions(cx *logic.EvalContext, trac
 }
 
 func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
+	tracer.checkAbort(cx)
 	groupIndex := cx.GroupIndex()
 
 	if tracer.protocolGaps != nil {
@@ -409,6 +415,7 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 			txnTrace = tracer.execTraceStack[len(tracer.execTraceStack)-1]
 		}
 		*txnTrace.programTraceRef = append(*txnTrace.programTraceRef, tracer.makeOpcodeTraceUnit(cx))
+		tracer.chargeTrace(opcodeTraceUnitBytes)
 
 		latestOpcodeTraceUnit := &(*txnTrace.programTraceRef)[len(*txnTrace.programTraceRef)-1]
 		if tracer.result.ReturnStackChange() {
@@ -529,6 +536,7 @@ func (tracer *evalTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 		if tracer.result.ReturnStateChange() {
 			latestOpcodeTraceUnit.updateNewStateValues(cx)
 		}
+		tracer.chargeTrace(latestOpcodeTraceUnit.changeBytes())
 	}
 
 	if cx.RunMode() == logic.ModeApp {
@@ -616,6 +624,8 @@ func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {
 }
 
 func (tracer *evalTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalError error) {
+	// The program's budget consumed, as reported below; also when it was aborted (abort.go).
+	tracer.effort.AddOpcodes(uint64(cx.Cost()))
 	groupIndex := cx.GroupIndex()
 
 	if cx.RunMode() == logic.ModeSig {

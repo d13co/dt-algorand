@@ -21,6 +21,7 @@ package v2
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -45,6 +46,8 @@ func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
 		MaxRounds:               uint64(effectiveMaxSimulateRounds(cfg.MaxAPISimulateRounds)),
 		MaxExtraOpcodeBudget:    uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
 		ResourceLimitMultiplier: uint64(simulation.EffectiveResourceLimitMultiplier(limits.ResourceLimitMultiplier)),
+		MaxExecTraceBytes:       cfg.MaxAPISimulateTraceBytes,
+		TimeLimitSeconds:        uint64(requestTimeLimit(cfg) / time.Second),
 		TimeTravel:              cfg.EnableTimeTravel,
 		DeveloperApi:            cfg.EnableDeveloperAPI,
 	}

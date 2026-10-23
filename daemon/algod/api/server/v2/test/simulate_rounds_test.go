@@ -63,7 +63,10 @@ type roundsNode struct {
 	inFlight    atomic.Int64
 	maxInFlight atomic.Int64
 	// delay makes every simulation last at least this long, so that they overlap.
-	delay     time.Duration
+	delay time.Duration
+	// slowAt makes the simulations of these rounds (0 for a request without rounds) last until
+	// their request's context is done.
+	slowAt    map[basics.Round]bool
 	panicAt   basics.Round
 	errAt     map[basics.Round]error
 	invalidAt basics.Round
@@ -79,7 +82,16 @@ func (n *roundsNode) Simulate(request simulation.Request) (simulation.Result, er
 			break
 		}
 	}
-	time.Sleep(n.delay)
+	// A simulation stops when its request's context is done, as the simulator does.
+	ctx := request.Context()
+	if n.slowAt[request.Round] {
+		<-ctx.Done()
+	}
+	select {
+	case <-ctx.Done():
+		return simulation.Result{}, context.Cause(ctx)
+	case <-time.After(n.delay):
+	}
 
 	if n.panicAt != 0 && request.Round == n.panicAt {
 		panic(fmt.Sprintf("injected panic at round %d", request.Round))
@@ -673,7 +685,7 @@ func TestSimulateRoundsLimiter(t *testing.T) {
 	const slots = 4
 	newHandler := func(n *roundsNode) (*v2.Handlers, *semaphore.Weighted) {
 		limiter := semaphore.NewWeighted(slots)
-		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateRoundsLimiter: limiter}, limiter
+		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}, limiter
 	}
 
 	t.Run("canceled request", func(t *testing.T) {
@@ -889,10 +901,12 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 		ParallelGroups: true,
 		Rounds:         rounds,
 	}
-	const parallelism = 2
+	// Each request would run 2 rounds at once, but the node runs at most 3 simulations.
+	const parallelism = 3
 	n := newRoundsNode(t, env, func(c *config.Local) {
 		c.MaxAPISimulateRounds = uint64(numRounds)
-		c.SimulateRoundsParallelism = parallelism
+		c.SimulateRoundsParallelism = 2
+		c.SimulateParallelism = parallelism
 	})
 	n.delay = 5 * time.Millisecond
 	router := newRoundsRouter(t, n)
@@ -935,7 +949,8 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 	}
 	require.True(t, strings.HasPrefix(recs[0].Header().Get("Content-Type"), "application/msgpack"))
 	// The router's limiter is shared by all requests: their rounds never ran more than
-	// SimulateRoundsParallelism at once.
-	require.Equal(t, int64(parallelism), n.maxInFlight.Load())
+	// SimulateParallelism at once.
+	require.LessOrEqual(t, n.maxInFlight.Load(), int64(parallelism))
+	require.GreaterOrEqual(t, n.maxInFlight.Load(), int64(2))
 	require.Equal(t, int64(requests*numRounds), n.calls.Load())
 }

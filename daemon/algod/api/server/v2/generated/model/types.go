@@ -1834,6 +1834,9 @@ type SimulateLimitsResponse struct {
 	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
 
+	// MaxExecTraceBytes The most bytes of execution trace one request may keep, across all its groups and rounds, as the node estimates them; a request that goes over fails with 400. 0 means no limit (node config MaxAPISimulateTraceBytes).
+	MaxExecTraceBytes uint64 `json:"max-exec-trace-bytes"`
+
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
 
@@ -1845,6 +1848,9 @@ type SimulateLimitsResponse struct {
 
 	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
 	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
+
+	// TimeLimitSeconds The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a second to write the response).
+	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
 	// TimeTravel If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).
 	TimeTravel bool `json:"time-travel"`

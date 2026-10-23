@@ -19,11 +19,13 @@ package ledger
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/algorand/msgp/msgp"
 
@@ -66,6 +68,35 @@ type VersionRange struct {
 	// lookups (one per object per round) past it (0: no limit). A page always
 	// has at least one round.
 	MaxSeeks uint64
+	// Ctx and Deadline stop a page that takes too long: it fails with the
+	// cause of Ctx once Ctx is done (the client went away), or with
+	// context.DeadlineExceeded after Deadline. Either may be unset.
+	Ctx      context.Context
+	Deadline time.Time
+}
+
+// stopCheckInterval is how many lookups a page makes between two checks of
+// its Ctx and Deadline.
+const stopCheckInterval = 256
+
+// effort returns the Effort that Ctx carries, which counts the entries the
+// page reads, or nil.
+func (r *VersionRange) effort() *ledgercore.Effort {
+	if r.Ctx == nil {
+		return nil
+	}
+	return ledgercore.EffortFromContext(r.Ctx)
+}
+
+// stopped returns why the page must stop, or nil.
+func (r *VersionRange) stopped() error {
+	if r.Ctx != nil && r.Ctx.Err() != nil {
+		return context.Cause(r.Ctx)
+	}
+	if !r.Deadline.IsZero() && time.Now().After(r.Deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // VersionPage is a page of versions, in page order.
@@ -182,7 +213,7 @@ var ErrRoundTooLarge = errors.New("too many boxes at one round")
 // returns: its base record, holdings, local states, and the params of the
 // assets and apps it created, narrowed by ex.
 func (l *Ledger) AccountVersions(addr basics.Address, ex AccountVersionsExclude, r VersionRange) (VersionPage, error) {
-	h := l.historyNow(r.Max)
+	h := l.historyNow(r.Max, r.effort())
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
@@ -229,7 +260,7 @@ func histAccountVersions(h *histView, addr basics.Address, ex AccountVersionsExc
 // AccountAssetVersions lists the versions of an account's holding of an
 // asset and, if the account created it, of the asset's params.
 func (l *Ledger) AccountAssetVersions(addr basics.Address, aidx basics.AssetIndex, r VersionRange) (VersionPage, error) {
-	h := l.historyNow(r.Max)
+	h := l.historyNow(r.Max, r.effort())
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
@@ -239,7 +270,7 @@ func (l *Ledger) AccountAssetVersions(addr basics.Address, aidx basics.AssetInde
 // AccountAppVersions lists the versions of an account's local state of an
 // app and, if the account created it, of the app's params.
 func (l *Ledger) AccountAppVersions(addr basics.Address, aidx basics.AppIndex, r VersionRange) (VersionPage, error) {
-	h := l.historyNow(r.Max)
+	h := l.historyNow(r.Max, r.effort())
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
@@ -292,7 +323,7 @@ var ErrNoBoxIndex = timetravel.ErrNoBoxIndex
 // the boxes that did. Pages cost what they hold, however many boxes the app
 // ever had: the store indexes box changes by app and round.
 func (l *Ledger) AppBoxVersions(app basics.AppIndex, r VersionRange) (VersionPage, error) {
-	h := l.historyNow(r.Max)
+	h := l.historyNow(r.Max, r.effort())
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
@@ -302,6 +333,9 @@ func (l *Ledger) AppBoxVersions(app basics.AppIndex, r VersionRange) (VersionPag
 func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, error) {
 	if r.Rounds != nil {
 		return appBoxesAt(h, app, r)
+	}
+	if err := r.stopped(); err != nil {
+		return VersionPage{}, err
 	}
 	var page VersionPage
 	var cur Version // the round being read, not yet in the page
@@ -319,7 +353,14 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 	}
 	// the callback must not read the store: it runs inside the store's read
 	// lock, which Close waits for while blocking new readers
+	var stopErr error
+	changes := 0
 	err := h.BoxChanges(uint64(app), uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		if changes++; changes%stopCheckInterval == 0 {
+			if stopErr = r.stopped(); stopErr != nil {
+				return false
+			}
+		}
 		if R := basics.Round(rnd); len(cur.Boxes) == 0 || R != cur.Round {
 			if len(cur.Boxes) > 0 && !add() {
 				return false
@@ -338,6 +379,9 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 		cur.Boxes = append(cur.Boxes, bc)
 		return true
 	})
+	if stopErr != nil {
+		return VersionPage{}, stopErr
+	}
 	// a descending page that reached rounds the box index lacks ends with
 	// the changes it found, all of those since; the next page fails
 	partial := errors.Is(err, ErrNoBoxIndex) && r.Desc && (len(page.Versions) > 0 || len(cur.Boxes) > 0)
@@ -363,7 +407,7 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 }
 
 func (l *Ledger) objectVersions(obj []byte, r VersionRange) (VersionPage, error) {
-	h := l.historyNow(r.Max)
+	h := l.historyNow(r.Max, r.effort())
 	if h == nil {
 		return VersionPage{}, errHistoryUnavailable
 	}
@@ -394,6 +438,11 @@ func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPa
 	rounds := map[basics.Round][]srcChange{}
 	kept := &pageHeap{desc: r.Desc}
 	for i, obj := range srcs {
+		if i%stopCheckInterval == 0 {
+			if err := r.stopped(); err != nil {
+				return VersionPage{}, err
+			}
+		}
 		err := h.Versions(obj, uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, _ []byte, ok bool) bool {
 			R := basics.Round(rnd)
 			if _, seen := rounds[R]; !seen {
@@ -423,7 +472,12 @@ func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPa
 		order = order[:r.Limit]
 	}
 	var size uint64
-	for _, R := range order {
+	for i, R := range order {
+		if i%stopCheckInterval == 0 {
+			if err := r.stopped(); err != nil {
+				return VersionPage{}, err
+			}
+		}
 		v, n, err := readVersion(h, srcs, R, rounds[R], r.Values, r.Keys)
 		if err != nil {
 			return VersionPage{}, err
@@ -451,6 +505,7 @@ func readVersion(h *histView, srcs [][]byte, rnd basics.Round, changes []srcChan
 		o := objRead{obj: srcs[ch.src], round: rnd, ok: ch.ok}
 		if o.needsValue(values, keys) {
 			var ok bool
+			h.effort.AddScanned(1)
 			if o.val, ok, err = h.Get(o.obj, uint64(rnd)); err != nil {
 				return Version{}, 0, err
 			}
@@ -505,6 +560,7 @@ func addObject(h *histView, v *Version, hdr *bookkeeping.BlockHeader, o objRead,
 	if withKeys && o.round > 0 {
 		var ok bool
 		var err error
+		h.effort.AddScanned(1)
 		if prev, ok, err = h.Get(obj, uint64(o.round)-1); err != nil {
 			return 0, err
 		}
@@ -639,6 +695,11 @@ func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (Version
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
 		var n uint64
 		for j, obj := range srcs {
+			if j%stopCheckInterval == 0 {
+				if err := r.stopped(); err != nil {
+					return VersionPage{}, err
+				}
+			}
 			at, val, ok, found, err := latestVersion(h, obj, R)
 			if err != nil {
 				return VersionPage{}, err
@@ -699,7 +760,12 @@ func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, 
 		}
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
 		var n uint64
-		for _, b := range boxes {
+		for j, b := range boxes {
+			if j%stopCheckInterval == 0 {
+				if err := r.stopped(); err != nil {
+					return VersionPage{}, err
+				}
+			}
 			at, val, ok, found, err := latestVersion(h, b.obj, R)
 			if err != nil {
 				return VersionPage{}, err
@@ -789,6 +855,12 @@ func (h *pageHeap) Pop() any {
 // Versions is timetravel.Store.Versions with the in-memory rounds merged in.
 // fn must not modify val.
 func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+	if v.effort != nil {
+		var scanned uint64
+		defer func() { v.effort.AddScanned(scanned) }()
+		inner := fn
+		fn = func(rnd uint64, val []byte, ok bool) bool { scanned++; return inner(rnd, val, ok) }
+	}
 	type version struct {
 		rnd uint64
 		val []byte
@@ -848,6 +920,12 @@ func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd ui
 
 // Objects is timetravel.Store.Objects with the in-memory rounds merged in.
 func (v *histView) Objects(prefix []byte, fn func(obj []byte) bool) error {
+	if v.effort != nil {
+		var scanned uint64
+		defer func() { v.effort.AddScanned(scanned) }()
+		inner := fn
+		fn = func(obj []byte) bool { scanned++; return inner(obj) }
+	}
 	mem := map[string]bool{}
 	for i := range v.pending {
 		if v.pending[i].rnd <= v.last {
@@ -887,6 +965,12 @@ func (v *histView) Objects(prefix []byte, fn func(obj []byte) bool) error {
 // BoxChanges is timetravel.Store.BoxChanges with the in-memory rounds merged
 // in. fn must not modify name or val.
 func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, name, val []byte, ok bool) bool) error {
+	if v.effort != nil {
+		var scanned uint64
+		defer func() { v.effort.AddScanned(scanned) }()
+		inner := fn
+		fn = func(rnd uint64, name, val []byte, ok bool) bool { scanned++; return inner(rnd, name, val, ok) }
+	}
 	type change struct {
 		rnd       uint64
 		name, val []byte
