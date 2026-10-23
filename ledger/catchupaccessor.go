@@ -1239,6 +1239,12 @@ func (c *catchpointCatchupAccessorImpl) EnsureFirstBlock(ctx context.Context) (b
 // CompleteCatchup completes the catchpoint catchup process by switching the databases tables around
 // and reloading the ledger.
 func (c *catchpointCatchupAccessorImpl) CompleteCatchup(ctx context.Context) (err error) {
+	// before anything is swapped: an error aborts the catchup and leaves the
+	// ledger as it was
+	err = c.checkCatchpointHistory(ctx)
+	if err != nil {
+		return fmt.Errorf("the time travel history does not fit this catchpoint: %w", err)
+	}
 	err = c.FinishBlocks(ctx, true)
 	if err != nil {
 		return err
