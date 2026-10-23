@@ -432,7 +432,7 @@ func TestTimeTravelOnlineCirculation(t *testing.T) {
 				// re-evaluating a delta falls back to the online money
 				_, err = l.OnlineCirculation(r, r)
 				require.ErrorIs(t, err, ErrOnlineStakeUnavailable)
-				up, err := pastLedger{l, r}.OnlineCirculation(r, r)
+				up, err := pastLedger{l.Counted(nil), r}.OnlineCirculation(r, r)
 				require.NoError(t, err)
 				require.Equal(t, totals.Online.Money, up)
 			}

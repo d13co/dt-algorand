@@ -731,7 +731,7 @@ func TestTimeTravelVersions(t *testing.T) {
 				p, err = l.AppVersions(kv, VersionRange{Max: latest, Limit: 1000})
 				require.NoError(t, err)
 				vs := p.Versions
-				h := l.historyNow(latest)
+				h := l.historyNow(latest, nil)
 				var budget uint64
 				for _, v := range vs[1:3] {
 					val, ok, err := h.Get(timetravel.AppParamsKey(kv), uint64(v.Round))
@@ -1089,7 +1089,7 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 					r.MaxSeeks = 0
 					// every box the app ever had a record of counts
 					var recorded uint64
-					require.NoError(t, l.historyNow(latest).Objects(timetravel.BoxKvPrefix(uint64(app)), func([]byte) bool { recorded++; return true }))
+					require.NoError(t, l.historyNow(latest, nil).Objects(timetravel.BoxKvPrefix(uint64(app)), func([]byte) bool { recorded++; return true }))
 					require.GreaterOrEqual(t, recorded, uint64(len(boxChanges)))
 					r.MaxObjects = recorded - 1
 					_, err = lookup(r)

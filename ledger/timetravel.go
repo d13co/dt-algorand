@@ -360,27 +360,47 @@ func (l *Ledger) historyAt(rnd basics.Round) *histView {
 
 // historyFor returns the history view when err says the trackers no longer
 // hold round rnd. Checking err first keeps lookups the trackers answered free.
-func (l *Ledger) historyFor(rnd basics.Round, err error) *histView {
+// A view it returns counts into e (nil: not counted), which records the lookup
+// as answered by the history.
+func (l *Ledger) historyFor(rnd basics.Round, err error, e *ledgercore.Effort) *histView {
 	if !tooOld(err) {
 		return nil
 	}
-	return l.historyAt(rnd)
+	return l.countedHistoryAt(rnd, e)
+}
+
+// countedHistoryAt is historyAt for a lookup counted in e: a view it returns
+// counts its scanned entries into e, and e records the lookup as answered by
+// the history.
+func (l *Ledger) countedHistoryAt(rnd basics.Round, e *ledgercore.Effort) *histView {
+	h := l.historyAt(rnd)
+	if h != nil && e != nil {
+		h.effort = e
+		e.History()
+	}
+	return h
 }
 
 // historyNow returns the history view of round rnd, taken under trackerMu so
-// that every round up to Latest() is in it.
-func (l *Ledger) historyNow(rnd basics.Round) *histView {
+// that every round up to Latest() is in it. The view counts the entries it
+// scans into e (nil: not counted).
+func (l *Ledger) historyNow(rnd basics.Round, e *ledgercore.Effort) *histView {
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
-	return l.historyAt(rnd)
+	h := l.historyAt(rnd)
+	if h != nil {
+		h.effort = e
+	}
+	return h
 }
 
 // histView reads the history: the rounds the tracker has not written to the
 // store yet (in memory) first, then the store.
 type histView struct {
 	store   *timetravel.Store
-	pending []historyRound // oldest first; never modified in place
-	last    basics.Round   // the store holds every round up to last
+	pending []historyRound     // oldest first; never modified in place
+	last    basics.Round       // the store holds every round up to last
+	effort  *ledgercore.Effort // counts the entries Scan reads; nil: not counted
 }
 
 // Get returns the value of obj at rnd.
@@ -444,12 +464,15 @@ func (v *histView) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byt
 		}
 	}
 	keys := slices.Sorted(maps.Keys(over))
+	var scanned uint64
+	defer func() { v.effort.AddScanned(scanned) }()
 	stopped := false
 	// emit sends the in-memory objects before obj ("" for all of them).
 	emit := func(obj string) bool {
 		for len(keys) > 0 && (obj == "" || keys[0] < obj) {
 			ch := over[keys[0]]
 			keys = keys[1:]
+			scanned++
 			if !ch.Deleted && !fn(ch.Key, ch.Value) {
 				stopped = true
 				return false
@@ -458,6 +481,7 @@ func (v *histView) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byt
 		return true
 	}
 	err := v.store.Scan(prefix, after, min(rnd, uint64(v.last)), func(obj, val []byte) bool {
+		scanned++
 		if !emit(string(obj)) {
 			return false
 		}
@@ -666,10 +690,15 @@ func scanIDs(h *histView, rnd basics.Round, prefix []byte, gt uint64, limit uint
 
 // LookupAssetsAt is LookupAssets at round rnd.
 func (l *Ledger) LookupAssetsAt(rnd basics.Round, addr basics.Address, assetIDGT basics.AssetIndex, limit uint64) ([]ledgercore.AssetResourceWithIDs, basics.Round, error) {
-	h := l.historyNow(rnd)
+	return l.lookupAssetsAt(rnd, addr, assetIDGT, limit, nil)
+}
+
+func (l *Ledger) lookupAssetsAt(rnd basics.Round, addr basics.Address, assetIDGT basics.AssetIndex, limit uint64, e *ledgercore.Effort) ([]ledgercore.AssetResourceWithIDs, basics.Round, error) {
+	h := l.historyNow(rnd, e)
 	if h == nil {
 		return nil, 0, errHistoryUnavailable
 	}
+	e.History()
 	return histAssets(h, rnd, addr, assetIDGT, limit)
 }
 
@@ -687,6 +716,7 @@ func histAssets(h *histView, rnd basics.Round, addr basics.Address, assetIDGT ba
 		}
 		r.AssetHolding = &hold
 		var p basics.AssetParams
+		h.effort.Lookup(true) // the asset's params, read from the history
 		creator, ok, err := histParams(h, rnd, timetravel.AssetParamsKey(r.AssetID), &p)
 		if err != nil {
 			return nil, 0, err
@@ -701,10 +731,15 @@ func histAssets(h *histView, rnd basics.Round, addr basics.Address, assetIDGT ba
 
 // LookupApplicationsAt is LookupApplications at round rnd.
 func (l *Ledger) LookupApplicationsAt(rnd basics.Round, addr basics.Address, appIDGT basics.AppIndex, limit uint64, includeParams bool) ([]ledgercore.AppResourceWithIDs, basics.Round, error) {
-	h := l.historyNow(rnd)
+	return l.lookupApplicationsAt(rnd, addr, appIDGT, limit, includeParams, nil)
+}
+
+func (l *Ledger) lookupApplicationsAt(rnd basics.Round, addr basics.Address, appIDGT basics.AppIndex, limit uint64, includeParams bool, e *ledgercore.Effort) ([]ledgercore.AppResourceWithIDs, basics.Round, error) {
+	h := l.historyNow(rnd, e)
 	if h == nil {
 		return nil, 0, errHistoryUnavailable
 	}
+	e.History()
 	return histApplications(h, rnd, addr, appIDGT, limit, includeParams)
 }
 
@@ -738,6 +773,7 @@ func histApplications(h *histView, rnd basics.Round, addr basics.Address, appIDG
 			}
 		}
 		var p basics.AppParams
+		h.effort.Lookup(true) // the app's params, read from the history
 		creator, ok, err := histParams(h, rnd, timetravel.AppParamsKey(r.AppID), &p)
 		if err != nil {
 			return nil, 0, err
@@ -756,10 +792,15 @@ func histApplications(h *histView, rnd basics.Round, addr basics.Address, appIDG
 // LookupLatestAt is LookupLatest at round rnd: the account with all its
 // resources and pending rewards applied.
 func (l *Ledger) LookupLatestAt(rnd basics.Round, addr basics.Address) (basics.AccountData, basics.Round, basics.MicroAlgos, error) {
-	h := l.historyNow(rnd)
+	return l.lookupLatestAt(rnd, addr, nil)
+}
+
+func (l *Ledger) lookupLatestAt(rnd basics.Round, addr basics.Address, e *ledgercore.Effort) (basics.AccountData, basics.Round, basics.MicroAlgos, error) {
+	h := l.historyNow(rnd, e)
 	if h == nil {
 		return basics.AccountData{}, 0, basics.MicroAlgos{}, errHistoryUnavailable
 	}
+	e.History()
 	return histLatest(h, rnd, addr)
 }
 
@@ -790,6 +831,7 @@ func histLatest(h *histView, rnd basics.Round, addr basics.Address) (basics.Acco
 		var p basics.AssetParams
 		var creator basics.Address
 		var ok bool
+		h.effort.Lookup(true) // the asset's params, read from the history
 		creator, ok, err = histParams(h, rnd, timetravel.AssetParamsKey(basics.AssetIndex(cv.id)), &p)
 		if err != nil {
 			return out, 0, withoutRewards, err
@@ -912,7 +954,7 @@ func (t *txTail) checkLeasePastLocked(proto config.ConsensusParams, current, fir
 
 // pastLedger is the ledger as of round rnd, for re-evaluating block rnd+1.
 type pastLedger struct {
-	*Ledger
+	CountedLedger
 	rnd basics.Round
 }
 
@@ -927,7 +969,7 @@ func (p pastLedger) FlushCaches() {}
 // history did not record the online stake: verifyDelta rejects a delta that
 // it changed.
 func (p pastLedger) OnlineCirculation(rnd, voteRnd basics.Round) (basics.MicroAlgos, error) {
-	c, err := p.Ledger.OnlineCirculation(rnd, voteRnd)
+	c, err := p.CountedLedger.OnlineCirculation(rnd, voteRnd)
 	if errors.Is(err, ErrOnlineStakeUnavailable) {
 		t, terr := p.Totals(rnd)
 		return t.Online.Money, terr
@@ -951,6 +993,7 @@ const ReevalAdmissionWait = 250 * time.Millisecond
 // round re-evaluated from the history waits at most ReevalAdmissionWait for a
 // slot (ErrReevalBusy), and stops when ctx is done.
 func (l *Ledger) GetStateDeltaForRoundContext(ctx context.Context, rnd basics.Round) (ledgercore.StateDelta, error) {
+	ledgercore.EffortFromContext(ctx).Lookup(false) // the delta, or the block re-evaluated
 	l.trackerMu.RLock()
 	sd, err := l.accts.lookupStateDelta(rnd)
 	l.trackerMu.RUnlock()
@@ -989,7 +1032,7 @@ func (l *Ledger) reevalDelta(ctx context.Context, rnd basics.Round, wait time.Du
 		return ledgercore.StateDelta{}, ErrReevalBusy
 	}
 	defer func() { <-l.history.reeval }()
-	sd, err := eval.Eval(ctx, pastLedger{l, rnd - 1}, blk, false, nil, nil, nil)
+	sd, err := eval.Eval(ctx, pastLedger{l.Counted(ledgercore.EffortFromContext(ctx)), rnd - 1}, blk, false, nil, nil, nil)
 	if err != nil {
 		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
 	}
