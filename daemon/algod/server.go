@@ -41,6 +41,7 @@ import (
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/ledger/simulation"
+	"github.com/algorand/go-algorand/ledger/timetravel"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/logging/telemetryspec"
 	"github.com/algorand/go-algorand/network"
@@ -225,6 +226,23 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 				// do not fail but log the error
 				s.log.Errorf("Failed to set a new RLIMIT_NOFILE value to %d (max %d): %s", fdRequired, hard, fdErr.Error())
 			}
+		}
+	}
+
+	// The time travel store is a pebble DB of its own, open alongside the ledger's. Its
+	// MaxOpenFiles is a ceiling, not a steady need, so it doesn't take connections away
+	// above: raise the soft limit as far as the hard limit allows, and warn if that's short.
+	if cfg.EnableTimeTravel {
+		var ttOt basics.OverflowTracker
+		ttRequired := ttOt.Add(fdRequired, timetravel.MaxOpenFiles)
+		if ttOt.Overflowed {
+			return errors.New("Initialize() overflowed when adding up the time travel store's files to the existing RLIMIT_NOFILE value")
+		}
+		if _, hard, fdErr := util.GetFdLimits(); fdErr == nil && ttRequired > hard {
+			s.log.Warnf("RLIMIT_NOFILE allows %d file descriptors, below the %d that connections, the ledger and the time travel store (%d files) may use; raise the hard limit", hard, ttRequired, timetravel.MaxOpenFiles)
+		}
+		if fdErr := util.RaiseFdSoftLimit(ttRequired); fdErr != nil {
+			s.log.Errorf("Failed to raise RLIMIT_NOFILE to %d for the time travel store: %s", ttRequired, fdErr.Error())
 		}
 	}
 
