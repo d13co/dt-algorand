@@ -80,9 +80,8 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Node.Simulate sets the same limits for every round; set them here so the check covers them.
-	// The rounds share one trace budget.
-	base := convertSimulationRequest(request).WithNodeLimits(cfg).
-		WithTraceBudget(simulation.NewTraceBudget(cfg.MaxAPISimulateTraceBytes))
+	// The rounds share one trace budget, set once the request is admitted.
+	base := convertSimulationRequest(request).WithNodeLimits(cfg)
 	if err := base.Validate(cfg.EnableDeveloperAPI); err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
@@ -113,6 +112,11 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		return answerAdmission(ctx, err, v2.Log)
 	}
 	defer releaseSimulate(limiter)
+	// The rounds count their work in one Effort.
+	effort := v2.startEffort(ctx)
+	reqCtx = contextWithEffort(reqCtx, effort)
+	budget := effortTraceBudget(cfg.MaxAPISimulateTraceBytes, effort)
+	base = base.WithTraceBudget(budget)
 	responses := make([]*PreEncodedSimulateResponse, len(distinct))
 	errs := make([]error, len(distinct))
 	work := make(chan int)
@@ -157,6 +161,7 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	stopWaiting()
 	// Every worker has stopped writing to responses and errs once Wait returns.
 	wg.Wait()
+	effort.SetTraceBytes(budget.Used())
 
 	if clientGone(ctx) {
 		// There is no one to write the response to. Returning the error would make echo log a 500

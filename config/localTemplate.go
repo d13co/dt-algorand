@@ -634,6 +634,15 @@ type Local struct {
 	// another node. 0 or less means GOMAXPROCS, the CPUs the process may use. Non-standard fork feature.
 	SimulateParallelism int `version[39]:"0"`
 
+	// EnableEffortHeader adds an X-Algod-Effort response header, the work the request did, to simulate
+	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=). It is
+	// an RFC 9651 dictionary of integers: opcodes (app and logicsig budget consumed), lookups (ledger
+	// objects read), history (of those, read from the time travel history), scanned (entries read by
+	// scans), trace-bytes (execution trace size) and eval-us (time spent). Answers given before any work
+	// (503 when busy, 400 for most invalid parameters) don't carry it; a 400 for a trace too large does. Meant for a load balancer that bills on it
+	// and removes it before answering clients. Non-standard fork feature.
+	EnableEffortHeader bool `version[39]:"false"`
+
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation
 	// and SHOULD NOT be used for other reasons than testing.

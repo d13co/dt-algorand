@@ -196,8 +196,10 @@ func (v2 *Handlers) simulateOnce(ctx echo.Context, request simulation.Request) (
 	}
 	defer releaseSimulate(v2.SimulateLimiter)
 
-	budget := simulation.NewTraceBudget(v2.Node.Config().MaxAPISimulateTraceBytes)
-	result, err = v2.Node.Simulate(request.WithContext(reqCtx).WithTraceBudget(budget))
+	effort := v2.startEffort(ctx)
+	budget := effortTraceBudget(v2.Node.Config().MaxAPISimulateTraceBytes, effort)
+	result, err = v2.Node.Simulate(request.WithContext(contextWithEffort(reqCtx, effort)).WithTraceBudget(budget))
+	effort.SetTraceBytes(budget.Used())
 	if err != nil {
 		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
 			return simulation.Result{}, true, answerErr
@@ -228,7 +230,7 @@ func (v2 *Handlers) stateDeltaForRound(ctx echo.Context, rnd basics.Round) (sd l
 	}
 	reqCtx, cancel := requestContext(ctx, v2.Node.Config())
 	defer cancel()
-	sd, err = cl.GetStateDeltaForRoundContext(reqCtx, rnd)
+	sd, err = cl.GetStateDeltaForRoundContext(contextWithEffort(reqCtx, v2.startEffort(ctx)), rnd)
 	if err != nil {
 		if errors.Is(err, ledger.ErrReevalBusy) {
 			return sd, true, answerBusy(ctx, err, v2.Log)

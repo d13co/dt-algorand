@@ -186,6 +186,8 @@ func (v2 *Handlers) versionsRange(ctx echo.Context, q versionsQuery) (versionsLe
 	if rs := r.Rounds; rs != nil {
 		r.Min, r.Max = min(rs[0], rs[len(rs)-1]), max(rs[0], rs[len(rs)-1])
 	}
+	// The page counts the entries it reads.
+	r.Ctx = contextWithEffort(r.Ctx, v2.startEffort(ctx))
 	return vl, r, nil
 }
 

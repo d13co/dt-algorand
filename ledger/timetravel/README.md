@@ -91,9 +91,24 @@ Every simulate request, with or without `rounds`, is bounded in time and stops w
 
 - **Time limit.** A request may run for `RestWriteTimeoutSeconds` less one second (the second is left to write the answer; no margin below 2 s; no limit at 0). A request without `rounds` that reaches it gets a 504. With `rounds`, the rounds that finished keep their results and the others get the `error` `not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)`.
 - **Client gone.** When the client disconnects (or a load balancer closes the connection), the simulation stops and no response is written.
-- Both stop the simulation between groups, between rounds, and inside a running program every 1024 opcodes, so a large extra opcode budget can't keep the node busy after either.
+- Both stop the simulation between groups, between rounds, and inside a running program every 16,384 units of budget, so a large extra opcode budget can't keep the node busy after either.
 - **Node-wide concurrency.** `SimulateParallelism` (default 0 = GOMAXPROCS) is the most simulations that run at once across the node: one per request without `rounds`, one per round being simulated. A request that can't get a slot within 250 ms gets a 503 with `Retry-After: 1`, so a load balancer can send it to another node. A `rounds` request keeps its first slot until it ends, and its other rounds wait for slots within the time limit.
 - **Time travel reads.** The versions endpoints stop at the same time limit (504) and when the client goes away. A `/v2/deltas/{round}` older than the in-memory deltas is rebuilt by re-evaluating its block in one of two node-wide slots: it waits at most 250 ms for one, then gets a 503 with `Retry-After: 1`, and it stops at the time limit or when the client goes away.
+
+#### Effort header
+
+With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, trace-bytes=0, eval-us=5310`. Readers should ignore keys they don't know.
+
+| Key | Counts |
+|---|---|
+| `opcodes` | App and logicsig budget consumed, over every group and distinct round (a round listed twice in `rounds` runs once): the sum of `app-budget-consumed` and `logic-sig-budget-consumed`, plus programs that ran before the time limit or an error stopped them, which the response doesn't report. 0 for a rebuilt delta. |
+| `lookups` | Ledger objects read: accounts, holdings, apps, boxes, headers, totals, creators. An evaluator reads an object once per simulated block; with `parallel-groups` each group has its own evaluator, so an object shared by groups counts once per group. A delta counts one, plus the reads of a rebuild. |
+| `history` | The lookups the time travel history answered: a point read (an account, a holding, a box) or a box listing when the trackers no longer hold its round, and every read of an account's full state or its asset or app listings at a past round, which only the history serves. At most `lookups`. |
+| `scanned` | Entries read by scans: versions read by the versions endpoints, and history entries iterated by listings the history answered (assets, apps, boxes). |
+| `trace-bytes` | The execution trace's estimated size, as `MaxAPISimulateTraceBytes` counts it; over the limit on a 400 for a trace too large. |
+| `eval-us` | Microseconds from the start of the work (after admission) to the answer. For diagnostics. |
+
+Every answer written after the work started carries it: 200 (also a `rounds` answer at the time limit), 504 at the time limit, 400 for a trace too large, and the errors found during the work (a simulate request the simulator rejects, a delta that isn't stored, a past-round read that fails), with what was counted so far. 503s never carry it (the node was too busy to start), nor do requests refused before the work started (most invalid parameters), nor reads at the latest round. A request whose client went away writes nothing. Enable it only behind a proxy that removes it before answering clients.
 
 #### Validity window modes
 

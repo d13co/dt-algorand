@@ -68,6 +68,7 @@ var defaultLocal = Local{
 	EnableBlockService:                         false,
 	EnableDHTProviders:                         false,
 	EnableDeveloperAPI:                         false,
+	EnableEffortHeader:                         false,
 	EnableExperimentalAPI:                      false,
 	EnableFollowMode:                           false,
 	EnableGossipBlockService:                   true,
