@@ -17,14 +17,10 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -46,12 +42,9 @@ const (
 	kindFull    = "full"
 )
 
-// sigNamespace is the ssh-keygen -Y namespace of manifest signatures, so that
-// a key used for other things can't be made to sign a manifest by accident.
-const sigNamespace = "dtalgorand-ttsnap"
-
-// manifestFormat is the version of the manifest layout.
-const manifestFormat = 1
+// manifestFormat is the version of the manifest layout: 2 has the history
+// commitment, and is signed with Falcon-1024.
+const manifestFormat = 2
 
 // maxFileSize bounds the size a manifest may claim for one file (16 TiB).
 const maxFileSize = 1 << 44
@@ -66,7 +59,23 @@ type Manifest struct {
 	Created     string `json:"created"`
 	Producer    string `json:"producer"`
 	Info
-	Files []File `json:"files"`
+	// Commitment is the history's commitment up to its last round, which
+	// fetch recomputes from the downloaded files.
+	Commitment *CommitmentInfo `json:"commitment"`
+	// Catchpoint is a catchpoint label that the history reaches, which
+	// ttsnap catchup uses when the network's latest catchpoint is past it.
+	Catchpoint string `json:"catchpoint,omitempty"`
+	Files      []File `json:"files"`
+}
+
+// CommitmentInfo is a history's commitment (timetravel.Store.Commitment) and
+// what it counted.
+type CommitmentInfo struct {
+	Digest   string `json:"digest"` // hex
+	Objects  uint64 `json:"objects"`
+	Versions uint64 `json:"versions"`
+	Headers  uint64 `json:"headers"`
+	Expired  uint64 `json:"expired"`
 }
 
 // File is one published file: its path relative to the genesis directory.
@@ -104,6 +113,9 @@ func (m *Manifest) validate(kind, genesisID, genesisHash string) error {
 	}
 	if m.GenesisID != genesisID || m.GenesisHash != genesisHash {
 		return fmt.Errorf("the snapshot is of network %s (%s), the data directory's is %s (%s)", m.GenesisID, m.GenesisHash, genesisID, genesisHash)
+	}
+	if _, err := m.statement(); err != nil {
+		return err
 	}
 	if m.History.First != 0 || m.History.BoxIndexFrom != 0 {
 		return fmt.Errorf("the snapshot's history starts at round %d with its box index from round %d; only a full history is installed", m.History.First, m.History.BoxIndexFrom)
@@ -144,7 +156,7 @@ func (m *Manifest) validate(kind, genesisID, genesisHash string) error {
 
 // manifestName is the file name of a snapshot's manifest. Manifests and
 // their signatures never change once published, so that a cache can't pair a
-// manifest with another one's signature.
+// manifest with another one's signature (manifest.json.sig).
 func manifestName(kind string, last basics.Round) string {
 	return fmt.Sprintf("%s-%d.json", kind, last)
 }
@@ -189,36 +201,4 @@ func decodeManifest(b []byte) (*Manifest, error) {
 		return nil, fmt.Errorf("decoding the manifest: %w", err)
 	}
 	return &m, nil
-}
-
-// sign writes file.sig, the signature of file with the ssh key at key.
-func sign(key, file string) error {
-	if err := os.Remove(file + ".sig"); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	cmd := exec.Command("ssh-keygen", "-q", "-Y", "sign", "-f", key, "-n", sigNamespace, file)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh-keygen -Y sign: %v: %s", err, bytes.TrimSpace(out))
-	}
-	return nil
-}
-
-// verifySignature checks that sig signs msg by signer, a principal of the
-// allowed signers file, in the manifest namespace.
-func verifySignature(msg, sig []byte, allowedSigners, signer string) error {
-	dir, err := os.MkdirTemp("", "ttsnap-sig")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	sigFile := filepath.Join(dir, "manifest.sig")
-	if err := os.WriteFile(sigFile, sig, 0o600); err != nil {
-		return err
-	}
-	cmd := exec.Command("ssh-keygen", "-Y", "verify", "-f", allowedSigners, "-I", signer, "-n", sigNamespace, "-s", sigFile)
-	cmd.Stdin = bytes.NewReader(msg)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("the manifest's signature does not verify for %s with %s: %s", signer, allowedSigners, bytes.TrimSpace(out))
-	}
-	return nil
 }

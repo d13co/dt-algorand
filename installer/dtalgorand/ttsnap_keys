@@ -1,0 +1,13 @@
+# Falcon-1024 public keys that `ttsnap fetch` checks snapshots against, one per line:
+#
+#   <name> <role> <base64 public key>
+#
+# A producer key signs the manifests of the snapshots it publishes; `ttsnap fetch` installs only a
+# manifest signed by one. An attester key signs statements about the history its own node built;
+# `ttsnap fetch -min-attest N` requires N of them to have signed the snapshot's statement.
+# `ttsnap keygen -o <key file> -name <name> -role producer|attester` makes a key and prints its line.
+#
+# A private key stays on its host. To retire a key, remove its line (and ship a package update); to
+# trust keys of your own, pass `ttsnap fetch -keys <your file>` instead of editing this one.
+#
+# No key yet: xtah's (mainnet producer) goes here once it is generated.

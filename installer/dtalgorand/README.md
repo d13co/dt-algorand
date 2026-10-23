@@ -24,7 +24,7 @@ Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the 
 | `/usr/bin/dt*` | links to them: `dtalgod`, `dtgoal`, `dtkmd`, `dtalgoh`, `dtalgocfg`, `dtalgokey`, `dtdiagcfg` |
 | `/usr/bin/ttimport` | [ttimport](../../tools/ttimport/README.md) |
 | `/usr/bin/ttsnap` | [ttsnap](../../tools/ttsnap/README.md): install a history snapshot, then catch up from a catchpoint |
-| `/usr/share/dtalgorand/ttsnap/allowed_signers` | the public keys `ttsnap fetch` accepts manifests from |
+| `/usr/share/dtalgorand/ttsnap/keys` | the Falcon-1024 keys of the snapshot producers and attesters `ttsnap fetch` trusts |
 | `/var/lib/dtalgorand/` | the node's data directory, with mainnet's `genesis.json` and the other networks' under `genesis/` |
 | `dtalgorand.service`, `dtalgorand@.service` | the node, and nodes for other data directories (see the unit's comments) |
 | `/etc/apt/apt.conf.d/51dtalgorand-upgrades` | unattended upgrades from `apt.d13.co`, suite `stable` |

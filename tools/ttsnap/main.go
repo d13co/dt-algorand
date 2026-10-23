@@ -28,17 +28,26 @@ import (
 
 const usageText = `ttsnap: snapshots of a time travel node's history
 
+Keys:
+  ttsnap keygen -o <key file> -name <name> [-role producer|attester]
+                                                   make a Falcon-1024 key, print its keys file line
+
 Producer (on a writable copy of a node's genesis directory, e.g. a btrfs snapshot):
   ttsnap prepare [-full] <genesis dir>             make the copy self-contained, print what it holds
-  ttsnap publish -o <out> -key <ssh key> [-full] <genesis dir>
+  ttsnap publish -o <out> -key <key file> [-full] [-catchpoint <label>] <genesis dir>
                                                    add it to a static snapshot tree, signed
   ttsnap gc -o <out> [-keep N]                     drop older snapshots and unreferenced blobs
   ttsnap info [-full] <genesis dir>                print what a genesis directory holds
 
+Attester (a node that built its history itself):
+  ttsnap attest -key <key file> -d <data dir> (-url <base URL> | -round R) -o <out>
+                                                   sign the statement the node's history makes
+  ttsnap commitment -d <data dir> [-round R]       print the commitment of a node's history
+
 Consumer:
-  ttsnap fetch -url <base URL> -d <data dir> [-keys <allowed signers>] [-full -trust-producer]
+  ttsnap fetch -url <base URL> -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]
                                                    download, verify and install the latest snapshot
-  ttsnap catchup -d <data dir> [-label <catchpoint>]
+  ttsnap catchup -d <data dir> [-label <catchpoint> | -snapshot-label]
                                                    start the catchpoint catchup on the running node
   ttsnap verify -d <data dir> [-deltas <algod URL> -sample N]
                                                    check the history of a stopped node
@@ -53,13 +62,16 @@ func main() {
 	}
 	logging.Base().SetLevel(logging.Warn)
 	commands := map[string]func([]string) error{
-		"prepare": cmdPrepare,
-		"publish": cmdPublish,
-		"gc":      cmdGC,
-		"info":    cmdInfo,
-		"fetch":   cmdFetch,
-		"catchup": cmdCatchup,
-		"verify":  cmdVerify,
+		"keygen":     cmdKeygen,
+		"commitment": cmdCommitment,
+		"attest":     cmdAttest,
+		"prepare":    cmdPrepare,
+		"publish":    cmdPublish,
+		"gc":         cmdGC,
+		"info":       cmdInfo,
+		"fetch":      cmdFetch,
+		"catchup":    cmdCatchup,
+		"verify":     cmdVerify,
 	}
 	cmd, ok := commands[os.Args[1]]
 	if !ok {

@@ -22,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/algorand/go-deadlock"
 )
 
 // progressEvery is how often a long task reports how far it is.
@@ -153,7 +155,7 @@ func roundDuration(d time.Duration) string {
 
 // syncWriter serializes the writes of several goroutines to w.
 type syncWriter struct {
-	mu sync.Mutex
+	mu deadlock.Mutex
 	w  io.Writer
 }
 

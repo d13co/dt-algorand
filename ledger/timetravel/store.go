@@ -151,6 +151,10 @@ type Store struct {
 	// it as recursive locking in ttdump's tests, so it stays a sync.RWMutex.
 	closeMu sync.RWMutex `algofix:"allow sync.Mutex"`
 	closed  bool
+	// closing is closed when Close starts, so that long reads (Commitment)
+	// stop instead of holding Close, and every reader behind it, for minutes
+	closing   chan struct{}
+	closeOnce sync.Once
 }
 
 // commitBatch commits a round's batch; tests make it fail.
@@ -218,7 +222,7 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly}
+	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, closing: make(chan struct{})}
 	if !o.ReadOnly {
 		s.dedup = newLastWritten(o.DedupEntries)
 	}
@@ -365,6 +369,7 @@ func (quietLogger) Fatalf(f string, args ...any) { pebble.DefaultLogger.Fatalf(f
 
 // Close closes the store, waiting for in-flight operations.
 func (s *Store) Close() error {
+	s.closeOnce.Do(func() { close(s.closing) })
 	s.closeMu.Lock()
 	defer s.closeMu.Unlock()
 	if s.closed {

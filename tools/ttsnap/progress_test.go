@@ -73,11 +73,12 @@ func TestPublishSaysWhatItDid(t *testing.T) {
 	_, _, err := prepare(n.producer, false, nil)
 	require.NoError(t, err)
 	var log bytes.Buffer
-	_, err = publish(n.producer, n.out, n.key, false, &log)
+	_, err = publish(n.producer, n.out, publishOpts{signer: n.signer}, &log)
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(log.String()), "\n")
 	require.Regexp(t, `^publishing \d+ files, \d+ KiB, of rounds 0\.\.30$`, lines[0])
 	require.Regexp(t, `(?m)^hashed \d+ KiB in .+, \d+ KiB of it new$`, log.String())
+	require.Regexp(t, `^commitment of rounds 0\.\.30: \d+ objects, \d+ versions, 31 headers, 0 expired stake records, in .+$`, lines[len(lines)-1])
 }
 
 // TestDownloadCountsOnce checks that the bytes of a download cut short count

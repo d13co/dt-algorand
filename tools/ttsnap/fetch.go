@@ -37,6 +37,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
+
+	"github.com/algorand/go-deadlock"
+
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/data/bookkeeping"
@@ -47,11 +51,8 @@ import (
 )
 
 // The dtalgorand package installs the public keys of its snapshot producers
-// here, in ssh-keygen's allowed signers format.
-const (
-	defaultAllowedSigners = "/usr/share/dtalgorand/ttsnap/allowed_signers"
-	defaultSigner         = "snapshots@dtalgorand"
-)
+// and attesters here (see readKeys).
+const defaultKeys = "/usr/share/dtalgorand/ttsnap/keys"
 
 // installedFile records, in the genesis directory, the manifest of the
 // snapshot that fetch installed; catchup reads it.
@@ -68,7 +69,8 @@ type fetchOpts struct {
 	base        string // base URL of the snapshot tree
 	manifest    string // manifest path in the tree; empty: the latest
 	keys        string
-	signer      string
+	minAttest   int // attester signatures of the statement required
+	workers     int // goroutines that compute the commitment
 	full        bool
 	parallel    int
 	stallLimit  time.Duration
@@ -83,18 +85,19 @@ func cmdFetch(args []string) error {
 	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree")
 	fs.StringVar(&o.dataDir, "d", "", "data directory of the new node: genesis.json, and config.json with EnableTimeTravel")
 	fs.StringVar(&o.manifest, "manifest", "", "path of a manifest in the tree to install instead of the latest, e.g. snapshots/mainnet-v1.0/history-123.json")
-	fs.StringVar(&o.keys, "keys", defaultAllowedSigners, "allowed signers file (ssh-keygen -Y verify) with the producers' public keys")
-	fs.StringVar(&o.signer, "signer", defaultSigner, "principal in the allowed signers file that must have signed the manifest")
+	fs.StringVar(&o.keys, "keys", defaultKeys, "keys file with the producers' and attesters' public keys")
+	fs.IntVar(&o.minAttest, "min-attest", 0, "attesters of the keys file that must have signed the snapshot's statement")
+	fs.IntVar(&o.workers, "workers", 0, "goroutines that compute the downloaded history's commitment; 0: one per CPU")
 	fs.BoolVar(&o.full, "full", false, "install the whole ledger instead of the history alone; needs -trust-producer")
 	trust := fs.Bool("trust-producer", false, "accept a full snapshot's state from the producer without checking it against a catchpoint")
 	fs.IntVar(&o.parallel, "parallel", 4, "files downloaded at once")
 	fs.DurationVar(&o.maxAge, "max-age", 7*24*time.Hour, "refuse a latest snapshot older than this (a mirror can serve a stale latest pointer, which is not signed); 0: any age")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: ttsnap fetch -url <base URL> -d <data dir> [-keys <allowed signers>] [-full -trust-producer]")
+		fmt.Fprintln(fs.Output(), "usage: ttsnap fetch -url <base URL> -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args) // flag.ExitOnError
-	if o.base == "" || o.dataDir == "" || fs.NArg() != 0 || o.parallel < 1 {
+	if o.base == "" || o.dataDir == "" || fs.NArg() != 0 || o.parallel < 1 || o.minAttest < 0 {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -153,6 +156,10 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 		}
 	}
 
+	keys, err := readKeys(o.keys)
+	if err != nil {
+		return nil, "", err
+	}
 	ctx := context.Background()
 	mpath := o.manifest
 	if mpath == "" {
@@ -182,8 +189,9 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if err = verifySignature(body, sig, o.keys, o.signer); err != nil {
-		return nil, "", err
+	producer, err := verifySigFile(sig, manifestMessage(body), keys, roleProducer)
+	if err != nil {
+		return nil, "", fmt.Errorf("the manifest's signature: %w", err)
 	}
 	m, err := decodeManifest(body)
 	if err != nil {
@@ -200,6 +208,22 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 		if age := time.Since(created); age > o.maxAge {
 			return nil, "", fmt.Errorf("the latest snapshot is %v old, more than -max-age %v: the mirror may serve a stale pointer, which is not signed; pass -max-age 0 or -manifest to install it anyway", age.Round(time.Hour), o.maxAge)
 		}
+	}
+
+	stmt, err := m.statement()
+	if err != nil {
+		return nil, "", err
+	}
+	fmt.Fprintf(o.progressLog, "%s, signed by %s\n", stmt, producer.Name)
+	if o.minAttest > 0 {
+		signed, problems := o.attestations(ctx, m.GenesisID, stmt, keys)
+		for _, p := range problems {
+			fmt.Fprintln(o.progressLog, p)
+		}
+		if len(signed) < o.minAttest {
+			return nil, "", fmt.Errorf("%d attesters signed the statement (%s), -min-attest is %d", len(signed), strings.Join(signed, ", "), o.minAttest)
+		}
+		fmt.Fprintf(o.progressLog, "attested by %s\n", strings.Join(signed, ", "))
 	}
 
 	// only now: resolving the dirs creates them
@@ -271,11 +295,15 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("the downloaded history: %w", err)
 	}
-	if nw.hash != m.GenesisHash || nw.id != m.GenesisID || hi.First != 0 || hi.Last != m.History.Last || hi.BoxIndexFrom != 0 {
-		return nil, "", fmt.Errorf("the downloaded history (network %s, rounds %d..%d, box index from %d) is not what the manifest says (network %s, rounds 0..%d)", nw.id, hi.First, hi.Last, hi.BoxIndexFrom, m.GenesisID, m.History.Last)
+	if nw.hash != m.GenesisHash || nw.id != m.GenesisID || hi.First != 0 || hi.Last != m.History.Last || hi.LastHash != m.History.LastHash || hi.BoxIndexFrom != 0 {
+		return nil, "", fmt.Errorf("the downloaded history (network %s, rounds %d..%d ending in %s, box index from %d) is not what the manifest says (network %s, rounds 0..%d ending in %s)", nw.id, hi.First, hi.Last, hi.LastHash, hi.BoxIndexFrom, m.GenesisID, m.History.Last, m.History.LastHash)
 	}
 	fmt.Fprintln(o.progressLog, "checking the headers")
 	if err = checkHeaders(histStage, genesis.Hash(), o.progressLog); err != nil {
+		return nil, "", fmt.Errorf("the downloaded history: %w", err)
+	}
+	// the content, whatever the files: the statement's commitment
+	if err = o.canonicalize(histStage, hi, m, path.Base(mpath)); err != nil {
 		return nil, "", fmt.Errorf("the downloaded history: %w", err)
 	}
 	if kind == kindFull {
@@ -682,6 +710,9 @@ func getSmall(ctx context.Context, client *http.Client, u string, limit int64) (
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("GET %s: %s: %w", u, resp.Status, errNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: %s", u, resp.Status)
 	}
@@ -693,6 +724,96 @@ func getSmall(ctx context.Context, client *http.Client, u string, limit int64) (
 		return nil, fmt.Errorf("GET %s: larger than %d bytes", u, limit)
 	}
 	return b, nil
+}
+
+var errNotFound = errors.New("not found")
+
+// canonicalize makes the downloaded store answer like any other store with
+// the manifest's commitment, or fails: the strict commitment refuses records
+// the commitment does not cover (after the last round, outside the store's
+// keyspaces), the records it leaves out (no-ops, lone tombstones) are deleted,
+// and the box index, which it does not cover either, is rebuilt from the box
+// records. The store is then marked as installed from the snapshot name.
+func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name string) error {
+	st, err := timetravel.Open(dir, timetravel.Options{})
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	fmt.Fprintln(o.progressLog, "computing the history's commitment")
+	// delete what the commitment leaves out as the scan finds it: the scan
+	// reads a snapshot, so the writes don't disturb it
+	var mu deadlock.Mutex
+	b := st.DB().NewBatch()
+	var berr error
+	var removed uint64
+	nonCanonical := func(k []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		if berr != nil {
+			return
+		}
+		if berr = b.Delete(k, nil); berr == nil {
+			removed++
+			if b.Count() >= 1<<16 {
+				berr = b.Commit(pebble.NoSync)
+				b.Close()
+				b = st.DB().NewBatch()
+			}
+		}
+	}
+	got, hdrHash, err := commitmentOf(st, hi.Last, timetravel.CommitmentOptions{Workers: o.workers, Strict: true, NonCanonical: nonCanonical}, o.progressLog)
+	if err == nil {
+		err = berr
+	}
+	if err == nil {
+		err = b.Commit(pebble.Sync)
+	}
+	b.Close()
+	if err != nil {
+		return err
+	}
+	if hdrHash.String() != hi.LastHash {
+		return fmt.Errorf("round %d's header hash is %s, not %s", hi.Last, hdrHash, hi.LastHash)
+	}
+	if *got != *m.Commitment {
+		return fmt.Errorf("its commitment is %s (%d objects, %d versions), the manifest's %s (%d objects, %d versions)", got.Digest, got.Objects, got.Versions, m.Commitment.Digest, m.Commitment.Objects, m.Commitment.Versions)
+	}
+	fmt.Fprintf(o.progressLog, "removed %d records the commitment leaves out; rebuilding the box index\n", removed)
+	if _, err = st.IndexBoxes(context.Background(), nil); err != nil {
+		return err
+	}
+	return st.SetInstalled(name)
+}
+
+// attestations fetches the attesters' signatures of stmt from the snapshot
+// tree, and returns the names of the attesters whose signature verifies, and
+// what was wrong with the others' (none published is not a problem).
+func (o *fetchOpts) attestations(ctx context.Context, genesisID string, stmt Statement, keys []Key) (signed, problems []string) {
+	msg := stmt.Bytes()
+	for _, k := range keys {
+		if k.Role != roleAttester {
+			continue
+		}
+		u, err := joinURL(o.base, statementSigPath(genesisID, stmt.Round, k.ID()))
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		b, err := getSmall(ctx, o.client, u, 64<<10)
+		if errors.Is(err, errNotFound) {
+			continue
+		}
+		if err == nil {
+			_, err = verifySigFile(b, msg, []Key{k}, roleAttester)
+		}
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("attester %s: %v", k.Name, err))
+			continue
+		}
+		signed = append(signed, k.Name)
+	}
+	return signed, problems
 }
 
 // joinURL appends a path of the snapshot tree to its base URL. The path must

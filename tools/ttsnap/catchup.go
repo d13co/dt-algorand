@@ -40,14 +40,15 @@ import (
 
 // catchpointURL is where goal node catchup looks up a network's latest
 // catchpoint label (cmd/goal/node.go).
-const catchpointURL = "https://algorand-catchpoints.s3.us-east-2.amazonaws.com/channel/%s/latest.catchpoint"
+var catchpointURL = "https://algorand-catchpoints.s3.us-east-2.amazonaws.com/channel/%s/latest.catchpoint"
 
 func cmdCatchup(args []string) error {
 	fs := flag.NewFlagSet("catchup", flag.ExitOnError)
 	dataDir := fs.String("d", "", "data directory of the running node")
 	label := fs.String("label", "", "catchpoint label to catch up to; default: the network's latest from "+fmt.Sprintf(catchpointURL, "<network>"))
+	snapshotLabel := fs.Bool("snapshot-label", false, "when the network's latest catchpoint is past the installed history, use the one its producer recorded (the producer's word for the account state)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: ttsnap catchup -d <data dir> [-label <round>#<hash>]")
+		fmt.Fprintln(fs.Output(), "usage: ttsnap catchup -d <data dir> [-label <round>#<hash> | -snapshot-label]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args) // flag.ExitOnError
@@ -55,47 +56,36 @@ func cmdCatchup(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	return catchup(*dataDir, *label, http.DefaultClient)
+	return catchup(*dataDir, *label, *snapshotLabel, http.DefaultClient)
 }
 
 // catchup checks that the installed history reaches the catchpoint's
 // balances round, then asks the node to start the catchup. The node checks
 // the history against the catchpoint again before it applies it.
-func catchup(dataDir, label string, client *http.Client) error {
+func catchup(dataDir, label string, useSnapshot bool, client *http.Client) error {
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(dataDir, config.GenesisJSONFile))
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if label == "" {
-		network, _, _ := strings.Cut(genesis.ID(), "-")
-		b, gerr := getSmall(ctx, client, fmt.Sprintf(catchpointURL, network), 1024)
-		if gerr != nil {
-			return fmt.Errorf("looking up the latest catchpoint (or pass -label): %w", gerr)
-		}
-		label = strings.TrimSpace(string(b))
-	}
-	rnd, _, err := ledgercore.ParseCatchpointLabel(label)
-	if err != nil {
-		return err
-	}
-	if m, ierr := installed(dataDir, genesis); ierr == nil {
-		// the node checks against the lookback of the protocol it runs, the
-		// catchup against the catchpoint block's: this is a first check
-		proto := config.Consensus[protocol.ConsensusCurrentVersion]
-		lookback := proto.CatchpointLookback
-		if lookback == 0 {
-			lookback = proto.MaxBalLookback
-		}
-		b := rnd.SubSaturate(basics.Round(lookback))
-		if m.History.Last < b {
-			return fmt.Errorf("the installed history ends at round %d, catchpoint %s needs round %d: fetch a newer history snapshot, or pass an older -label", m.History.Last, label, b)
-		}
-	} else if !os.IsNotExist(ierr) {
+	m, ierr := installed(dataDir, genesis)
+	if ierr != nil && !os.IsNotExist(ierr) {
 		return ierr
 	}
-
+	if label == "" {
+		if label, err = chooseLabel(ctx, client, genesis, m, useSnapshot); err != nil {
+			return err
+		}
+	}
+	if _, _, err = ledgercore.ParseCatchpointLabel(label); err != nil {
+		return err
+	}
+	if m != nil {
+		if err = checkLabel(label, m.History.Last); err != nil {
+			return fmt.Errorf("%w: fetch a newer history snapshot, or pass an older -label", err)
+		}
+	}
 	nc := nodecontrol.MakeNodeController("", dataDir)
 	u, err := nc.ServerURL()
 	if err != nil {
@@ -119,6 +109,57 @@ func catchup(dataDir, label string, client *http.Client) error {
 		return fmt.Errorf("POST %s: %s: %s", u.Path, resp.Status, strings.TrimSpace(string(body)))
 	}
 	fmt.Printf("catching up to %s; follow it with: goal node status -d %s\n", label, dataDir)
+	return nil
+}
+
+// chooseLabel returns the catchpoint to catch up to: the network's latest,
+// which the history of the installed snapshot m must reach. The catchpoint
+// the producer recorded in m, which a daily snapshot needs most of the time,
+// is used only with useSnapshot: a catchpoint label is what the node's account
+// state is checked against, and this one is the producer's word, which no
+// attester checks.
+func chooseLabel(ctx context.Context, client *http.Client, genesis bookkeeping.Genesis, m *Manifest, useSnapshot bool) (string, error) {
+	snapshotLabel := ""
+	if m != nil && m.Catchpoint != "" && checkLabel(m.Catchpoint, m.History.Last) == nil {
+		snapshotLabel = m.Catchpoint
+	}
+	network, _, _ := strings.Cut(genesis.ID(), "-")
+	u := fmt.Sprintf(catchpointURL, network)
+	b, err := getSmall(ctx, client, u, 1024)
+	if err != nil {
+		return "", fmt.Errorf("looking up the latest catchpoint (or pass -label): %w", err)
+	}
+	latest := strings.TrimSpace(string(b))
+	if m == nil || checkLabel(latest, m.History.Last) == nil {
+		fmt.Printf("catchpoint %s: the network's latest, from %s\n", latest, u)
+		return latest, nil
+	}
+	switch {
+	case snapshotLabel == "":
+		return latest, nil // refused by the caller
+	case useSnapshot:
+		fmt.Printf("catchpoint %s: the snapshot producer's (the network's latest, %s, is past the history's round %d)\n", snapshotLabel, latest, m.History.Last)
+		return snapshotLabel, nil
+	}
+	return "", fmt.Errorf("the network's latest catchpoint %s is past the history (round %d): pass -snapshot-label to use the one the snapshot's producer recorded, %s, or -label with one from a source you trust, or wait for the next snapshot", latest, m.History.Last, snapshotLabel)
+}
+
+// checkLabel checks that a history whose last round is last reaches the
+// balances round of catchpoint label. It takes the lookback of the current
+// protocol; the node checks against the catchpoint block's, and more.
+func checkLabel(label string, last basics.Round) error {
+	rnd, _, err := ledgercore.ParseCatchpointLabel(label)
+	if err != nil {
+		return err
+	}
+	proto := config.Consensus[protocol.ConsensusCurrentVersion]
+	lookback := proto.CatchpointLookback
+	if lookback == 0 {
+		lookback = proto.MaxBalLookback
+	}
+	if b := rnd.SubSaturate(basics.Round(lookback)); last < b {
+		return fmt.Errorf("the history ends at round %d, catchpoint %s needs round %d", last, label, b)
+	}
 	return nil
 }
 

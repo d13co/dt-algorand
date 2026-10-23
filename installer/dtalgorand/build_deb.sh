@@ -88,7 +88,7 @@ for bin in algocfg algod algoh algokey diagcfg goal kmd; do
 done
 install -m 755 "${GOBIN}/ttimport" "${PKG_ROOT}/usr/bin/ttimport"
 install -m 755 "${GOBIN}/ttsnap" "${PKG_ROOT}/usr/bin/ttsnap"
-install -D -m 644 "${SRC_DIR}/ttsnap_allowed_signers" "${PKG_ROOT}/usr/share/dtalgorand/ttsnap/allowed_signers"
+install -D -m 644 "${SRC_DIR}/ttsnap_keys" "${PKG_ROOT}/usr/share/dtalgorand/ttsnap/keys"
 
 DATA_DIR="${PKG_ROOT}/var/lib/dtalgorand"
 mkdir -p "${DATA_DIR}"

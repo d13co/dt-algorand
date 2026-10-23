@@ -17,13 +17,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
@@ -43,17 +44,16 @@ import (
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-const testSigner = "snapshots@test"
-
 // testNet is a network with a genesis file, a producer genesis directory
-// with a history, an ssh key and a snapshot tree served over HTTP.
+// with a history, the producer's key, a keys file and a snapshot tree served
+// over HTTP.
 type testNet struct {
 	t        *testing.T
 	genesis  bookkeeping.Genesis
 	genBlock bookkeeping.Block
-	producer string // genesis dir
-	key      string
-	signers  string
+	producer string // genesis dir, in a data dir with the genesis file
+	signer   *crypto.FalconSigner
+	keys     string // keys file: the producer's key
 	out      string
 	srv      *httptest.Server
 	hook     atomic.Pointer[func(*http.Request)] // sees each request
@@ -64,10 +64,25 @@ type testNet struct {
 	tamper atomic.Bool
 }
 
+// newKey makes a key file and returns its signer.
+func newKey(t *testing.T) (string, *crypto.FalconSigner) {
+	p := filepath.Join(t.TempDir(), "key")
+	var seed crypto.FalconSeed
+	crypto.RandBytes(seed[:])
+	require.NoError(t, os.WriteFile(p, []byte(seedPrefix+base64.StdEncoding.EncodeToString(seed[:])+"\n"), 0o600))
+	s, err := readSigner(p)
+	require.NoError(t, err)
+	return p, s
+}
+
+// writeKeys writes a keys file of lines.
+func writeKeys(t *testing.T, lines ...string) string {
+	p := filepath.Join(t.TempDir(), "keys")
+	require.NoError(t, os.WriteFile(p, []byte("# test keys\n\n"+strings.Join(lines, "\n")+"\n"), 0o644))
+	return p
+}
+
 func newTestNet(t *testing.T) *testNet {
-	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		t.Skip("needs ssh-keygen")
-	}
 	n := &testNet{t: t}
 	sink, pool := ledgertesting.RandomAddress(), ledgertesting.RandomAddress()
 	n.genesis = bookkeeping.Genesis{
@@ -83,18 +98,14 @@ func newTestNet(t *testing.T) *testNet {
 	n.genBlock, err = bookkeeping.MakeGenesisBlock(n.genesis.Proto, bal, n.genesis.ID(), n.genesis.Hash())
 	require.NoError(t, err)
 
-	n.producer = filepath.Join(t.TempDir(), n.genesis.ID())
+	producerData := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(producerData, config.GenesisJSONFile), protocol.EncodeJSON(&n.genesis), 0o644))
+	n.producer = filepath.Join(producerData, n.genesis.ID())
 	require.NoError(t, os.MkdirAll(n.producer, 0o755))
 	n.addRounds(30)
 
-	dir := t.TempDir()
-	n.key = filepath.Join(dir, "key")
-	out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", testSigner, "-f", n.key).CombinedOutput()
-	require.NoError(t, err, string(out))
-	pub, err := os.ReadFile(n.key + ".pub")
-	require.NoError(t, err)
-	n.signers = filepath.Join(dir, "allowed_signers")
-	require.NoError(t, os.WriteFile(n.signers, []byte(fmt.Sprintf("%s namespaces=%q %s", testSigner, sigNamespace, pub)), 0o644))
+	_, n.signer = newKey(t)
+	n.keys = writeKeys(t, keyLine("producer1", roleProducer, n.signer.PublicKey))
 
 	n.out = t.TempDir()
 	files := http.FileServer(http.Dir(n.out))
@@ -164,7 +175,7 @@ func (n *testNet) serveDelta(w http.ResponseWriter, rnd string) {
 func (n *testNet) publish() *Manifest {
 	_, _, err := prepare(n.producer, false, nil)
 	require.NoError(n.t, err)
-	m, err := publish(n.producer, n.out, n.key, false, nil)
+	m, err := publish(n.producer, n.out, publishOpts{signer: n.signer, workers: 2}, nil)
 	require.NoError(n.t, err)
 	return m
 }
@@ -178,7 +189,7 @@ func (n *testNet) consumer() string {
 }
 
 func (n *testNet) fetch(dataDir string, mod ...func(*fetchOpts)) (*Manifest, error) {
-	o := fetchOpts{dataDir: dataDir, base: n.srv.URL, keys: n.signers, signer: testSigner, parallel: 2, progressLog: io.Discard}
+	o := fetchOpts{dataDir: dataDir, base: n.srv.URL, keys: n.keys, workers: 2, parallel: 2, progressLog: io.Discard}
 	for _, f := range mod {
 		f(&o)
 	}
@@ -201,7 +212,7 @@ func (n *testNet) rewriteLatest(edit func(*Manifest)) {
 	edit(m)
 	b, err = encodeManifest(m)
 	require.NoError(n.t, err)
-	require.NoError(n.t, writeSigned(p, b, n.key))
+	require.NoError(n.t, writeSigned(p, b, n.signer))
 }
 
 // latestManifest is the path of the manifest the latest pointer names.
@@ -263,10 +274,16 @@ func TestFetchRefuses(t *testing.T) {
 	}
 
 	t.Run("signer", func(t *testing.T) {
-		dataDir := n.consumer()
-		_, err := n.fetch(dataDir, func(o *fetchOpts) { o.signer = "someone@else" })
-		require.ErrorContains(t, err, "signature does not verify")
-		nothingWritten(dataDir)
+		_, other := newKey(t)
+		for keys, want := range map[string]string{
+			writeKeys(t, keyLine("other", roleProducer, other.PublicKey)):      "not a producer key",
+			writeKeys(t, keyLine("demoted", roleAttester, n.signer.PublicKey)): "not a producer key",
+		} {
+			dataDir := n.consumer()
+			_, err := n.fetch(dataDir, func(o *fetchOpts) { o.keys = keys })
+			require.ErrorContains(t, err, want)
+			nothingWritten(dataDir)
+		}
 	})
 
 	t.Run("edited", func(t *testing.T) {
@@ -277,7 +294,7 @@ func TestFetchRefuses(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(strings.Replace(string(b), `"last": 30`, `"last": 31`, 1)), 0o644))
 		defer os.WriteFile(p, b, 0o644)
 		_, err = n.fetch(dataDir)
-		require.ErrorContains(t, err, "signature does not verify")
+		require.ErrorContains(t, err, "does not verify")
 		nothingWritten(dataDir)
 	})
 
@@ -506,14 +523,14 @@ func TestPublishOrder(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	n := newTestNet(t)
 	n.publish()
-	_, err := publish(n.producer, n.out, n.key, false, nil)
+	_, err := publish(n.producer, n.out, publishOpts{signer: n.signer}, nil)
 	require.ErrorContains(t, err, "is published already")
 
 	old := t.TempDir()
 	require.NoError(t, os.CopyFS(filepath.Join(old, historyDir), os.DirFS(filepath.Join(n.producer, historyDir))))
 	n.addRounds(5)
 	n.publish()
-	_, err = publish(old, n.out, n.key, false, nil)
+	_, err = publish(old, n.out, publishOpts{signer: n.signer}, nil)
 	require.ErrorContains(t, err, "publish only newer snapshots")
 }
 

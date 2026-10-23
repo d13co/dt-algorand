@@ -31,16 +31,20 @@ import (
 	"time"
 
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger/timetravel"
 )
 
 func cmdPublish(args []string) error {
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
 	out := fs.String("o", "", "snapshot tree to add to (served as is over HTTP)")
-	key := fs.String("key", "", "ssh private key that signs the manifest (ssh-keygen -Y sign)")
+	key := fs.String("key", "", "private key file (ttsnap keygen) that signs the manifest and the statement")
 	full := fs.Bool("full", false, "publish the whole ledger (tracker and block DBs too), not only the history")
+	label := fs.String("catchpoint", "", "a catchpoint label the history reaches, for ttsnap catchup when the network's latest catchpoint is past it; one it doesn't reach is left out")
+	workers := fs.Int("workers", 0, "goroutines that compute the commitment; 0: one per CPU")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: ttsnap publish -o <out> -key <ssh key> [-full] <prepared genesis dir>")
+		fmt.Fprintln(fs.Output(), "usage: ttsnap publish -o <out> -key <key file> [-full] [-catchpoint <label>] <prepared genesis dir>")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args) // flag.ExitOnError
@@ -48,7 +52,11 @@ func cmdPublish(args []string) error {
 		fs.Usage()
 		os.Exit(2)
 	}
-	m, err := publish(fs.Arg(0), *out, *key, *full, os.Stderr)
+	signer, err := readSigner(*key)
+	if err != nil {
+		return err
+	}
+	m, err := publish(fs.Arg(0), *out, publishOpts{signer: signer, full: *full, catchpoint: *label, workers: *workers}, os.Stderr)
 	if errors.Is(err, errPublished) {
 		fmt.Println("nothing to publish:", err)
 		return nil
@@ -60,12 +68,20 @@ func cmdPublish(args []string) error {
 	return nil
 }
 
+type publishOpts struct {
+	signer     *crypto.FalconSigner
+	full       bool
+	catchpoint string
+	workers    int
+}
+
 // publish adds the ledger in dir to the snapshot tree out: every file as a
 // blob named by its SHA-256 (files already there, such as the tables an
-// earlier snapshot shares, are not copied again), then the signed manifest,
-// then the signed latest pointer. It reports its progress to log, if not nil.
-func publish(dir, out, key string, full bool, log io.Writer) (*Manifest, error) {
-	info, nw, err := readInfo(dir, full)
+// earlier snapshot shares, are not copied again), the statement about the
+// history with the producer's signature, then the signed manifest, then the
+// latest pointer. It reports its progress to log, if not nil.
+func publish(dir, out string, o publishOpts, log io.Writer) (*Manifest, error) {
+	info, nw, err := readInfo(dir, o.full)
 	if err != nil {
 		return nil, err
 	}
@@ -73,10 +89,10 @@ func publish(dir, out, key string, full bool, log io.Writer) (*Manifest, error) 
 		return nil, err
 	}
 	kind := kindHistory
-	if full {
+	if o.full {
 		kind = kindFull
 	}
-	paths, err := snapshotFiles(dir, full)
+	paths, err := snapshotFiles(dir, o.full)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +104,33 @@ func publish(dir, out, key string, full bool, log io.Writer) (*Manifest, error) 
 		Created:     time.Now().UTC().Format(time.RFC3339),
 		Producer:    config.GetCurrentVersion().String(),
 		Info:        info,
+	}
+	// before minutes of hashing: a node that has not advanced, or an older
+	// snapshot, publishes nothing
+	latest := filepath.Join(out, filepath.FromSlash(latestPath(m.GenesisID, kind)))
+	if cur, rerr := os.ReadFile(latest); rerr == nil {
+		name, perr := parseLatest(cur, kind)
+		if perr != nil {
+			return nil, perr
+		}
+		if rnd, _ := strconv.ParseUint(manifestFileName.FindStringSubmatch(name)[2], 10, 64); basics.Round(rnd) > info.History.Last {
+			return nil, fmt.Errorf("the latest %s snapshot is of round %d, this one of round %d: publish only newer snapshots", kind, rnd, info.History.Last)
+		}
+	} else if !os.IsNotExist(rerr) {
+		return nil, rerr
+	}
+	mp := filepath.Join(out, filepath.FromSlash(manifestPath(m.GenesisID, kind, info.History.Last)))
+	if _, serr := os.Stat(mp); serr == nil {
+		return nil, fmt.Errorf("%w: %s", errPublished, mp)
+	}
+	if o.catchpoint != "" {
+		if cerr := checkLabel(o.catchpoint, info.History.Last); cerr != nil {
+			if log != nil {
+				fmt.Fprintf(log, "leaving the catchpoint out: %v\n", cerr)
+			}
+		} else {
+			m.Catchpoint = o.catchpoint
+		}
 	}
 	var total int64
 	for _, p := range paths {
@@ -115,27 +158,33 @@ func publish(dir, out, key string, full bool, log io.Writer) (*Manifest, error) 
 	if log != nil {
 		fmt.Fprintf(log, "hashed %s in %s, %s of it new\n", size(prog.done.Load()), roundDuration(time.Since(prog.start)), size(copied.Load()))
 	}
-	latest := filepath.Join(out, filepath.FromSlash(latestPath(m.GenesisID, kind)))
-	if cur, rerr := os.ReadFile(latest); rerr == nil {
-		name, perr := parseLatest(cur, kind)
-		if perr != nil {
-			return nil, perr
-		}
-		if rnd, _ := strconv.ParseUint(manifestFileName.FindStringSubmatch(name)[2], 10, 64); basics.Round(rnd) > info.History.Last {
-			return nil, fmt.Errorf("the latest %s snapshot is of round %d, this one of round %d: publish only newer snapshots", kind, rnd, info.History.Last)
-		}
-	} else if !os.IsNotExist(rerr) {
-		return nil, rerr
+	if m.Commitment, err = dirCommitment(filepath.Join(dir, historyDir), info.History, o.workers, log); err != nil {
+		return nil, err
+	}
+	stmt, err := m.statement()
+	if err != nil {
+		return nil, err
 	}
 	b, err := encodeManifest(m)
 	if err != nil {
 		return nil, err
 	}
-	mp := filepath.Join(out, filepath.FromSlash(manifestPath(m.GenesisID, kind, info.History.Last)))
-	if _, serr := os.Stat(mp); serr == nil {
-		return nil, fmt.Errorf("%w: %s", errPublished, mp)
+	// the statement first: it is about the chain, whatever the manifest
+	sdir := filepath.Join(out, filepath.FromSlash(statementDir(m.GenesisID, m.History.Last)))
+	if err = os.MkdirAll(sdir, 0o755); err != nil {
+		return nil, err
 	}
-	if err = writeSigned(mp, b, key); err != nil {
+	if err = writeFileSync(filepath.Join(sdir, "statement.hex"), []byte(hex.EncodeToString(stmt.Bytes())+"\n")); err != nil {
+		return nil, err
+	}
+	sig, err := signFile(o.signer, stmt.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	if err = writeFileSync(filepath.Join(out, filepath.FromSlash(statementSigPath(m.GenesisID, m.History.Last, keyID(o.signer.PublicKey)))), sig); err != nil {
+		return nil, err
+	}
+	if err = writeSigned(mp, b, o.signer); err != nil {
 		return nil, err
 	}
 	// the pointer last, once the manifest and its blobs are in place
@@ -150,6 +199,24 @@ func publish(dir, out, key string, full bool, log io.Writer) (*Manifest, error) 
 		return nil, err
 	}
 	return m, syncDir(filepath.Dir(latest))
+}
+
+// dirCommitment computes the commitment of the store in dir up to the last
+// round of its history hi, checking it is the store hi describes.
+func dirCommitment(dir string, hi HistoryInfo, workers int, log io.Writer) (*CommitmentInfo, error) {
+	st, err := timetravel.Open(dir, timetravel.Options{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer st.Close()
+	c, hdrHash, err := commitmentOf(st, hi.Last, timetravel.CommitmentOptions{Workers: workers}, log)
+	if err != nil {
+		return nil, err
+	}
+	if hdrHash.String() != hi.LastHash {
+		return nil, fmt.Errorf("round %d's header hash is %s, not %s", hi.Last, hdrHash, hi.LastHash)
+	}
+	return c, nil
 }
 
 // errPublished is returned for a snapshot whose round is published already,
@@ -263,10 +330,10 @@ func checkSHA256(path, want string) error {
 	return nil
 }
 
-// writeSigned writes b to path and its signature to path.sig, replacing both
-// atomically, the signature first so that a reader never gets a manifest
-// with an older signature.
-func writeSigned(path string, b []byte, key string) error {
+// writeSigned writes the manifest b to path and its signature to path.sig,
+// replacing both atomically, the signature first so that a reader never gets
+// a manifest with an older signature.
+func writeSigned(path string, b []byte, signer *crypto.FalconSigner) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -274,7 +341,11 @@ func writeSigned(path string, b []byte, key string) error {
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
-	if err := sign(key, tmp); err != nil {
+	sig, err := signFile(signer, manifestMessage(b))
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp+".sig", sig, 0o644); err != nil {
 		return err
 	}
 	for _, p := range []string{tmp, tmp + ".sig"} {
@@ -340,6 +411,7 @@ func gc(out string, keep int) (manifests, blobs int, _ error) {
 			return manifests, blobs, rerr
 		}
 		byKind := map[string][]uint64{}
+		removed, kept := map[uint64]bool{}, map[uint64]bool{}
 		for _, e := range entries {
 			mm := manifestFileName.FindStringSubmatch(e.Name())
 			if mm == nil {
@@ -372,8 +444,10 @@ func gc(out string, keep int) (manifests, blobs int, _ error) {
 					}
 					os.Remove(p + ".sig")
 					manifests++
+					removed[rnd] = true
 					continue
 				}
+				kept[rnd] = true
 				b, err := os.ReadFile(p)
 				if err != nil {
 					return manifests, blobs, err
@@ -386,6 +460,15 @@ func gc(out string, keep int) (manifests, blobs int, _ error) {
 				}
 				for _, f := range m.Files {
 					referenced[f.SHA256] = true
+				}
+			}
+		}
+		// the statements about removed snapshots' rounds; those about
+		// other rounds were put there on purpose
+		for rnd := range removed {
+			if !kept[rnd] {
+				if err := os.RemoveAll(filepath.Join(out, filepath.FromSlash(statementDir(nwDir.Name(), basics.Round(rnd))))); err != nil {
+					return manifests, blobs, err
 				}
 			}
 		}
