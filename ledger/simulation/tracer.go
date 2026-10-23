@@ -624,6 +624,8 @@ func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {
 }
 
 func (tracer *evalTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalError error) {
+	// The program's budget consumed, as reported below; also when it was aborted (abort.go).
+	tracer.effort.AddOpcodes(uint64(cx.Cost()))
 	groupIndex := cx.GroupIndex()
 
 	if cx.RunMode() == logic.ModeSig {

@@ -29,6 +29,7 @@ import (
 
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions/logic"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 )
 
 // WithContext returns r simulated under ctx: once ctx is done, the simulation stops within
@@ -106,11 +107,13 @@ type abortState struct {
 	lastCost   int
 	// aborted is set once the simulation must stop: every later opcode stops its program.
 	aborted error
+	// effort counts the budget the programs consumed (EnableEffortHeader); nil: not counted.
+	effort *ledgercore.Effort
 }
 
 func makeAbortState(request Request) abortState {
 	ctx := request.Context()
-	return abortState{ctx: ctx, done: ctx.Done(), traceBudget: request.traceBudget}
+	return abortState{ctx: ctx, done: ctx.Done(), traceBudget: request.traceBudget, effort: ledgercore.EffortFromContext(ctx)}
 }
 
 // abortError returns why the simulation must stop, or nil.
@@ -154,7 +157,7 @@ func (a *abortState) checkAbort(cx *logic.EvalContext) {
 			return
 		}
 		a.sinceCheck = 0
-		a.abortError()
+		_ = a.abortError() // sets a.aborted
 	}
 	if a.aborted != nil {
 		panic(logic.EvalAborted{Cause: a.aborted})

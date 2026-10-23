@@ -35,6 +35,7 @@ import (
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/data/transactions/verify"
+	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/logging"
@@ -248,6 +249,9 @@ type simulatorLedger struct {
 
 	// upgradeTo, when set, is the protocol that the round after start switches to (Request.Protocol).
 	upgradeTo protocol.ConsensusVersion
+
+	// counted is the ledger whose reads count in the request's Effort (effort.go). Set by Simulate.
+	counted ledger.CountedLedger
 }
 
 // BlockHdr is part of the ledger.Ledger interface.
@@ -266,7 +270,7 @@ func (l simulatorLedger) BlockHdr(rnd basics.Round) (bookkeeping.BlockHeader, er
 	if rnd > l.start {
 		return bookkeeping.BlockHeader{}, fmt.Errorf("round %d is after the simulation start round %d", rnd, l.start)
 	}
-	hdr, err := l.Ledger.BlockHdr(rnd)
+	hdr, err := l.lookups().BlockHdr(rnd)
 	if err != nil || l.upgradeTo == "" || rnd != l.start {
 		return hdr, err
 	}
@@ -871,6 +875,7 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 	// s is a copy, so these hold for this call only.
 	s.ledger.skipValidityWindow = simulateRequest.SkipValidityWindow
 	s.ledger.rewriteValidityWindow = simulateRequest.RewriteValidityWindow
+	s.ledger.counted = s.ledger.Ledger.Ledger.Counted(ledgercore.EffortFromContext(simulateRequest.Context()))
 
 	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
 	if err != nil {
