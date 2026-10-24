@@ -9,7 +9,7 @@ class Dtalgorand < Formula
   license "AGPL-3.0-or-later"
 
   depends_on arch: :arm64
-  depends_on macos: :sonoma # the release is built on macOS 14
+  depends_on macos: :sonoma # build_darwin.sh targets macOS 14
 
   def install
     # goal and algoh run algod and kmd from their own directory, so the binaries keep their stock

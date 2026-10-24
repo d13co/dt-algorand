@@ -33,7 +33,7 @@ jobs:
     permissions:
       contents: write # the release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the build stamps the version from git describe
           persist-credentials: false # make runs below; only the release needs the token
@@ -73,10 +73,14 @@ jobs:
 
   darwin:
     if: github.repository == 'd13co/dt-algorand'
-    runs-on: macos-14 # arm64; the binaries run on this macOS release and later ones
+    runs-on: macos-15 # arm64
     timeout-minutes: 90
+    env:
+      # the oldest macOS the binaries run on, the formula's minimum; for
+      # libsodium too, which setup-test builds
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the build stamps the version from git describe
           persist-credentials: false
@@ -102,7 +106,7 @@ jobs:
           b=$("$RUNNER_TEMP/dtalgorand-$v/bin/algod" -v | sed -n 2p)
           case "$b" in "$base".*) ;; *) echo "algod says $b, tag is $GITHUB_REF_NAME"; exit 1 ;; esac
           (cd dist && shasum -a 256 ./*.tar.gz > checksums-darwin.txt && cat checksums-darwin.txt)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: darwin
           path: |
@@ -120,7 +124,7 @@ jobs:
     permissions:
       contents: write # the release
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: darwin
           path: dist
@@ -142,14 +146,14 @@ jobs:
     permissions:
       contents: read # the release's checksum; the tap is pushed with its deploy key
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Download the tarball's checksum
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" -D dist -p checksums-darwin.txt
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: d13co/homebrew-tap
           path: tap
@@ -188,7 +192,7 @@ jobs:
     timeout-minutes: 30
     concurrency: apt # one index rebuild at a time
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Download the .deb
