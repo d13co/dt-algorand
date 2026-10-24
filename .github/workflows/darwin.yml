@@ -31,10 +31,12 @@ concurrency:
 jobs:
   build-darwin:
     if: github.repository == 'd13co/dt-algorand'
-    runs-on: macos-14 # arm64; the release builds here too
+    runs-on: macos-15 # arm64; the release builds here too
     timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0" # for libsodium too, which setup-test builds
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
