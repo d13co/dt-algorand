@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -308,6 +309,12 @@ func TestCatchpointLabel(t *testing.T) {
 	setLatest(label(10351))
 	_, err = chooseLabel(ctx, http.DefaultClient, n.genesis, snap, false)
 	require.ErrorContains(t, err, "pass -snapshot-label", "the producer's label only when asked for")
+	require.ErrorIs(t, err, errLatestPastHistory)
+	hinted := withSnapshotLabelHint(err, "/var/lib/dt algorand")
+	require.ErrorIs(t, hinted, errLatestPastHistory)
+	require.ErrorContains(t, hinted, "\n  ttsnap catchup -d '/var/lib/dt algorand' -snapshot-label", "the refusal names the command that accepts the producer's label")
+	other := errors.New("looking up the latest catchpoint")
+	require.Equal(t, other, withSnapshotLabelHint(other, "/d"), "other errors get no hint")
 	got, err = chooseLabel(ctx, http.DefaultClient, n.genesis, snap, true)
 	require.NoError(t, err)
 	require.Equal(t, label(345), got, "the snapshot's, when asked for and the latest is past the history")

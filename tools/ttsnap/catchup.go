@@ -75,7 +75,7 @@ func catchup(dataDir, label string, useSnapshot bool, client *http.Client) error
 	}
 	if label == "" {
 		if label, err = chooseLabel(ctx, client, genesis, m, useSnapshot); err != nil {
-			return err
+			return withSnapshotLabelHint(err, dataDir)
 		}
 	}
 	if _, _, err = ledgercore.ParseCatchpointLabel(label); err != nil {
@@ -141,7 +141,29 @@ func chooseLabel(ctx context.Context, client *http.Client, genesis bookkeeping.G
 		fmt.Printf("catchpoint %s: the snapshot producer's (the network's latest, %s, is past the history's round %d)\n", snapshotLabel, latest, m.History.Last)
 		return snapshotLabel, nil
 	}
-	return "", fmt.Errorf("the network's latest catchpoint %s is past the history (round %d): pass -snapshot-label to use the one the snapshot's producer recorded, %s, or -label with one from a source you trust, or wait for the next snapshot", latest, m.History.Last, snapshotLabel)
+	return "", fmt.Errorf("%w (catchpoint %s, history to round %d): pass -snapshot-label to use the one the snapshot's producer recorded, %s, or -label with one from a source you trust, or wait for the next snapshot", errLatestPastHistory, latest, m.History.Last, snapshotLabel)
+}
+
+// errLatestPastHistory is chooseLabel's refusal of the network's latest
+// catchpoint when the snapshot's producer recorded one the history reaches.
+var errLatestPastHistory = errors.New("the network's latest catchpoint is past the installed history")
+
+// withSnapshotLabelHint adds to chooseLabel's refusal the command that uses
+// the producer's catchpoint, so the choice stays the user's but is one paste
+// away.
+func withSnapshotLabelHint(err error, dataDir string) error {
+	if !errors.Is(err, errLatestPastHistory) {
+		return err
+	}
+	return fmt.Errorf("%w\nto catch up to the producer's catchpoint (this trusts the producer for the account state), run:\n  ttsnap catchup -d %s -snapshot-label", err, shellQuote(dataDir))
+}
+
+// shellQuote quotes s for a POSIX shell, unless it needs no quoting.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./+:=@%,") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // checkLabel checks that a history whose last round is last reaches the

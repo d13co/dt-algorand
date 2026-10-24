@@ -35,7 +35,7 @@ A full snapshot (`-full`) also carries the producer's tracker and block DBs, so 
    sudo -u dtalgorand ttsnap catchup -d /var/lib/dtalgorand
    ```
 
-   The catchpoint's balances round (its round − 320) must be at most the history's last round. Snapshots are daily and catchpoints come every 10,000 rounds (about 8 hours on mainnet), so the network's latest catchpoint is usually past the snapshot. `catchup` then stops and names the catchpoint the producer recorded in the manifest, the latest one before the snapshot: `-snapshot-label` uses it, `-label` takes one from a source you trust (a catchpoint-tracking node of your own), or wait for the next snapshot. `goal node catchup <label>` works the same way; algod refuses a catchpoint the history does not reach.
+   The catchpoint's balances round (its round − 320) must be at most the history's last round. Snapshots are daily and catchpoints come every 10,000 rounds (about 8 hours on mainnet), so the network's latest catchpoint is usually past the snapshot. `catchup` then stops, names the catchpoint the producer recorded in the manifest (the latest one before the snapshot) and prints the command that uses it: `-snapshot-label` uses it, `-label` takes one from a source you trust (a catchpoint-tracking node of your own), or wait for the next snapshot. `goal node catchup <label>` works the same way; algod refuses a catchpoint the history does not reach.
 4. Optionally, with algod stopped, check the headers (minutes on mainnet) and sample rounds against an archival node:
 
    ```sh
