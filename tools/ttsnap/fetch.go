@@ -161,21 +161,9 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 		return nil, "", err
 	}
 	ctx := context.Background()
-	mpath := o.manifest
-	if mpath == "" {
-		lurl, lerr := joinURL(o.base, latestPath(genesis.ID(), kind))
-		if lerr != nil {
-			return nil, "", lerr
-		}
-		b, lerr := getSmall(ctx, o.client, lurl, 1024)
-		if lerr != nil {
-			return nil, "", lerr
-		}
-		name, lerr := parseLatest(b, kind)
-		if lerr != nil {
-			return nil, "", lerr
-		}
-		mpath = path.Join("snapshots", genesis.ID(), name)
+	mpath, err := resolveManifest(ctx, o.client, o.base, genesis.ID(), kind, o.manifest)
+	if err != nil {
+		return nil, "", err
 	}
 	murl, err := joinURL(o.base, mpath)
 	if err != nil {
@@ -783,7 +771,7 @@ func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name s
 	if _, err = st.IndexBoxes(context.Background(), nil); err != nil {
 		return err
 	}
-	return st.SetInstalled(name)
+	return st.SetInstalled(name, uint64(hi.Last))
 }
 
 // attestations fetches the attesters' signatures of stmt from the snapshot
@@ -814,6 +802,28 @@ func (o *fetchOpts) attestations(ctx context.Context, genesisID string, stmt Sta
 		signed = append(signed, k.Name)
 	}
 	return signed, problems
+}
+
+// resolveManifest returns the path, in the snapshot tree at base, of
+// manifest if it is not empty, else of the manifest the latest pointer of
+// kind names.
+func resolveManifest(ctx context.Context, client *http.Client, base, genesisID, kind, manifest string) (string, error) {
+	if manifest != "" {
+		return manifest, nil
+	}
+	lurl, err := joinURL(base, latestPath(genesisID, kind))
+	if err != nil {
+		return "", err
+	}
+	b, err := getSmall(ctx, client, lurl, 1024)
+	if err != nil {
+		return "", err
+	}
+	name, err := parseLatest(b, kind)
+	if err != nil {
+		return "", err
+	}
+	return path.Join("snapshots", genesisID, name), nil
 }
 
 // joinURL appends a path of the snapshot tree to its base URL. The path must

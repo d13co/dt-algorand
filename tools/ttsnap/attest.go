@@ -257,21 +257,9 @@ func attest(o attestOpts) (string, error) {
 	rnd := o.round
 	if o.base != "" {
 		ctx := context.Background()
-		mp := o.manifest
-		if mp == "" {
-			lurl, err := joinURL(o.base, latestPath(o.genesis.ID(), kindHistory))
-			if err != nil {
-				return "", err
-			}
-			b, err := getSmall(ctx, o.client, lurl, 1024)
-			if err != nil {
-				return "", err
-			}
-			name, err := parseLatest(b, kindHistory)
-			if err != nil {
-				return "", err
-			}
-			mp = path.Join("snapshots", o.genesis.ID(), name)
+		mp, err := resolveManifest(ctx, o.client, o.base, o.genesis.ID(), kindHistory, o.manifest)
+		if err != nil {
+			return "", err
 		}
 		murl, err := joinURL(o.base, mp)
 		if err != nil {

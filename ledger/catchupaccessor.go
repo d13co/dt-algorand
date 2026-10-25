@@ -90,6 +90,10 @@ type CatchpointCatchupAccessor interface {
 	// EnsureFirstBlock ensure that we have a single block in the staging block table, and returns that block
 	EnsureFirstBlock(ctx context.Context) (blk bookkeeping.Block, err error)
 
+	// PrepareCatchpointHistory checks a time travel history against the staged catchpoint and deletes
+	// its rounds after the balances round; CompleteCatchup does it too, at no cost once done.
+	PrepareCatchpointHistory(ctx context.Context) (err error)
+
 	// CompleteCatchup completes the catchpoint catchup process by switching the databases tables around
 	// and reloading the ledger.
 	CompleteCatchup(ctx context.Context) (err error)
@@ -1240,8 +1244,8 @@ func (c *catchpointCatchupAccessorImpl) EnsureFirstBlock(ctx context.Context) (b
 // and reloading the ledger.
 func (c *catchpointCatchupAccessorImpl) CompleteCatchup(ctx context.Context) (err error) {
 	// before anything is swapped: an error aborts the catchup and leaves the
-	// ledger as it was
-	err = c.checkCatchpointHistory(ctx)
+	// ledger as it was (and the history at most shorter)
+	err = c.PrepareCatchpointHistory(ctx)
 	if err != nil {
 		return fmt.Errorf("the time travel history does not fit this catchpoint: %w", err)
 	}

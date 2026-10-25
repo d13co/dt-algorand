@@ -30,14 +30,17 @@ var ErrDiverged = errors.New("timetravel: the stored history differs from the ev
 
 // Verify checks a round the store already holds against the same round as
 // the caller evaluated it: the header, the digest of the changes, the
-// expired stake, and the stored value of every changed object. A store
-// installed from elsewhere (a snapshot) is checked this way as the ledger
-// replays the rounds it already holds.
+// expired stake, and the stored value of every changed object. The ledger
+// checks this way the rounds it replays that the store holds: its own after
+// an unclean stop, and those of an installed store it syncs without a
+// catchpoint catchup.
 //
 // A missing expired stake record is not an error, since builds before the
 // records existed did not write them. The value check sees every object the
 // round changed; it cannot see objects the store changed in that round but
-// the evaluation did not.
+// the evaluation did not. A store installed from elsewhere could hold such
+// records, which is why a catchpoint catchup deletes the rounds after its
+// balances round (TruncateAfter) rather than check them.
 func (s *Store) Verify(rnd uint64, changes []Change, hdr []byte, expired *uint64) error {
 	return diverged(s.verify(rnd, changes, hdr, expired))
 }
@@ -127,7 +130,8 @@ func (s *Store) verifyChangesLocked(rec []byte, rnd uint64, changes []Change) er
 }
 
 // keyDivergedMeta marks a store that Verify found to differ from the chain:
-// the reason, as text. Nothing removes it; the store must be replaced.
+// the reason, as text. It stays until the store is replaced, or an operator
+// removes it (ClearDiverged, ttsnap verify -clear-diverged).
 var keyDivergedMeta = []byte("md")
 
 // MarkDiverged records durably that the store differs from the chain, so that

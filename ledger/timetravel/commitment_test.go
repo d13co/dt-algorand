@@ -331,7 +331,7 @@ func TestCommitmentStrict(t *testing.T) {
 		"phantom tombstone": {edit: func(b *pebble.Batch) {
 			phantom := append(binary.BigEndian.AppendUint64(slices.Clone(obj), lastVer), 'z')
 			b.Set(verKey(pfxCheckpoint, phantom, 1), []byte{recDeleted}, nil)
-		}, upTo: 100, plain: "follows", strict: "follows"},
+		}, upTo: 100, plain: "follows", strict: "not an object key"},
 		"record after the round": {edit: func(b *pebble.Batch) {
 			b.Set(verKey(pfxCheckpoint, obj, 105), []byte{recFull, 0xee}, nil)
 		}, upTo: 100, strict: "after round 100"},
@@ -364,7 +364,7 @@ func TestCommitmentStrict(t *testing.T) {
 	// installer rebuilds the box index
 	st := buildCommitStore(t, rs, 100, Options{}, 0)
 	require.NoError(t, st.db.DeleteRange([]byte{pfxBoxIndex}, []byte{pfxBoxIndex + 1}, pebble.Sync))
-	require.NoError(t, st.SetInstalled("history-100.json"))
+	require.NoError(t, st.SetInstalled("history-100.json", 100))
 	got, err := st.Commitment(context.Background(), 100, strict)
 	require.NoError(t, err)
 	require.Equal(t, want, got)

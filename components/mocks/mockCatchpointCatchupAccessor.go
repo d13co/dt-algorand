@@ -106,6 +106,11 @@ func (m *MockCatchpointCatchupAccessor) EnsureFirstBlock(ctx context.Context) (b
 	return bookkeeping.Block{}, nil
 }
 
+// PrepareCatchpointHistory checks a time travel history against the staged catchpoint.
+func (m *MockCatchpointCatchupAccessor) PrepareCatchpointHistory(ctx context.Context) (err error) {
+	return nil
+}
+
 // CompleteCatchup completes the catchpoint catchup process by switching the databases tables around
 // and reloading the ledger.
 func (m *MockCatchpointCatchupAccessor) CompleteCatchup(ctx context.Context) (err error) {

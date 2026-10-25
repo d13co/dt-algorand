@@ -702,8 +702,32 @@ func (cs *CatchpointCatchupService) fetchBlock(round basics.Round, retryCount ui
 
 // processStageSwitch is the fifth catchpoint catchup stage. It completes the catchup process, swap the new tables and restart the node functionality.
 func (cs *CatchpointCatchupService) processStageSwitch() (err error) {
+	// A time travel node's history first: its truncation takes minutes on
+	// mainnet, and one cut short leaves the store refusing rounds until it is
+	// opened again. So a shutdown (Stop) interrupts it, and the next start
+	// resumes this stage, but an abort waits for it: Abort marks abortCtx
+	// before it cancels ctx, and Stop only after run returns.
+	hctx, hcancel := context.WithCancel(context.Background())
+	stopAfter := context.AfterFunc(cs.ctx, func() {
+		if cs.abortCtx.Err() == nil {
+			hcancel()
+		}
+	})
+	err = cs.ledgerAccessor.PrepareCatchpointHistory(hctx)
+	stopAfter()
+	hcancel()
+	if err != nil {
+		if errors.Is(err, ledger.ErrHistoryTruncationInterrupted) && cs.abortCtx.Err() == nil {
+			return nil
+		}
+		return cs.abort(fmt.Errorf("processStageSwitch failed to prepare the time travel history : %v", err))
+	}
+
 	err = cs.ledgerAccessor.CompleteCatchup(cs.ctx)
 	if err != nil {
+		if errors.Is(err, ledger.ErrHistoryTruncationInterrupted) && cs.abortCtx.Err() == nil {
+			return nil // a shutdown before anything was swapped: resume
+		}
 		return cs.abort(fmt.Errorf("processStageSwitch failed to complete catchup : %v", err))
 	}
 

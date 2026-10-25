@@ -94,6 +94,49 @@ func KvPrefix(prefix string) []byte {
 	return out
 }
 
+// ValidObjectKey reports whether obj is an object key of one of the kinds
+// above, as the functions above make them. No valid key starts with another:
+// those of a kind have one length, or for kv keys end at their terminator.
+// A store holds no other keys, and a read of an object whose key another
+// starts with could take the other's records for its own.
+func ValidObjectKey(obj []byte) bool {
+	if len(obj) == 0 {
+		return false
+	}
+	switch obj[0] {
+	case KindTotals:
+		return len(obj) == 1
+	case KindAccount:
+		return len(obj) == 1+32
+	case KindHolding, KindLocal:
+		return len(obj) == 1+32+8
+	case KindAssetParams, KindAppParams:
+		return len(obj) == 1+8
+	case KindCreated:
+		return len(obj) == 1+32+1+8
+	case KindKv:
+		// escaped bytes, then 0x00 0x00 and nothing after
+		for i := 1; i < len(obj); i++ {
+			if obj[i] != 0 {
+				continue
+			}
+			if i+1 >= len(obj) {
+				return false
+			}
+			switch obj[i+1] {
+			case 0xff:
+				i++
+			case 0:
+				return i+2 == len(obj)
+			default:
+				return false
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // KvKeyString reverses KvKey.
 func KvKeyString(obj []byte) string {
 	b := make([]byte, 0, len(obj))

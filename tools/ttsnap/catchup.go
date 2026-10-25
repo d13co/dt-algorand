@@ -174,12 +174,7 @@ func checkLabel(label string, last basics.Round) error {
 	if err != nil {
 		return err
 	}
-	proto := config.Consensus[protocol.ConsensusCurrentVersion]
-	lookback := proto.CatchpointLookback
-	if lookback == 0 {
-		lookback = proto.MaxBalLookback
-	}
-	if b := rnd.SubSaturate(basics.Round(lookback)); last < b {
+	if b := rnd.SubSaturate(ledgercore.CatchpointLookback(config.Consensus[protocol.ConsensusCurrentVersion])); last < b {
 		return fmt.Errorf("the history ends at round %d, catchpoint %s needs round %d", last, label, b)
 	}
 	return nil

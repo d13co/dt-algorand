@@ -131,7 +131,7 @@ func TestUntrustedHistory(t *testing.T) {
 
 	rec := serve(&h, "/v2/accounts/"+addr.String()+"?round=7")
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	require.Contains(t, rec.Body.String(), "differs from the chain")
+	require.Contains(t, rec.Body.String(), "is not served")
 	rec = serve(&h, "/v2/accounts/"+addr.String())
 	require.Equal(t, http.StatusOK, rec.Code)
 }

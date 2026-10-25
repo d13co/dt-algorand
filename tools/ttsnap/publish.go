@@ -188,17 +188,7 @@ func publish(dir, out string, o publishOpts, log io.Writer) (*Manifest, error) {
 		return nil, err
 	}
 	// the pointer last, once the manifest and its blobs are in place
-	tmp := latest + ".tmp"
-	if err = os.WriteFile(tmp, []byte(manifestName(kind, info.History.Last)+"\n"), 0o644); err != nil {
-		return nil, err
-	}
-	if err = syncFile(tmp); err != nil {
-		return nil, err
-	}
-	if err = os.Rename(tmp, latest); err != nil {
-		return nil, err
-	}
-	return m, syncDir(filepath.Dir(latest))
+	return m, writeFileSync(latest, []byte(manifestName(kind, info.History.Last)+"\n"))
 }
 
 // dirCommitment computes the commitment of the store in dir up to the last

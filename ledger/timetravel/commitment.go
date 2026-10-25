@@ -119,7 +119,7 @@ func (s *Store) Commitment(ctx context.Context, upTo uint64, o CommitmentOptions
 type splitFunc func(snap *pebble.Snapshot, lo, hi []byte, n int) ([][]byte, error)
 
 // metaKeys are the meta records a store may hold.
-var metaKeys = [][]byte{keyMeta, keyBoxIndexMeta, keyDivergedMeta, keyInstalledMeta}
+var metaKeys = [][]byte{keyMeta, keyBoxIndexMeta, keyDivergedMeta, keyInstalledMeta, keyInstalledThroughMeta}
 
 func (s *Store) commitment(ctx context.Context, upTo uint64, o CommitmentOptions, splits splitFunc) (Commitment, error) {
 	if err := s.acquire(); err != nil {
@@ -397,29 +397,7 @@ func (cs *commitScan) section(lo, hi []byte, single bool) ([32]byte, uint64, uin
 	if err != nil {
 		return zero, 0, 0, err
 	}
-	bounds := [][]byte{lo}
-	for _, k := range keys {
-		if bytes.Compare(k, lo) <= 0 || bytes.Compare(k, hi) >= 0 {
-			continue
-		}
-		if !single {
-			// split before the object, so that a range holds whole objects:
-			// the keys of objects before it sort before it, since object
-			// keys never prefix one another (scanRange refuses a store
-			// where one does)
-			if len(k) < 1+8+1 {
-				continue
-			}
-			k = k[:len(k)-8]
-			if bytes.Compare(k, lo) <= 0 {
-				continue
-			}
-		}
-		bounds = append(bounds, k)
-	}
-	slices.SortFunc(bounds[1:], bytes.Compare)
-	bounds = slices.CompactFunc(bounds, bytes.Equal)
-	bounds = append(bounds, hi)
+	bounds := rangeBounds(lo, hi, keys, single)
 
 	n := len(bounds) - 1
 	events := make([]chan commitEvent, n)
@@ -502,6 +480,35 @@ func (cs *commitScan) section(lo, hi []byte, single bool) ([32]byte, uint64, uin
 	return d, objects, versions, nil
 }
 
+// rangeBounds returns the bounds of the ranges that split keys cut [lo, hi)
+// into, lo first and hi last. Unless single (each key an object), a range
+// holds whole objects.
+func rangeBounds(lo, hi []byte, keys [][]byte, single bool) [][]byte {
+	bounds := [][]byte{lo}
+	for _, k := range keys {
+		if bytes.Compare(k, lo) <= 0 || bytes.Compare(k, hi) >= 0 {
+			continue
+		}
+		if !single {
+			// split before the object, so that a range holds whole objects:
+			// the keys of objects before it sort before it, since object
+			// keys never prefix one another (the scans refuse a store where
+			// one does)
+			if len(k) < 1+8+1 {
+				continue
+			}
+			k = k[:len(k)-8]
+			if bytes.Compare(k, lo) <= 0 {
+				continue
+			}
+		}
+		bounds = append(bounds, k)
+	}
+	slices.SortFunc(bounds[1:], bytes.Compare)
+	bounds = slices.CompactFunc(bounds, bytes.Equal)
+	return append(bounds, hi)
+}
+
 // objectsInOrder reports whether object key b may follow a in a store: after
 // it, and not starting with it, since the versions of objects whose keys
 // prefix one another would interleave.
@@ -577,6 +584,9 @@ func (cs *commitScan) scanRange(ctx context.Context, lo, hi []byte, single bool,
 		return true
 	}
 	start := func(o []byte) bool {
+		if cs.o.Strict && !single && !ValidObjectKey(o) {
+			return fail(fmt.Errorf("%w: record key of %x, which is not an object key", ErrCorrupt, o))
+		}
 		if inObj && !objectsInOrder(obj, o) {
 			return fail(fmt.Errorf("%w: object key %x follows %x", ErrCorrupt, o, obj))
 		}
@@ -675,8 +685,14 @@ func chunkDigest(ds [][32]byte) [32]byte {
 // producer's, which the node's own statements must not vouch for.
 var keyInstalledMeta = []byte("mi")
 
-// SetInstalled marks the store as installed from the snapshot named name.
-func (s *Store) SetInstalled(name string) error {
+// keyInstalledThroughMeta holds the last round of the installed snapshot
+// (BE uint64), lowered to b by a truncation after b. The ledger tells the
+// installed rounds it replays from the rounds the node wrote itself by it.
+var keyInstalledThroughMeta = []byte("mx")
+
+// SetInstalled marks the store as installed from the snapshot named name,
+// whose last round is through.
+func (s *Store) SetInstalled(name string, through uint64) error {
 	if err := s.acquire(); err != nil {
 		return err
 	}
@@ -684,7 +700,41 @@ func (s *Store) SetInstalled(name string) error {
 	if s.readOnly {
 		return ErrReadOnly
 	}
-	return s.db.Set(keyInstalledMeta, []byte(name), pebble.Sync)
+	batch := s.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(keyInstalledMeta, []byte(name), nil); err != nil {
+		return err
+	}
+	if err := batch.Set(keyInstalledThroughMeta, binary.BigEndian.AppendUint64(nil, through), nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+// InstalledThrough returns the last round of the store's history that came
+// from an installed snapshot; ok is false if none did (or the store was
+// installed by a build that did not record it).
+func (s *Store) InstalledThrough() (through uint64, ok bool, err error) {
+	if err = s.acquire(); err != nil {
+		return 0, false, err
+	}
+	defer s.closeMu.RUnlock()
+	return s.installedThrough()
+}
+
+func (s *Store) installedThrough() (uint64, bool, error) {
+	v, closer, err := s.db.Get(keyInstalledThroughMeta)
+	if errors.Is(err, pebble.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer closer.Close()
+	if len(v) != 8 {
+		return 0, false, fmt.Errorf("%w: the installed round record is %d bytes", ErrCorrupt, len(v))
+	}
+	return binary.BigEndian.Uint64(v), true, nil
 }
 
 // Installed returns the name of the snapshot the store was installed from;

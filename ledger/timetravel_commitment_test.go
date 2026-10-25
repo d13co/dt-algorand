@@ -60,7 +60,7 @@ func TestLedgerHistoryCommitment(t *testing.T) {
 	require.Equal(t, l.GenesisHash(), c.GenesisHash)
 	require.EqualValues(t, 11, c.Headers)
 	require.Empty(t, c.Installed)
-	require.NoError(t, l.history.store.SetInstalled("history-9.json"))
+	require.NoError(t, l.history.store.SetInstalled("history-9.json", 9))
 	c, err = l.HistoryCommitment(ctx, 10, 2)
 	require.NoError(t, err)
 	require.Equal(t, "history-9.json", c.Installed)

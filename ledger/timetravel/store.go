@@ -112,6 +112,10 @@ type Options struct {
 	// AddRound skips when they repeat the stored state; 0 is the default
 	// (2^18, ~30 MB), negative stores every change.
 	DedupEntries int
+	// Infof, if not nil, receives the messages an operator should see:
+	// those of a truncation that Open finishes, which takes minutes on a
+	// large store.
+	Infof func(format string, args ...any)
 	// ReadOnly opens an existing store without writing to it: no new store,
 	// no compactions, and AddRound, RemoveNoops, CompactCheckpoints and Sync
 	// fail with ErrReadOnly. The store is still locked, so another process
@@ -141,6 +145,13 @@ type Store struct {
 
 	boxFrom atomic.Uint64 // see BoxIndexFrom
 	boxGen  atomic.Uint64 // odd while boxFrom changes; see setBoxFrom
+
+	truncating atomic.Bool // a TruncateAfter is unfinished; AddRound fails
+	// truncatedAfter is 1 + the round the last TruncateAfter of this
+	// process truncated after, until AddRound adds a round; 0: none
+	truncatedAfter atomic.Uint64
+
+	infof func(format string, args ...any) // Options.Infof, never nil
 
 	// closeMu is held for reading by every operation, including while Versions,
 	// BoxChanges and the like run their callbacks. A callback that reads the
@@ -222,7 +233,10 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, closing: make(chan struct{})}
+	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, closing: make(chan struct{}), infof: o.Infof}
+	if s.infof == nil {
+		s.infof = func(string, ...any) {}
+	}
 	if !o.ReadOnly {
 		s.dedup = newLastWritten(o.DedupEntries)
 	}
@@ -232,6 +246,10 @@ func Open(dir string, o Options) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadBoxIndex(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.finishTruncate(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -448,6 +466,9 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.truncating.Load() {
+		return errTruncating
+	}
 	last, ok := s.Last()
 	if ok && rnd <= last {
 		return nil
@@ -509,6 +530,7 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 		return err
 	}
 	s.last.Store(int64(rnd))
+	s.truncatedAfter.Store(0)
 	// only now: a round that failed to commit is added again, and must not
 	// find its own changes in the cache
 	s.dedup.update(states)
