@@ -306,6 +306,11 @@ func (v2 *Handlers) generateKeyHandler(address basics.Address, params model.Gene
 // GenerateParticipationKeys generates and installs participation keys to the node.
 // (POST /v2/participation/generate/{address})
 func (v2 *Handlers) GenerateParticipationKeys(ctx echo.Context, address basics.Address, params model.GenerateParticipationKeysParams) error {
+	// refuse before generating, which takes minutes, rather than when installing the keys
+	if v2.Node.Config().ParticipationRefused(v2.Node.GenesisID()) {
+		err := fmt.Errorf("%w (network %s)", node.ErrParticipationRefused, v2.Node.GenesisID())
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	if !v2.KeygenLimiter.TryAcquire(1) {
 		err := fmt.Errorf("participation key generation already in progress")
 		return badRequest(ctx, err, err.Error(), v2.Log)

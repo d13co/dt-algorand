@@ -136,6 +136,10 @@ type AlgorandFullNode struct {
 	devMode         bool // is this node operating in a developer mode ? ( benign agreement, broadcasting transaction generates a new block )
 	timestampOffset *int64
 
+	// participationRefused is set on mainnet, testnet and betanet unless DangerouslyEnableParticipation is set:
+	// the node holds no participation keys and refuses new ones.
+	participationRefused bool
+
 	log logging.Logger
 
 	// syncStatusMu used for locking lastRoundTimestamp and hasSyncedSinceStartup
@@ -195,6 +199,27 @@ func MakeFull(log logging.Logger, rootDir string, cfg config.Local, phonebookAdd
 	node.genesisDirs, err = cfg.EnsureAndResolveGenesisDirs(rootDir, genesis.ID(), log)
 	if err != nil {
 		return nil, err
+	}
+
+	// The registry and the participation check come before the network and the ledger, so that a node that refuses
+	// to start opens neither.
+	registry, err := ensureParticipationDB(node.genesisDirs.ColdGenesisDir, node.log)
+	if err != nil {
+		log.Errorf("unable to initialize the participation registry database: %v", err)
+		return nil, err
+	}
+	// close the registry if MakeFull fails before the account manager owns it
+	registryOwned := false
+	defer func() {
+		if !registryOwned {
+			registry.Close()
+		}
+	}()
+	node.participationRefused = cfg.ParticipationRefused(node.genesisID)
+	if node.participationRefused {
+		if err = checkNoParticipationKeys(node.genesisID, node.genesisDirs, registry); err != nil {
+			return nil, err
+		}
 	}
 
 	genalloc, err := genesis.Balances()
@@ -266,12 +291,8 @@ recreateNetwork:
 		return nil, err
 	}
 
-	registry, err := ensureParticipationDB(node.genesisDirs.ColdGenesisDir, node.log)
-	if err != nil {
-		log.Errorf("unable to initialize the participation registry database: %v", err)
-		return nil, err
-	}
 	node.accountManager = data.MakeAccountManager(log, registry)
+	registryOwned = true
 
 	err = node.loadParticipationKeys()
 	if err != nil {
@@ -895,6 +916,40 @@ func ensureParticipationDB(genesisDir string, log logging.Logger) (account.Parti
 	return account.MakeParticipationRegistry(accessor, log)
 }
 
+// ErrParticipationRefused is returned when the node refuses participation keys: on mainnet, testnet and betanet
+// unless DangerouslyEnableParticipation is set (config.Local.ParticipationRefused).
+var ErrParticipationRefused = errors.New("participation in consensus is disabled: this fork (dtalgorand) is not audited for running validators; set \"DangerouslyEnableParticipation\": true in config.json to override")
+
+// checkNoParticipationKeys returns ErrParticipationRefused, with where the keys are, if the node holds participation
+// keys: partkey files in the root genesis directory, which the node would load, or keys in its participation registry.
+func checkNoParticipationKeys(genesisID string, dirs config.ResolvedGenesisDirs, registry account.ParticipationRegistry) error {
+	var found []string
+	files, err := os.ReadDir(dirs.RootGenesisDir)
+	if err != nil {
+		return fmt.Errorf("could not read directory %v: %w", dirs.RootGenesisDir, err)
+	}
+	for _, info := range files {
+		if config.IsPartKeyFilename(info.Name()) {
+			found = append(found, "partkey file "+filepath.Join(dirs.RootGenesisDir, info.Name()))
+		}
+	}
+	if records := registry.GetAll(); len(records) > 0 {
+		accounts := make([]string, len(records))
+		for i, record := range records {
+			accounts[i] = record.Account.String()
+		}
+		found = append(found, fmt.Sprintf("%d key(s) for %s in the participation registry %s", len(records),
+			strings.Join(accounts, ", "), filepath.Join(dirs.ColdGenesisDir, config.ParticipationRegistryFilename)))
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w. The node is on %s and holds participation keys: %s. Run dtalgorand on a separate data "+
+		"directory, or run upstream algod on this one. Deleting the keys is irreversible: keys installed through the "+
+		"REST API exist nowhere else, and the account would need a new key registration",
+		ErrParticipationRefused, genesisID, strings.Join(found, "; "))
+}
+
 // ListParticipationKeys returns all participation keys currently installed on the node
 func (node *AlgorandFullNode) ListParticipationKeys() (partKeys []account.ParticipationRecord, err error) {
 	return node.accountManager.Registry().GetAll(), nil
@@ -985,6 +1040,9 @@ func createTemporaryParticipationKey(outDir string, partKeyBinary []byte) (strin
 
 // InstallParticipationKey Given a participation key binary stream install the participation key.
 func (node *AlgorandFullNode) InstallParticipationKey(partKeyBinary []byte) (account.ParticipationID, error) {
+	if node.participationRefused {
+		return account.ParticipationID{}, fmt.Errorf("%w (network %s)", ErrParticipationRefused, node.genesisID)
+	}
 	outDir := node.genesisDirs.RootGenesisDir
 
 	fullyQualifiedTempFile, err := createTemporaryParticipationKey(outDir, partKeyBinary)

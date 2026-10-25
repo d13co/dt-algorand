@@ -53,6 +53,7 @@ var defaultLocal = Local{
 	DHTMode:                                    "",
 	DNSBootstrapID:                             "<network>.algorand.network?backup=<network>.algorand.net&dedup=<name>.algorand-<network>.(network|net)",
 	DNSSecurityFlags:                           9,
+	DangerouslyEnableParticipation:             false,
 	DeadlockDetection:                          0,
 	DeadlockDetectionThreshold:                 30,
 	DisableAPIAuth:                             false,
