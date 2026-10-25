@@ -604,3 +604,70 @@ func TestStoreAssetHoldersPages(t *testing.T) {
 	require.Equal(t, addrs[3:], storeHolders(t, s, 2, 0, between[:]))
 	require.Equal(t, slices.Clone(addrs), storeHolders(t, s, 2, 0, nil))
 }
+
+// TestStoreCompactHoldersIndexInSteps checks that CompactHoldersIndex
+// compacts the index in consecutive steps, as CompactCheckpoints does, and
+// drops the entries a rebuild replaced.
+func TestStoreCompactHoldersIndexInSteps(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	defer func(n uint64) { compactChunk = n }(compactChunk)
+	compactChunk = 1
+	defer func(f func(context.Context, *pebble.DB, []byte, []byte) error) { compactStep = f }(compactStep)
+	var steps [][2][]byte
+	compactStep = func(ctx context.Context, db *pebble.DB, start, end []byte) error {
+		steps = append(steps, [2][]byte{slices.Clone(start), slices.Clone(end)})
+		return db.Compact(ctx, start, end, true)
+	}
+
+	// index entries of separate assets in separate tables, then a range
+	// tombstone over half of them, as a rebuild leaves the entries it replaced
+	const tables, addrs = 4, 100
+	key := func(i, j int) []byte {
+		var a basics.Address
+		binary.BigEndian.PutUint64(a[:], uint64(j))
+		return holdersKey(uint64(i+1), a[:])
+	}
+	for i := 0; i < tables; i++ {
+		b := s.db.NewBatch()
+		for j := 0; j < addrs; j++ {
+			require.NoError(t, b.Set(key(i, j), binary.AppendUvarint(nil, 1), nil))
+		}
+		require.NoError(t, b.Commit(pebble.NoSync))
+		require.NoError(t, s.db.Flush())
+	}
+	require.NoError(t, s.db.DeleteRange(holdersKey(1, nil), holdersKey(uint64(tables/2+1), nil), pebble.Sync))
+	require.NoError(t, s.db.Flush())
+
+	require.NoError(t, s.CompactHoldersIndex(context.Background()))
+	require.Greater(t, len(steps), 1)
+	require.Equal(t, []byte{pfxHolders}, steps[0][0])
+	for i := 1; i < len(steps); i++ {
+		require.Equal(t, steps[i-1][1], steps[i][0], "step %d starts where step %d ends", i, i-1)
+	}
+	require.Equal(t, []byte{pfxHolders + 1}, steps[len(steps)-1][1])
+	levels, err := s.db.SSTables(pebble.WithProperties())
+	require.NoError(t, err)
+	var entries uint64
+	for l, ts := range levels {
+		for _, tb := range ts {
+			require.Equal(t, len(levels)-1, l, "table %d is above the bottom level", tb.FileNum)
+			require.Zero(t, tb.Properties.NumRangeDeletions, "table %d keeps range tombstones", tb.FileNum)
+			entries += tb.Properties.NumEntries
+		}
+	}
+	it, err := s.db.NewIter(nil)
+	require.NoError(t, err)
+	var live, index uint64
+	for it.First(); it.Valid(); it.Next() {
+		live++
+		if it.Key()[0] == pfxHolders {
+			index++
+		}
+	}
+	require.NoError(t, it.Close())
+	require.Equal(t, uint64(tables/2*addrs), index)
+	require.Equal(t, live, entries, "the tables hold only live records")
+}

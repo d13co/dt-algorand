@@ -353,7 +353,8 @@ func (s *Store) IndexHolders(ctx context.Context, progress func(scanned, indexed
 }
 
 // CompactHoldersIndex rewrites the asset holders index, dropping the entries
-// that IndexHolders replaced.
+// that IndexHolders replaced. It compacts in steps, as CompactCheckpoints
+// does: at once, the free disk it needs could approach the store's size.
 func (s *Store) CompactHoldersIndex(ctx context.Context) error {
 	if err := s.acquire(); err != nil {
 		return err
@@ -362,7 +363,7 @@ func (s *Store) CompactHoldersIndex(ctx context.Context) error {
 	if s.readOnly {
 		return ErrReadOnly
 	}
-	return s.db.Compact(ctx, []byte{pfxHolders}, []byte{pfxHolders + 1}, true)
+	return s.compactRange(ctx, []byte{pfxHolders}, []byte{pfxHolders + 1})
 }
 
 // DropHoldersIndex deletes the asset holders index, complete, stale or half
