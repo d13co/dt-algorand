@@ -72,6 +72,35 @@ type historyTracker struct {
 	// reeval bounds concurrent re-evaluations of old state deltas.
 	// ponytail: fixed at 2, a config knob if delta-heavy clients need more
 	reeval chan struct{}
+
+	log logging.Logger
+
+	// genesisHdr is the encoded genesis block header, which the store's
+	// round 0 must hold. Nil skips the check (tools without the genesis).
+	genesisHdr []byte
+
+	// untrusted is why the history is not served (see verifyReplayed).
+	// Guarded by mu, and set once per load: loadFromDisk clears it, then
+	// sets it again if the store is marked diverged.
+	untrusted error
+
+	// replayFailed is set by verifyReplayed's first failure of a load.
+	// Guarded by mu.
+	replayFailed bool
+	// repairFailed is set by verifyReplayed's first failed repair of a load.
+	repairFailed bool
+
+	// foreignThrough is the last installed round loadFromDisk found: the
+	// store's last round if it is past the block DB (a node's own store
+	// never is, since blocks are written before their rounds' history; an
+	// installed snapshot is until a catchpoint catchup completes), or the
+	// last round fetch installed, whichever is later. Replayed rounds up to
+	// it are therefore not the node's.
+	foreignThrough basics.Round
+
+	// sticky is an untrusted reason that a reload keeps: a difference the
+	// store could not be marked with. Guarded by mu.
+	sticky error
 }
 
 type historyRound struct {
@@ -115,11 +144,11 @@ func TimeTravelPath(dirs DirsAndPrefix) string {
 
 func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
 	path := TimeTravelPath(dirs)
-	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}})
+	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}, Infof: log.Infof})
 	if err != nil {
 		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
 	}
-	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2)}, nil
+	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2), log: log}, nil
 }
 
 // checkAccountsNotAhead refuses an account DB ahead of the block DB, which
@@ -148,7 +177,30 @@ func (p pebbleLog) Infof(format string, args ...any) { p.Debugf(format, args...)
 func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round) error {
 	ht.mu.Lock()
 	ht.pending = nil
+	// a replay or read failure holds until the ledger loads again
+	ht.untrusted = ht.sticky
+	ht.replayFailed = false
 	ht.mu.Unlock()
+	ht.repairFailed = false
+	// The installed rounds the ledger replays: a store past the block DB
+	// holds rounds the node has not written, and fetch records the last
+	// round it installed (which a truncation lowers). The rest are the
+	// node's own.
+	ht.foreignThrough = 0
+	if last, ok := ht.store.Last(); ok && basics.Round(last) > l.Latest() {
+		ht.foreignThrough = basics.Round(last)
+	}
+	if through, ok, ierr := ht.store.InstalledThrough(); errors.Is(ierr, timetravel.ErrCorrupt) {
+		// the safe side: a difference marks the store rather than repairs it
+		ht.log.Errorf("time travel store %s: %v: taking its whole history as installed", ht.path, ierr)
+		if last, lok := ht.store.Last(); lok {
+			ht.foreignThrough = max(ht.foreignThrough, basics.Round(last))
+		}
+	} else if ierr != nil {
+		return fmt.Errorf("time travel store %s: %w", ht.path, ierr)
+	} else if ok {
+		ht.foreignThrough = max(ht.foreignThrough, basics.Round(through))
+	}
 	if err := ht.loadOnline(l); err != nil {
 		return err
 	}
@@ -158,7 +210,13 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 		if basics.Round(last) < dbRound {
 			return fmt.Errorf("time travel store %s ends at round %d but the ledger is at round %d", ht.path, last, dbRound)
 		}
-		return nil
+		if err := ht.checkStart(); err != nil {
+			return err
+		}
+		if err := ht.checkHeader(l, dbRound); err != nil {
+			return err
+		}
+		return ht.loadDiverged()
 	}
 	if dbRound != 0 {
 		return fmt.Errorf("time travel store %s is empty but the ledger is at round %d: if the store was moved, remove this empty one and point TimeTravelDBDir at it; otherwise the node must sync from genesis (no fast catchup)", ht.path, dbRound)
@@ -238,6 +296,9 @@ func (ht *historyTracker) newBlock(blk bookkeeping.Block, delta ledgercore.State
 		r.idx[string(ch.Key)] = i
 	}
 	r.expired = ht.expiredStake(blk, &delta)
+	if last, ok := ht.store.Last(); ok && uint64(r.rnd) <= last {
+		ht.verifyReplayed(r)
+	}
 	ht.mu.Lock()
 	ht.pending = append(ht.pending, r)
 	ht.mu.Unlock()
@@ -341,10 +402,19 @@ func (l *Ledger) historyAt(rnd basics.Round) *histView {
 	if l.history == nil {
 		return nil
 	}
+	// an installed store (tools/ttsnap) reaches past the ledger until a
+	// catchpoint catchup truncates it: its later rounds are not the chain's
+	if rnd > l.Latest() {
+		return nil
+	}
 	ht := l.history
 	ht.mu.Lock()
+	untrusted := ht.untrusted
 	v := &histView{store: ht.store, pending: ht.pending}
 	ht.mu.Unlock()
+	if untrusted != nil {
+		return nil
+	}
 	// Read last after taking pending: rounds leave pending only once they are
 	// in the store, so pending holds every round in (last, latest].
 	last, ok := ht.store.Last()
@@ -956,7 +1026,12 @@ func (l *Ledger) reevalDelta(rnd basics.Round) (ledgercore.StateDelta, error) {
 	if err != nil {
 		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
 	}
-	if err := verifyDelta(l.historyAt(rnd), rnd, &sd); err != nil {
+	h := l.historyAt(rnd)
+	if h == nil {
+		// marked untrusted since the caller found the round in the history
+		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: the history is not served", ErrDeltaReevaluation, rnd)
+	}
+	if err := verifyDelta(h, rnd, &sd); err != nil {
 		return ledgercore.StateDelta{}, err
 	}
 	return sd, nil

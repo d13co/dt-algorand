@@ -23,6 +23,8 @@ Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the 
 | `/usr/lib/dtalgorand/bin/` | `algod`, `goal`, `kmd`, `algoh`, `algocfg`, `algokey`, `diagcfg`, `node_exporter` under their stock names: goal and algoh run algod and kmd from their own directory |
 | `/usr/bin/dt*` | links to them: `dtalgod`, `dtgoal`, `dtkmd`, `dtalgoh`, `dtalgocfg`, `dtalgokey`, `dtdiagcfg` |
 | `/usr/bin/ttimport` | [ttimport](../../tools/ttimport/README.md) |
+| `/usr/bin/ttsnap` | [ttsnap](../../tools/ttsnap/README.md): install a history snapshot, then catch up from a catchpoint |
+| `/usr/share/dtalgorand/ttsnap/keys` | the Falcon-1024 keys of the snapshot producers and attesters `ttsnap fetch` trusts |
 | `/var/lib/dtalgorand/` | the node's data directory, with mainnet's `genesis.json` and the other networks' under `genesis/` |
 | `dtalgorand.service`, `dtalgorand@.service` | the node, and nodes for other data directories (see the unit's comments) |
 | `/etc/apt/apt.conf.d/51dtalgorand-upgrades` | unattended upgrades from `apt.d13.co`, suite `stable` |
@@ -55,7 +57,7 @@ The package does not enable or start `dtalgorand.service`. A time travel node sy
    sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p TimeTravelDBDir -v /mnt/fast/dtalgorand
    ```
 
-2. Sync from the network (weeks on mainnet), or import an archival node's blocks first. An algod's ledger directory is private to its user, so import as root and hand the result to `dtalgorand`:
+2. Install a history snapshot and catch up from a catchpoint (see [ttsnap](../../tools/ttsnap/README.md#new-node)), sync from the network (weeks on mainnet), or import an archival node's blocks first. An algod's ledger directory is private to its user, so import as root and hand the result to `dtalgorand`:
 
    ```sh
    sudo ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d /var/lib/dtalgorand

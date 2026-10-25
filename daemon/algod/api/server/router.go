@@ -161,6 +161,8 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 
 	if node.Config().EnableTimeTravel {
 		timetravel.RegisterHandlers(e, &v2Handler, publicMiddleware...)
+		// not in the REST spec: what ttsnap attest reads
+		e.GET(v2.HistoryCommitmentPath+"/:round", v2Handler.HistoryCommitment, adminMiddleware...)
 	}
 
 	return e

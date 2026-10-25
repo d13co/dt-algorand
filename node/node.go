@@ -1220,7 +1220,15 @@ func (node *AlgorandFullNode) StartCatchup(catchpoint string) error {
 		return fmt.Errorf("catching up using a catchpoint is not supported on archive nodes")
 	}
 	if node.config.EnableTimeTravel {
-		return fmt.Errorf("catching up using a catchpoint is not supported with EnableTimeTravel: the history must be built from genesis")
+		// the history comes from elsewhere (a snapshot); CompleteCatchup
+		// checks it against the catchpoint before applying it
+		rnd, _, err := ledgercore.ParseCatchpointLabel(catchpoint)
+		if err != nil {
+			return err
+		}
+		if err := node.ledger.CheckHistoryForCatchpoint(rnd); err != nil {
+			return fmt.Errorf("catching up using a catchpoint with EnableTimeTravel needs a history that reaches it: %w", err)
+		}
 	}
 	if node.catchpointCatchupService != nil {
 		stats := node.catchpointCatchupService.GetStatistics()

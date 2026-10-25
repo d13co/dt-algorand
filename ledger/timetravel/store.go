@@ -112,6 +112,10 @@ type Options struct {
 	// AddRound skips when they repeat the stored state; 0 is the default
 	// (2^18, ~30 MB), negative stores every change.
 	DedupEntries int
+	// Infof, if not nil, receives the messages an operator should see:
+	// those of a truncation that Open finishes, which takes minutes on a
+	// large store.
+	Infof func(format string, args ...any)
 	// ReadOnly opens an existing store without writing to it: no new store,
 	// no compactions, and AddRound, RemoveNoops, CompactCheckpoints and Sync
 	// fail with ErrReadOnly. The store is still locked, so another process
@@ -142,6 +146,13 @@ type Store struct {
 	boxFrom atomic.Uint64 // see BoxIndexFrom
 	boxGen  atomic.Uint64 // odd while boxFrom changes; see setBoxFrom
 
+	truncating atomic.Bool // a TruncateAfter is unfinished; AddRound fails
+	// truncatedAfter is 1 + the round the last TruncateAfter of this
+	// process truncated after, until AddRound adds a round; 0: none
+	truncatedAfter atomic.Uint64
+
+	infof func(format string, args ...any) // Options.Infof, never nil
+
 	// closeMu is held for reading by every operation, including while Versions,
 	// BoxChanges and the like run their callbacks. A callback that reads the
 	// store takes it again, which deadlocks if Close is waiting in between
@@ -151,6 +162,10 @@ type Store struct {
 	// it as recursive locking in ttdump's tests, so it stays a sync.RWMutex.
 	closeMu sync.RWMutex `algofix:"allow sync.Mutex"`
 	closed  bool
+	// closing is closed when Close starts, so that long reads (Commitment)
+	// stop instead of holding Close, and every reader behind it, for minutes
+	closing   chan struct{}
+	closeOnce sync.Once
 }
 
 // commitBatch commits a round's batch; tests make it fail.
@@ -158,6 +173,10 @@ var commitBatch = func(b *pebble.Batch) error { return b.Commit(pebble.NoSync) }
 
 // ErrClosed is returned by operations on a closed store.
 var ErrClosed = errors.New("timetravel: store closed")
+
+// ErrCorrupt is wrapped by the errors of reads that find a record they can't
+// decode.
+var ErrCorrupt = errors.New("timetravel: corrupt record")
 
 // ErrReadOnly is returned by writes to a store opened with Options.ReadOnly.
 var ErrReadOnly = errors.New("timetravel: store opened read-only")
@@ -214,7 +233,10 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly}
+	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, closing: make(chan struct{}), infof: o.Infof}
+	if s.infof == nil {
+		s.infof = func(string, ...any) {}
+	}
 	if !o.ReadOnly {
 		s.dedup = newLastWritten(o.DedupEntries)
 	}
@@ -224,6 +246,10 @@ func Open(dir string, o Options) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadBoxIndex(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.finishTruncate(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -361,6 +387,7 @@ func (quietLogger) Fatalf(f string, args ...any) { pebble.DefaultLogger.Fatalf(f
 
 // Close closes the store, waiting for in-flight operations.
 func (s *Store) Close() error {
+	s.closeOnce.Do(func() { close(s.closing) })
 	s.closeMu.Lock()
 	defer s.closeMu.Unlock()
 	if s.closed {
@@ -439,6 +466,9 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.truncating.Load() {
+		return errTruncating
+	}
 	last, ok := s.Last()
 	if ok && rnd <= last {
 		return nil
@@ -500,6 +530,7 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 		return err
 	}
 	s.last.Store(int64(rnd))
+	s.truncatedAfter.Store(0)
 	// only now: a round that failed to commit is added again, and must not
 	// find its own changes in the cache
 	s.dedup.update(states)
@@ -1110,7 +1141,7 @@ func applyRecord(base []byte, ok bool, rec []byte) ([]byte, bool, error) {
 		v, err := Apply(base, rec[1:])
 		return v, err == nil, err
 	}
-	return nil, false, fmt.Errorf("timetravel: bad record %q", rec)
+	return nil, false, fmt.Errorf("%w: bad record %q", ErrCorrupt, rec)
 }
 
 // Get returns the value of obj at round rnd; ok is false if it did not exist.
@@ -1181,6 +1212,11 @@ func (s *Store) ExpiredStake(rnd uint64) (uint64, bool, error) {
 		return 0, false, err
 	}
 	defer s.closeMu.RUnlock()
+	return s.expiredStakeLocked(rnd)
+}
+
+// expiredStakeLocked is ExpiredStake for callers that hold closeMu.
+func (s *Store) expiredStakeLocked(rnd uint64) (uint64, bool, error) {
 	v, closer, err := s.db.Get(binary.BigEndian.AppendUint64([]byte{pfxExpired}, rnd))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return 0, false, nil
@@ -1191,7 +1227,7 @@ func (s *Store) ExpiredStake(rnd uint64) (uint64, bool, error) {
 	defer closer.Close()
 	e, n := binary.Uvarint(v)
 	if n <= 0 {
-		return 0, false, fmt.Errorf("timetravel: bad expired stake record for round %d", rnd)
+		return 0, false, fmt.Errorf("%w: bad expired stake record for round %d", ErrCorrupt, rnd)
 	}
 	return e, true, nil
 }
@@ -1201,6 +1237,11 @@ func (s *Store) headerRecord(rnd uint64) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	defer s.closeMu.RUnlock()
+	return s.headerRecordLocked(rnd)
+}
+
+// headerRecordLocked is headerRecord for callers that hold closeMu.
+func (s *Store) headerRecordLocked(rnd uint64) ([]byte, bool, error) {
 	v, closer, err := s.db.Get(binary.BigEndian.AppendUint64([]byte{pfxHeader}, rnd))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return nil, false, nil
@@ -1210,7 +1251,7 @@ func (s *Store) headerRecord(rnd uint64) ([]byte, bool, error) {
 	}
 	defer closer.Close()
 	if len(v) < DigestLen {
-		return nil, false, fmt.Errorf("timetravel: short header record for round %d", rnd)
+		return nil, false, fmt.Errorf("%w: short header record for round %d", ErrCorrupt, rnd)
 	}
 	return append([]byte(nil), v...), true, nil
 }
