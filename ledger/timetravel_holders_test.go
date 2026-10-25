@@ -30,6 +30,8 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-deadlock"
+
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
@@ -441,7 +443,7 @@ func TestTimeTravelInitHoldersIndex(t *testing.T) {
 
 // logBuffer collects a ledger's log, which its goroutines write too.
 type logBuffer struct {
-	mu sync.Mutex
+	mu deadlock.Mutex
 	b  bytes.Buffer
 }
 

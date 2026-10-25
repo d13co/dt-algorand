@@ -101,13 +101,13 @@ func (l *Ledger) HoldersIndexState() (timetravel.HoldersState, uint64) {
 }
 
 // AssetHoldersAt lists the accounts that hold asset aidx at round rnd, zero
-// balances included, in address order, after after (nil: from the first), up
-// to limit (> 0). A page also ends once it has examined holdersExamineCap
-// index entries (accounts that ever held the asset), so it can be short or
-// empty while more holders remain: More is the only reliable signal. A full
-// page looks ahead for one more holder, so the last page has no More even when
-// it is full, unless the look-ahead reaches the cap. Pages at a fixed round
-// never change.
+// balances included, in address order, from the one following the address
+// after (nil: from the first), up to limit (> 0). A page also ends once it
+// has examined holdersExamineCap index entries (accounts that ever held the
+// asset), so it can be short or empty while more holders remain: More is the
+// only reliable signal. A full page looks ahead for one more holder, so the
+// last page has no More even when it is full, unless the look-ahead reaches
+// the cap. Pages at a fixed round never change.
 func (l *Ledger) AssetHoldersAt(rnd basics.Round, aidx basics.AssetIndex, after *basics.Address, limit uint64) (AssetHoldersPage, error) {
 	h := l.historyNow(rnd)
 	if h == nil {
