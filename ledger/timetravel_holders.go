@@ -111,6 +111,10 @@ func (l *Ledger) HoldersIndexState() (timetravel.HoldersState, uint64) {
 func (l *Ledger) AssetHoldersAt(rnd basics.Round, aidx basics.AssetIndex, after *basics.Address, limit uint64) (AssetHoldersPage, error) {
 	h := l.historyNow(rnd)
 	if h == nil {
+		// the history may have been found untrusted since the caller checked
+		if err := l.HistoryUntrusted(); err != nil {
+			return AssetHoldersPage{}, err
+		}
 		return AssetHoldersPage{}, errHistoryUnavailable
 	}
 	return histAssetHolders(h, rnd, aidx, after, limit)

@@ -6189,7 +6189,7 @@
     },
     "/v2/assets/{asset-id}/holders": {
       "get": {
-        "description": "Lists the accounts that hold an asset at a round, in address order, with their balance and frozen flag. Accounts opted in with a zero balance are listed. Requires EnableTimeTravel and TimeTravelHoldersIndex, and a time travel store with TimeTravelCheckpointInterval 1 (400 otherwise). The node answers 503 until its asset holders index is built with `ttimport -holders-index` while the node is stopped.\n\nTo paginate: use the next-token from a previous response as the next parameter in the following request, and pin the round parameter to the round of the first page's response. Results at a fixed round never change, so the token stays valid. The next-token is the last address the page examined, which may not be a holder's: the next page starts after it. A page stops at `limit` holders or after examining 100,000 accounts that ever held the asset, so it can be short, or even empty, while more holders remain; the presence of next-token is the only reliable signal that more remain. A page that reaches `limit` looks ahead for one more holder, so the last page has no next-token even when it is full (unless the look-ahead reaches the 100,000 accounts).",
+        "description": "Lists the accounts that hold an asset at a round, in address order, with their balance and frozen flag. Accounts opted in with a zero balance are listed. Requires EnableTimeTravel. It also needs TimeTravelHoldersIndex and a time travel store with TimeTravelCheckpointInterval 1 (400 otherwise). The node answers 503 until its asset holders index is built with `ttimport -holders-index` while the node is stopped.\n\nTo paginate: use the next-token from a previous response as the next parameter in the following request, and pin the round parameter to the round of the first page's response. Results at a fixed round never change, so the token stays valid. The next-token is the last address the page examined, which may not be a holder's: the next page starts after it. A page stops at `limit` holders or after examining 100,000 accounts that ever held the asset, so it can be short, or even empty, while more holders remain; the presence of next-token is the only reliable signal that more remain. A page that reaches `limit` looks ahead for one more holder, so the last page has no next-token even when it is full (unless the look-ahead reaches the 100,000 accounts).",
         "operationId": "GetAssetHolders",
         "parameters": [
           {
@@ -6324,8 +6324,7 @@
         },
         "summary": "Get the holders of an asset.",
         "tags": [
-          "public",
-          "nonparticipating"
+          "timetravel"
         ]
       }
     },

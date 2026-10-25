@@ -165,12 +165,33 @@ func TestGetAssetHolders(t *testing.T) {
 		require.Contains(t, body, "the asset holders index is "+st.String())
 		require.Contains(t, body, "ttimport -holders-index")
 	}
+	// an untrusted history answers 503 before the lookup, as other time
+	// travel endpoints do
+	hl.err = nil
+	calls := hl.calls
+	code, body, _ = get(untrustedHoldersLedger{hl}, cfg, model.GetAssetHoldersParams{})
+	require.Equal(t, http.StatusServiceUnavailable, code)
+	require.Contains(t, body, "round 5 has a different header")
+	require.Equal(t, calls, hl.calls)
+
+	// found untrusted after the handler's check, by the lookup
+	hl.err = fmt.Errorf("%w: round 5 has a different header", ledger.ErrHistoryUntrusted)
+	code, body, _ = get(hl, cfg, model.GetAssetHoldersParams{})
+	require.Equal(t, http.StatusServiceUnavailable, code)
+	require.Contains(t, body, "round 5 has a different header")
 	hl.err = fmt.Errorf("%w: asset 7 at round 1000", ledger.ErrAssetNotFound)
 	code, _, _ = get(hl, cfg, model.GetAssetHoldersParams{})
 	require.Equal(t, http.StatusNotFound, code)
 	hl.err = errors.New("disk on fire")
 	code, _, _ = get(hl, cfg, model.GetAssetHoldersParams{})
 	require.Equal(t, http.StatusInternalServerError, code)
+}
+
+// untrustedHoldersLedger is a holdersLedger whose history is not served.
+type untrustedHoldersLedger struct{ *holdersLedger }
+
+func (untrustedHoldersLedger) HistoryUntrusted() error {
+	return fmt.Errorf("%w: round 5 has a different header", ledger.ErrHistoryUntrusted)
 }
 
 // indexError returns the error a store's AssetHolders returns while its index

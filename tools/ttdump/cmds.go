@@ -162,7 +162,7 @@ func cmdInfo(e *env, args []string) error {
 		if n := out.CheckpointInterval; n != 1 {
 			fmt.Fprintf(e.out, "holders      index stale: it needs a store with N = 1, not %d\n\n", n)
 		} else {
-			fmt.Fprint(e.out, "holders      index stale: a build without it added rounds (ttimport -holders-index rebuilds it)\n\n")
+			fmt.Fprint(e.out, "holders      index stale: a build without it added rounds, or its meta record is bad (ttimport -holders-index rebuilds it)\n\n")
 		}
 	default:
 		fmt.Fprint(e.out, "holders      no index (TimeTravelHoldersIndex, ttimport -holders-index)\n\n")

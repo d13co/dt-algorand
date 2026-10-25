@@ -74,7 +74,7 @@ const (
 	// HoldersNone means there is no index, or IndexHolders has not finished.
 	HoldersNone HoldersState = iota
 	// HoldersStale means that a build without the index added rounds since it
-	// was built.
+	// was built, or that its meta record is bad.
 	HoldersStale
 	// HoldersComplete means the index covers every round of the store.
 	HoldersComplete
@@ -116,7 +116,11 @@ func (s *Store) loadHolders() error {
 	}
 	defer closer.Close()
 	if len(v) != 8 {
-		return fmt.Errorf("timetravel: bad asset holders index meta record")
+		// the index is derived: a bad one is not served, and a truncation or
+		// DropHoldersIndex deletes it, as for a stale one
+		s.infof("timetravel: the asset holders index has a bad meta record: rebuild it with ttimport -holders-index")
+		s.holders.Store(uint32(HoldersStale))
+		return nil
 	}
 	// an empty store takes N from the options: one built on with N = 1 and
 	// reopened with another N has an index nothing may maintain
@@ -137,16 +141,36 @@ func holdersKey(asset uint64, addr []byte) []byte {
 	return append(k, addr...)
 }
 
+var errBadHoldersEntry = errors.New("timetravel: bad asset holders index entry")
+
+// forBoundaries calls fn with each boundary (round) of the index entry
+// intervals, in order, and the length of the entry's prefix through it, until
+// fn returns false. It fails on a bad entry, after the boundaries before the
+// bad part.
+func forBoundaries(intervals []byte, fn func(at uint64, end int) bool) error {
+	var at uint64
+	for n := 0; n < len(intervals); {
+		d, k := binary.Uvarint(intervals[n:])
+		if k <= 0 || at+d < at {
+			return errBadHoldersEntry
+		}
+		at += d
+		n += k
+		if !fn(at, n) {
+			return nil
+		}
+	}
+	return nil
+}
+
 // boundaries returns the number of boundaries in intervals and the last one.
 func boundaries(intervals []byte) (n int, last uint64, err error) {
-	for len(intervals) > 0 {
-		d, k := binary.Uvarint(intervals)
-		if k <= 0 {
-			return 0, 0, fmt.Errorf("timetravel: bad asset holders index entry")
-		}
-		intervals = intervals[k:]
-		last += d
-		n++
+	err = forBoundaries(intervals, func(at uint64, _ int) bool {
+		n, last = n+1, at
+		return true
+	})
+	if err != nil {
+		return 0, 0, err
 	}
 	return n, last, nil
 }
@@ -155,15 +179,11 @@ func boundaries(intervals []byte) (n int, last uint64, err error) {
 // the holding was created and deleted, alternating, the first a creation.
 func HolderIntervals(intervals []byte) ([]uint64, error) {
 	var out []uint64
-	var last uint64
-	for len(intervals) > 0 {
-		d, k := binary.Uvarint(intervals)
-		if k <= 0 {
-			return nil, fmt.Errorf("timetravel: bad asset holders index entry")
-		}
-		intervals = intervals[k:]
-		last += d
-		out = append(out, last)
+	if err := forBoundaries(intervals, func(at uint64, _ int) bool {
+		out = append(out, at)
+		return true
+	}); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -171,20 +191,15 @@ func HolderIntervals(intervals []byte) ([]uint64, error) {
 // HeldAt reports whether a holding whose index entry is intervals, as
 // AssetHolders returns it, is held at round rnd.
 func HeldAt(intervals []byte, rnd uint64) bool {
-	var at uint64
 	held := false
-	for len(intervals) > 0 {
-		d, k := binary.Uvarint(intervals)
-		if k <= 0 {
-			return false // AssetHolders returns valid entries only
-		}
-		intervals = intervals[k:]
-		if at += d; at > rnd {
-			break
+	err := forBoundaries(intervals, func(at uint64, _ int) bool {
+		if at > rnd {
+			return false
 		}
 		held = !held
-	}
-	return held
+		return true
+	})
+	return held && err == nil // AssetHolders returns valid entries only
 }
 
 // indexHolders adds to b the index entries of the holdings that the changes
@@ -259,6 +274,9 @@ func (s *Store) truncateHolders(ctx context.Context, b uint64, scanned, deleted 
 		s.infof("timetravel: dropping the asset holders index, which does not cover the store's last round, for the truncation: rebuild it with ttimport -holders-index")
 		return s.clearHolders()
 	}
+	if s.next() <= b+1 {
+		return nil // TruncateAfter(last): no boundary is after b
+	}
 	s.holders.Store(uint32(HoldersStale))
 
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte{pfxHolders}, UpperBound: []byte{pfxHolders + 1}})
@@ -313,17 +331,16 @@ func (s *Store) truncateHolders(ctx context.Context, b uint64, scanned, deleted 
 // intervalsThrough returns the length of the prefix of intervals that holds
 // its boundaries up to round b.
 func intervalsThrough(intervals []byte, b uint64) (int, error) {
-	var at uint64
 	n := 0
-	for n < len(intervals) {
-		d, k := binary.Uvarint(intervals[n:])
-		if k <= 0 || at+d < at {
-			return 0, fmt.Errorf("timetravel: bad asset holders index entry")
+	err := forBoundaries(intervals, func(at uint64, end int) bool {
+		if at > b {
+			return false
 		}
-		if at += d; at > b {
-			break
-		}
-		n += k
+		n = end
+		return true
+	})
+	if err != nil {
+		return 0, err
 	}
 	return n, nil
 }
@@ -379,10 +396,7 @@ func (s *Store) clearHolders() error {
 	s.holders.Store(uint32(HoldersNone))
 	b := s.db.NewBatch()
 	defer b.Close()
-	if err := b.Delete(keyHoldersMeta, nil); err != nil {
-		return err
-	}
-	if err := b.DeleteRange([]byte{pfxHolders}, []byte{pfxHolders + 1}, nil); err != nil {
+	if err := dropHoldersInBatch(b); err != nil {
 		return err
 	}
 	return b.Commit(pebble.Sync)

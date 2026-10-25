@@ -56,6 +56,11 @@ func (v2 *Handlers) GetAssetHolders(ctx echo.Context, assetID basics.AssetIndex,
 		err := fmt.Errorf("asset holders need a time travel store with N = 1, not %d", n)
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
+	if hu, ok := l.(historyTrust); ok {
+		if err := hu.HistoryUntrusted(); err != nil {
+			return v2.historyError(ctx, err)
+		}
+	}
 	limit := uint64(DefaultHolders)
 	if params.Limit != nil {
 		if *params.Limit == 0 || *params.Limit > MaxHolders {
@@ -83,6 +88,8 @@ func (v2 *Handlers) GetAssetHolders(ctx echo.Context, assetID basics.AssetIndex,
 
 	page, err := hl.AssetHoldersAt(rnd, assetID, after, limit)
 	switch {
+	case errors.Is(err, ledger.ErrHistoryUntrusted):
+		return serviceUnavailable(ctx, err, err.Error(), v2.Log)
 	case errors.Is(err, ledger.ErrNoHoldersIndex):
 		return serviceUnavailable(ctx, err, err.Error()+": build it with ttimport -holders-index while the node is stopped", v2.Log)
 	case errors.Is(err, ledger.ErrAssetNotFound):

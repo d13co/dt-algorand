@@ -78,6 +78,71 @@ func TestHolderIntervals(t *testing.T) {
 	require.Error(t, err)
 	_, _, err = boundaries([]byte{0x80})
 	require.Error(t, err)
+	// a delta past the last round overflows: bad, for every decoder
+	overflow := binary.AppendUvarint(binary.AppendUvarint(binary.AppendUvarint(nil, 5), 2), ^uint64(0))
+	_, err = HolderIntervals(overflow)
+	require.Error(t, err)
+	_, _, err = boundaries(overflow)
+	require.Error(t, err)
+	_, err = intervalsThrough(overflow, ^uint64(0))
+	require.Error(t, err)
+	require.False(t, HeldAt(overflow, ^uint64(0)))
+	require.True(t, HeldAt(overflow, 6), "a round before the bad part's")
+}
+
+// TestStoreHoldersBadMeta checks that a bad meta record makes the index stale
+// rather than fail Open, so that DropHoldersIndex (ttsnap fetch, the node with
+// TimeTravelHoldersIndex off) and a truncation can delete it.
+func TestStoreHoldersBadMeta(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	changes, _ := holderRounds(9, 12)
+	build := func(t *testing.T) string {
+		dir := t.TempDir()
+		s, err := Open(dir, Options{})
+		require.NoError(t, err)
+		for r := range changes {
+			require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+		}
+		_, err = s.IndexHolders(context.Background(), nil)
+		require.NoError(t, err)
+		require.NoError(t, s.DB().Set(keyHoldersMeta, []byte{1, 2, 3}, pebble.Sync))
+		require.NoError(t, s.Close())
+		return dir
+	}
+
+	t.Run("drop", func(t *testing.T) {
+		s, err := Open(build(t), Options{})
+		require.NoError(t, err)
+		defer s.Close()
+		require.Equal(t, HoldersStale, s.HoldersIndexState())
+		err = s.AssetHolders(1, nil, func([]byte, []byte) bool { return true })
+		require.ErrorIs(t, err, ErrNoHoldersIndex)
+		dropped, err := s.DropHoldersIndex()
+		require.NoError(t, err)
+		require.True(t, dropped)
+		require.Equal(t, HoldersNone, s.HoldersIndexState())
+		require.Empty(t, holdersRange(t, s))
+		require.Nil(t, holdersMetaRecord(t, s))
+	})
+
+	t.Run("truncate", func(t *testing.T) {
+		s, err := Open(build(t), Options{})
+		require.NoError(t, err)
+		defer s.Close()
+		_, err = s.TruncateAfter(context.Background(), 4, TruncateOptions{})
+		require.NoError(t, err)
+		require.Equal(t, HoldersNone, s.HoldersIndexState())
+		require.Empty(t, holdersRange(t, s))
+		require.Nil(t, holdersMetaRecord(t, s))
+	})
+
+	t.Run("read-only", func(t *testing.T) {
+		ro, err := Open(build(t), Options{ReadOnly: true})
+		require.NoError(t, err)
+		defer ro.Close()
+		require.Equal(t, HoldersStale, ro.HoldersIndexState())
+	})
 }
 
 func TestHoldingOf(t *testing.T) {

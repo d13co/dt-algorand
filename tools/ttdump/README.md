@@ -66,7 +66,7 @@ c         A     asset params          ...
 ...
 ```
 
-Fast: the per-keyspace figures are Pebble's estimates, no scan. `box index` says from which round the [box index](../../ledger/timetravel/README.md#box-index) is complete, when it does not cover the whole store (`ttimport -index-boxes` builds the rest). `holders` is the state of the [asset holders index](../../ledger/timetravel/README.md#holders-index): complete, stale (a build without it added rounds, or the store's N isn't 1) or missing (`ttimport -holders-index` builds it); the JSON field `holders-index` says which.
+Fast: the per-keyspace figures are Pebble's estimates, no scan. `box index` says from which round the [box index](../../ledger/timetravel/README.md#box-index) is complete, when it does not cover the whole store (`ttimport -index-boxes` builds the rest). `holders` is the state of the [asset holders index](../../ledger/timetravel/README.md#holders-index): complete, stale (a build without it added rounds, its meta record is bad, or the store's N isn't 1) or missing (`ttimport -holders-index` builds it); the JSON field `holders-index` says which.
 
 ### get OBJECT [-r R]
 
