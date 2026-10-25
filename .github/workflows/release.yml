@@ -84,14 +84,7 @@ jobs:
         with:
           fetch-depth: 0 # the build stamps the version from git describe
           persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        with:
-          cache-prefix: buildsrc
-      # setup-test builds libsodium before configure_dev.sh installs its build
-      # tools, and macos-15 images lack libtool
-      - name: Install libsodium's build tools
-        run: brew install autoconf automake libtool
-      - uses: ./.github/actions/setup-test
+      - uses: ./.github/actions/setup-darwin
       - name: Fetch upstream's release tags
         run: git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'
       - name: Build the tarball
@@ -146,7 +139,6 @@ jobs:
     environment: homebrew # holds the tap's deploy key; v* tags only, needs approval
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    concurrency: homebrew # one formula update at a time
     permissions:
       contents: read # the release's checksum; the tap is pushed with its deploy key
     steps:
@@ -172,20 +164,32 @@ jobs:
           # the published tarball is the one the checksum describes
           curl -fsSL "$url" -o "$RUNNER_TEMP/$name"
           echo "$sha  $RUNNER_TEMP/$name" | sha256sum -c
-          mkdir -p tap/Formula
-          # an older tag's run, approved after a newer one's, leaves the formula alone
-          cur=$(sed -n 's/^  version "\(.*\)"$/\1/p' tap/Formula/dtalgorand.rb 2>/dev/null || true)
-          if [ -n "$cur" ] && [ "$cur" != "$v" ] && [ "$(printf '%s\n' "$cur" "$v" | sort -V | tail -n 1)" = "$cur" ]; then
-            echo "the formula is at $cur, newer than $v"; exit 0
-          fi
-          installer/dtalgorand/homebrew/render.sh "$v" "$url" "$sha" > tap/Formula/dtalgorand.rb
           cd tap
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Formula/dtalgorand.rb
-          if git diff --cached --quiet; then echo "the formula is already at $v"; exit 0; fi
-          git commit -m "dtalgorand $v"
-          git push
+          branch=$(git rev-parse --abbrev-ref HEAD)
+          # No concurrency group: GitHub would cancel a pending run when another queues, and
+          # that tag's formula would never land. Runs that overlap instead retry on a rejected push.
+          for attempt in 1 2 3 4 5; do
+            if [ "$attempt" -gt 1 ]; then
+              sleep $((attempt * 5))
+              git fetch --depth 1 origin "$branch"
+              git reset --hard FETCH_HEAD
+            fi
+            mkdir -p Formula
+            # an older tag's run, approved after a newer one's, leaves the formula alone
+            cur=$(sed -n 's/^  version "\(.*\)"$/\1/p' Formula/dtalgorand.rb 2>/dev/null || true)
+            if [ -n "$cur" ] && [ "$cur" != "$v" ] && [ "$(printf '%s\n' "$cur" "$v" | sort -V | tail -n 1)" = "$cur" ]; then
+              echo "the formula is at $cur, newer than $v"; exit 0
+            fi
+            ../installer/dtalgorand/homebrew/render.sh "$v" "$url" "$sha" > Formula/dtalgorand.rb
+            git add Formula/dtalgorand.rb
+            if git diff --cached --quiet; then echo "the formula is already at $v"; exit 0; fi
+            git commit -m "dtalgorand $v"
+            if git push origin "HEAD:$branch"; then exit 0; fi
+            echo "the tap moved under this run (attempt $attempt); retrying"
+          done
+          exit 1
 
   # Separate from release so a failed publish can be re-run on its own.
   apt:

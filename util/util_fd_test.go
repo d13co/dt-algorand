@@ -19,6 +19,7 @@
 package util
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -42,7 +43,11 @@ func TestRaiseFdSoftLimitToHard(t *testing.T) {
 	require.Equal(t, hard, got)
 
 	// asking for more than the OS allows settles for the most it does
-	require.NoError(t, RaiseFdSoftLimit(hard+1000))
+	more := hard + 1000
+	if more < hard { // hard is RLIM_INFINITY
+		more = math.MaxUint64
+	}
+	require.NoError(t, RaiseFdSoftLimit(more))
 	got, _, err = GetFdLimits()
 	require.NoError(t, err)
 	require.Equal(t, hard, got)

@@ -226,6 +226,8 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 				// do not fail but log the error
 				s.log.Errorf("Failed to set a new RLIMIT_NOFILE value to %d (max %d): %s", fdRequired, hard, fdErr.Error())
 			}
+			// what the connections, as limited now, and the ledger use
+			fdRequired = maxFDs
 		}
 	}
 
@@ -239,7 +241,7 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			return errors.New("Initialize() overflowed when adding up the time travel store's files to the existing RLIMIT_NOFILE value")
 		}
 		if _, hard, fdErr := util.GetFdLimits(); fdErr == nil && ttRequired > hard {
-			s.log.Warnf("RLIMIT_NOFILE allows %d file descriptors, below the %d that connections, the ledger and the time travel store (%d files) may use; raise the hard limit", hard, ttRequired, timetravel.MaxOpenFiles)
+			s.log.Warnf("RLIMIT_NOFILE allows %d file descriptors and connections and the ledger may use %d, which leaves fewer than the %d files the time travel store may keep open; raise the hard limit", hard, fdRequired, timetravel.MaxOpenFiles)
 		}
 		if fdErr := util.RaiseFdSoftLimit(ttRequired); fdErr != nil {
 			s.log.Errorf("Failed to raise RLIMIT_NOFILE to %d for the time travel store: %s", ttRequired, fdErr.Error())

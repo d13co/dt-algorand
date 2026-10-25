@@ -13,6 +13,13 @@ on:
       - 'installer/system.json'
       - 'installer/config.json.example'
       - 'COPYING'
+      # what builds them
+      - 'Makefile'
+      - 'installer/external/**' # node_exporter
+      - 'scripts/*.sh' # build number, Go version, configure_dev.sh's brew installs
+      - 'scripts/buildnumber.py'
+      - 'crypto/libsodium-fork/**'
+      - '.github/actions/**'
       # algod's file descriptor limits, which differ on macOS
       - 'util/util*.go'
       - 'daemon/algod/server.go'
@@ -39,14 +46,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        with:
-          cache-prefix: buildsrc
-      # setup-test builds libsodium before configure_dev.sh installs its build
-      # tools, and macos-15 images lack libtool
-      - name: Install libsodium's build tools
-        run: brew install autoconf automake libtool
-      - uses: ./.github/actions/setup-test
+      - uses: ./.github/actions/setup-darwin
       - name: Check the scripts parse
         run: |
           bash -n installer/dtalgorand/build_darwin.sh
