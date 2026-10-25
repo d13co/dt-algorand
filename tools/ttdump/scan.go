@@ -33,6 +33,7 @@ import (
 	"github.com/algorand/avm-abi/apps"
 
 	"github.com/algorand/go-algorand/cmd/util/ttview"
+	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger/timetravel"
 )
 
@@ -233,11 +234,14 @@ type rawOut struct {
 	Round    *uint64 `json:"round,omitempty"`
 	Tag      string  `json:"tag,omitempty"`
 	Value    []byte  `json:"value"`
+	// Intervals are the rounds at which the holding of an asset holders index
+	// entry was created and deleted, alternating.
+	Intervals []uint64 `json:"intervals,omitempty"`
 }
 
 func cmdRaw(e *env, args []string) error {
 	fs := e.newFlags("raw")
-	prefixFlag := fs.String("prefix", "", "an object, a keyspace (b c p r H E m) or hex:PREFIX")
+	prefixFlag := fs.String("prefix", "", "an object, a keyspace (a b c p r H E m) or hex:PREFIX")
 	after := fs.String("after", "", "start after this record key (hex, as printed)")
 	n := fs.Uint64("n", 100, "at most this many records (0: all)")
 	if _, err := parse(fs, args, 0, 0); err != nil {
@@ -248,7 +252,7 @@ func cmdRaw(e *env, args []string) error {
 	switch p := *prefixFlag; {
 	case p == "":
 		ranges = [][]byte{nil}
-	case len(p) == 1 && strings.Contains("bcprHEm", p):
+	case len(p) == 1 && strings.Contains("abcprHEm", p):
 		ranges = [][]byte{[]byte(p)}
 	case strings.HasPrefix(p, "hex:"):
 		b, err := hex.DecodeString(p[4:])
@@ -300,8 +304,12 @@ func cmdRaw(e *env, args []string) error {
 				if out.Round != nil {
 					rnd = strconv.FormatUint(*out.Round, 10)
 				}
+				val := hexPrefix(out.Value, 16)
+				if out.Intervals != nil {
+					val = "rounds " + strings.Trim(fmt.Sprint(out.Intervals), "[]")
+				}
 				err = t.add([]string{"key", "keyspace", "object", "round", "tag", "bytes", "value"},
-					[]string{out.Key, out.Keyspace, out.Object, rnd, out.Tag, strconv.Itoa(len(out.Value)), hexPrefix(out.Value, 16)})
+					[]string{out.Key, out.Keyspace, out.Object, rnd, out.Tag, strconv.Itoa(len(out.Value)), val})
 			}
 			if err != nil {
 				it.Close()
@@ -339,6 +347,15 @@ func rawRecord(k, v []byte) rawOut {
 		if len(k) == 9 {
 			rnd := binary.BigEndian.Uint64(k[1:])
 			out.Round = &rnd
+		}
+	case 'a': // asset, addr -> the holding's intervals
+		if len(k) == 1+8+32 {
+			var addr basics.Address
+			copy(addr[:], k[9:])
+			out.Object = objectOf(timetravel.HoldingKey(addr, basics.AssetIndex(binary.BigEndian.Uint64(k[1:])))).String()
+		}
+		if iv, err := timetravel.HolderIntervals(v); err == nil {
+			out.Intervals = iv
 		}
 	case 'b': // app, round, name
 		if len(k) >= 1+8+8 {

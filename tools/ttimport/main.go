@@ -65,14 +65,16 @@ func main() {
 	dedup := flag.Bool("dedup", false, "instead of importing, remove the records that change nothing from the time travel store of -d, whose algod must be stopped, and rebuild its box index")
 	indexBoxes := flag.Bool("index-boxes", false, "instead of importing, build the box index of the time travel store of -d, whose algod must be stopped: stores written by builds without it need it for /v2/applications/{id}/boxes/versions")
 	fillAPI := flag.String("fill", "", "instead of importing, add to the time travel store of -d, whose algod must be stopped, the rounds its account DB is ahead by, with their deltas from this algod API URL and their headers from -blocks")
+	holdersIndex := flag.Bool("holders-index", false, "instead of importing, build the asset holders index of the time travel store of -d, whose algod must be stopped and whose config.json sets TimeTravelHoldersIndex, for /v2/assets/{id}/holders")
 	flag.Parse()
 	modes := 0
-	for _, on := range []bool{*dedup, *indexBoxes, *fillAPI != ""} {
+	for _, on := range []bool{*dedup, *indexBoxes, *holdersIndex, *fillAPI != ""} {
 		if on {
 			modes++
 		}
 	}
-	if *dataDir == "" || (*blocks == "") != (*dedup || *indexBoxes) || modes > 1 {
+	// -fill and the import read -blocks; the other modes don't
+	if *dataDir == "" || (*blocks == "") != (*dedup || *indexBoxes || *holdersIndex) || modes > 1 {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -93,7 +95,7 @@ func main() {
 		}
 	}
 	// The replay can't stop early, so Ctrl-C kills it (keeping the profile); a rerun
-	// resumes from the trackers' last commit (a -dedup or -index-boxes rerun starts
+	// resumes from the trackers' last commit (a -dedup, -index-boxes or -holders-index rerun starts
 	// over, a -dedup one skipping what was removed). A broken output pipe does too: piped to
 	// grep, Ctrl-C ends grep first, and the SIGPIPE of the next write to stdout or
 	// stderr would otherwise kill the process before the profile is written.
@@ -117,6 +119,8 @@ func main() {
 		err = buildBoxIndex(*dataDir)
 	case *fillAPI != "":
 		err = fill(*blocks, *dataDir, *fillAPI)
+	case *holdersIndex:
+		err = buildHoldersIndex(*dataDir)
 	default:
 		err = run(*blocks, *dataDir, *memprofile)
 	}

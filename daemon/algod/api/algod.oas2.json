@@ -2118,6 +2118,76 @@
         }
       }
     },
+    "/v2/assets/{asset-id}/holders": {
+      "get": {
+        "description": "Lists the accounts that hold an asset at a round, in address order, with their balance and frozen flag. Accounts opted in with a zero balance are listed. Requires EnableTimeTravel. It also needs TimeTravelHoldersIndex and a time travel store with TimeTravelCheckpointInterval 1 (400 otherwise). The node answers 503 until its asset holders index is built with `ttimport -holders-index` while the node is stopped.\n\nTo paginate: use the next-token from a previous response as the next parameter in the following request, and pin the round parameter to the round of the first page's response. Results at a fixed round never change, so the token stays valid. The next-token is the last address the page examined, which may not be a holder's: the next page starts after it. A page stops at `limit` holders or after examining 100,000 accounts that ever held the asset, so it can be short, or even empty, while more holders remain; the presence of next-token is the only reliable signal that more remain. A page that reaches `limit` looks ahead for one more holder, so the last page has no next-token even when it is full (unless the look-ahead reaches the 100,000 accounts).",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the holders of an asset.",
+        "operationId": "GetAssetHolders",
+        "parameters": [
+          {
+            "$ref": "#/parameters/asset-id"
+          },
+          {
+            "$ref": "#/parameters/at-round"
+          },
+          {
+            "type": "integer",
+            "x-go-type": "uint64",
+            "description": "Maximum number of holders to return, from 1 to 10,000. Defaults to 1,000.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "The next-token of the previous page: an address, after which the page starts.",
+            "name": "next",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/AssetHoldersResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Asset Not Found",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "503": {
+            "description": "The asset holders index is missing or stale",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
     "/v2/accounts/{address}/versions": {
       "get": {
         "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
@@ -3625,6 +3695,28 @@
         },
         "params": {
           "$ref": "#/definitions/AssetParams"
+        }
+      }
+    },
+    "AssetHolder": {
+      "description": "An account that holds an asset, and its holding.",
+      "type": "object",
+      "required": ["address", "amount", "is-frozen"],
+      "properties": {
+        "address": {
+          "description": "The holder's address.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "amount": {
+          "description": "\\[a\\] number of units held.",
+          "type": "integer",
+          "format": "uint64",
+          "x-algorand-format": "uint64"
+        },
+        "is-frozen": {
+          "description": "\\[f\\] whether or not the holding is frozen.",
+          "type": "boolean"
         }
       }
     },
@@ -5936,6 +6028,30 @@
       "description": "Application information",
       "schema": {
         "$ref": "#/definitions/Application"
+      }
+    },
+    "AssetHoldersResponse": {
+      "description": "Holders of an asset at a round.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "holders"],
+        "properties": {
+          "round": {
+            "description": "The round of the holdings: `round`, or the latest round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "next-token": {
+            "description": "Present if more holders may remain: provide it as the next parameter, with the same round, to get them.",
+            "type": "string"
+          },
+          "holders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/AssetHolder"
+            }
+          }
+        }
       }
     },
     "BoxesResponse": {

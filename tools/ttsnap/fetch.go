@@ -728,6 +728,16 @@ func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name s
 		return err
 	}
 	defer st.Close()
+	// the asset holders index is derived, and the commitment does not cover
+	// it: a store from elsewhere is not trusted with one, and the strict
+	// commitment refuses its keys
+	dropped, err := st.DropHoldersIndex()
+	if err != nil {
+		return err
+	}
+	if dropped {
+		fmt.Fprintln(o.progressLog, "dropped the snapshot's asset holders index: build one with ttimport -holders-index")
+	}
 	fmt.Fprintln(o.progressLog, "computing the history's commitment")
 	// delete what the commitment leaves out as the scan finds it: the scan
 	// reads a snapshot, so the writes don't disturb it

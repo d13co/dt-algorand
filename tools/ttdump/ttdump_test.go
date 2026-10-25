@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -100,9 +101,22 @@ const (
 func testStore(t *testing.T, o timetravel.Options) string {
 	dir := filepath.Join(t.TempDir(), "ledger.timetravel")
 	o.DedupEntries = -1 // keep the no-op writes
+	if o.CheckpointInterval > 1 && o.Incremental {
+		// a holders index built while the store was empty with N = 1: stale
+		// once the store has another N
+		s, err := timetravel.Open(dir, timetravel.Options{})
+		require.NoError(t, err)
+		_, err = s.IndexHolders(context.Background(), nil)
+		require.NoError(t, err)
+		require.NoError(t, s.Close())
+	}
 	s, err := timetravel.Open(dir, o)
 	require.NoError(t, err)
 	defer s.Close()
+	if o.CheckpointInterval <= 1 { // the holders index needs N = 1
+		_, err = s.IndexHolders(context.Background(), nil)
+		require.NoError(t, err)
+	}
 
 	acct := func(a basics.Address, algos uint64, assets, apps uint64) timetravel.Change {
 		var ba trackerdb.BaseAccountData
@@ -269,6 +283,25 @@ func TestCommands(t *testing.T) {
 			require.Len(t, idx, 5, "an entry per box write")
 			require.Equal(t, boxSpec, idx[0]["object"])
 			require.EqualValues(t, 3, idx[0]["round"])
+			// the holders index: addrB held asa from round 2 to round 6
+			holding := fmt.Sprintf("holding:%s:%d", addrB, asa)
+			if o.CheckpointInterval <= 1 {
+				require.Equal(t, "complete", info["holders-index"])
+				require.Contains(t, st("info"), "holders index complete")
+				hidx := stj("raw", "-prefix", "a")
+				require.Len(t, hidx, 1)
+				require.Equal(t, holding, hidx[0]["object"])
+				require.Equal(t, []any{2.0, 6.0}, hidx[0]["intervals"])
+				require.Contains(t, st("raw", "-prefix", "a"), holding+" 2 rounds 2 6")
+			} else if o.Incremental {
+				require.Equal(t, "stale", info["holders-index"])
+				require.Contains(t, st("info"), "holders index stale: it needs a store with N = 1, not 3")
+				require.Empty(t, stj("raw", "-prefix", "a"))
+			} else {
+				require.Equal(t, "missing", info["holders-index"])
+				require.Contains(t, st("info"), "holders no index")
+				require.Empty(t, stj("raw", "-prefix", "a"))
+			}
 
 			// account: the REST account with its resources
 			acct := stj("account", addrB.String(), "-r", "5")[0]

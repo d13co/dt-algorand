@@ -157,6 +157,7 @@ var defaultLocal = Local{
 	TelemetryToLog:                             true,
 	TimeTravelCheckpointInterval:               1,
 	TimeTravelDBDir:                            "",
+	TimeTravelHoldersIndex:                     false,
 	TrackerDBDir:                               "",
 	TransactionSyncDataExchangeRate:            0,
 	TransactionSyncSignificantMessageThreshold: 0,

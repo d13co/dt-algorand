@@ -54,17 +54,19 @@ rounds       0..25314401 (2019-...  .. 2026-...)
 checkpoints  every 1 rounds
 disk         3.21 GiB
 box index    complete
+holders      no index (TimeTravelHoldersIndex, ttimport -holders-index)
 
 estimated disk use (sstables only, not the WAL or memtables):
 KEYSPACE  KIND  CONTENTS              DISK
 E               expired online stake  ...
 H               headers and digests   ...
+a               asset holders index   ...
 b               box index             ...
 c         A     asset params          ...
 ...
 ```
 
-Fast: the per-keyspace figures are Pebble's estimates, no scan. `box index` says from which round the [box index](../../ledger/timetravel/README.md#box-index) is complete, when it does not cover the whole store (`ttimport -index-boxes` builds the rest).
+Fast: the per-keyspace figures are Pebble's estimates, no scan. `box index` says from which round the [box index](../../ledger/timetravel/README.md#box-index) is complete, when it does not cover the whole store (`ttimport -index-boxes` builds the rest). `holders` is the state of the [asset holders index](../../ledger/timetravel/README.md#holders-index): complete, stale (a build without it added rounds, its meta record is bad, or the store's N isn't 1) or missing (`ttimport -holders-index` builds it); the JSON field `holders-index` says which.
 
 ### get OBJECT [-r R]
 
@@ -122,4 +124,4 @@ Scans every versioned record (`-kind` limits it to one kind: `a h l A P k T C`) 
 
 ### raw [-prefix P] [-after HEX] [-n N]
 
-The records in key order, at most `-n` (100): key, keyspace, object, round, tag (`F` full value, `D` deleted, `X` patch), value length and its first bytes. `-prefix` is an object (its records in both versioned keyspaces), a keyspace (`b` box index, `c` checkpoints, `p` patches, `r` round index, `H` headers, `E` expired stake, `m` meta) or `hex:` a raw key prefix. The store's layout is in [ledger/timetravel/store.go](../../ledger/timetravel/store.go).
+The records in key order, at most `-n` (100): key, keyspace, object, round, tag (`F` full value, `D` deleted, `X` patch), value length and its first bytes, or for an asset holders index entry the rounds at which its holding was created and deleted. `-prefix` is an object (its records in both versioned keyspaces), a keyspace (`a` asset holders index, `b` box index, `c` checkpoints, `p` patches, `r` round index, `H` headers, `E` expired stake, `m` meta) or `hex:` a raw key prefix. The store's layout is in [ledger/timetravel/store.go](../../ledger/timetravel/store.go).

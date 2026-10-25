@@ -649,6 +649,13 @@ type Local struct {
 	// disk to keep their latency down. To move an existing store, stop the node and move its ledger.timetravel directory.
 	TimeTravelDBDir string `version[39]:""`
 
+	// TimeTravelHoldersIndex enables GET /v2/assets/{asset-id}/holders, which lists the accounts that held an asset
+	// at any round, from an index of the time travel store (EnableTimeTravel) of every holding by asset: ~3.6 GiB on
+	// mainnet, +6% of the store. Build the index with ttimport -holders-index while the node is stopped (~5 minutes on
+	// mainnet); until then the endpoint answers 503. It needs a store with TimeTravelCheckpointInterval 1, as the store
+	// was created. Turning it off deletes the index at launch; turning it on again needs ttimport -holders-index.
+	TimeTravelHoldersIndex bool `version[39]:"false"`
+
 	// EnableTxnEvalTracer turns on features in the BlockEvaluator which collect data on transactions, exposing them via algod APIs.
 	// It will store txn deltas created during block evaluation, potentially consuming much larger amounts of memory,
 	EnableTxnEvalTracer bool `version[27]:"false"`

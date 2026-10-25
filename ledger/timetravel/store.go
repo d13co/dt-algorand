@@ -38,6 +38,10 @@
 // AddRound writes, round-major per app, so that BoxChanges reads a range of
 // an app's rounds without visiting every box the app ever had (see
 // BoxIndexFrom).
+// 'a' asset addr -> the rounds at which the holding was created and deleted,
+// the asset holders index: an entry per holding ever, asset-major, so that
+// AssetHolders lists an asset's holders without reading every holding (see
+// IndexHolders). Unlike the others it exists only once built.
 //
 // N = 1 (every version stored in full, one seek per read, writes that read
 // nothing) is the recommended setting: with zstd over large blocks, an
@@ -72,6 +76,7 @@ const (
 	pfxHeader     = 'H'
 	pfxExpired    = 'E'
 	pfxBoxIndex   = 'b'
+	pfxHolders    = 'a'
 )
 
 var keyMeta = []byte("m")
@@ -140,11 +145,14 @@ type Store struct {
 	readOnly    bool
 	last        atomic.Int64 // -1 when empty
 
-	writeMu deadlock.Mutex // serializes AddRound, RemoveNoops and IndexBoxes
+	writeMu deadlock.Mutex // serializes AddRound, RemoveNoops, IndexBoxes and the holders index's writers
 	dedup   *lastWritten   // nil: store every change; guarded by writeMu
 
 	boxFrom atomic.Uint64 // see BoxIndexFrom
 	boxGen  atomic.Uint64 // odd while boxFrom changes; see setBoxFrom
+
+	holders     atomic.Uint32 // HoldersState; changes under writeMu
+	skipHolders bool          // tests: AddRound leaves the holders index alone, as a build without it does
 
 	truncating atomic.Bool // a TruncateAfter is unfinished; AddRound fails
 	// truncatedAfter is 1 + the round the last TruncateAfter of this
@@ -250,6 +258,10 @@ func Open(dir string, o Options) (*Store, error) {
 		return nil, err
 	}
 	if err := s.finishTruncate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.loadHolders(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -487,6 +499,12 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	if err := b.Set(keyBoxIndexMeta, boxIndexMeta(s.boxFrom.Load(), rnd+1), nil); err != nil {
 		return err
 	}
+	// a complete holders index is kept up to date, in the round's batch
+	if s.HoldersIndexState() == HoldersComplete && !s.skipHolders {
+		if err := s.indexHolders(b, write, rnd); err != nil {
+			return err
+		}
+	}
 	c := rnd - rnd%s.n
 	if rnd == c {
 		if err := s.checkpoint(b, rnd, write); err != nil {
@@ -657,7 +675,9 @@ var removeNoopsBatchOps = uint32(1 << 16)
 // tombstones before an object's first value (objects created and deleted in
 // one round). Every read answers as before, except that Objects no longer
 // lists objects that never had a value. In the same pass it rebuilds the box
-// index, as IndexBoxes does. CompactCheckpoints reclaims the space. progress,
+// index, as IndexBoxes does. The asset holders index stays as it is: no
+// record it removes creates or deletes a holding. CompactCheckpoints reclaims
+// the space. progress,
 // if not nil, is called with the records scanned and removed after each batch
 // of writes and at the end. Reads may run concurrently; AddRound waits.
 func (s *Store) RemoveNoops(ctx context.Context, progress func(scanned, removed uint64)) (uint64, error) {
