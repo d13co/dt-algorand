@@ -50,6 +50,13 @@ func (s *Store) TruncatedAfter() (uint64, bool) {
 // errTruncating is returned by AddRound while a truncation is unfinished.
 var errTruncating = errors.New("timetravel: a truncation of the store is unfinished; reopen the store to finish it")
 
+// Truncating reports whether a truncation of the store is unfinished: one
+// that failed, or was cancelled, leaves the store refusing rounds until it is
+// opened again, which finishes it.
+func (s *Store) Truncating() bool {
+	return s.truncating.Load()
+}
+
 // TruncateOptions configure Store.TruncateAfter.
 type TruncateOptions struct {
 	// Workers is the goroutines that scan the object records; 0: GOMAXPROCS.
@@ -74,10 +81,11 @@ type TruncateOptions struct {
 // the store diverged, ends it at b and returns an error wrapping ErrCorrupt.
 // It needs N = 1, as commitments do.
 //
-// An interrupted truncation (a crash, or Close, which cancels it) finishes
-// when the store is next opened writable; until then AddRound fails, and so
-// does a truncation after a later round. Reads may run concurrently, and see
-// the rounds up to b as before.
+// An interrupted or failed truncation (a crash, Close, which cancels it, or
+// an error) finishes when the store is next opened writable; until then
+// AddRound fails (Truncating), and so does a truncation after a later round.
+// Reads may run concurrently, and see the rounds up to b as before: the store
+// ends at b from the start of the truncation.
 func (s *Store) TruncateAfter(ctx context.Context, b uint64, o TruncateOptions) (uint64, error) {
 	return s.truncateAfter(ctx, b, o, s.keySplits)
 }
@@ -113,6 +121,8 @@ func (s *Store) truncateAfter(ctx context.Context, b uint64, o TruncateOptions, 
 		return 0, err
 	}
 	s.truncating.Store(true)
+	// the records after b go first (headers), so the store ends at b now
+	s.last.Store(int64(b))
 	// Close cancels a truncation rather than wait minutes for it
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -59,6 +59,12 @@ var ErrHistoryUntrusted = errors.New("the time travel history is not served")
 // truncation when it is next opened, and the catchup can resume.
 var ErrHistoryTruncationInterrupted = errors.New("the truncation of the time travel history was interrupted")
 
+// ErrHistoryTruncationUnfinished is returned by PrepareCatchpointHistory when
+// the truncation of the history failed and left it unfinished: the store
+// refuses rounds until it is opened again (a restart), which finishes it, so
+// the node must not go back to normal operation, and the catchup can resume.
+var ErrHistoryTruncationUnfinished = errors.New("the truncation of the time travel history failed: restart algod to finish it")
+
 // ErrHistoryTooShort is returned for a catchpoint whose balances round the
 // installed history does not reach.
 var ErrHistoryTooShort = errors.New("the time travel history does not reach the catchpoint")
@@ -154,7 +160,10 @@ func (ht *historyTracker) loadDivergedMark() (bool, error) {
 // replays them. A round that still can't be read after a retry, or a repair
 // that fails, holds the history back until the ledger loads again (a
 // restart), which does not check that round again: the tracker DB commits
-// past it.
+// past it. A repair whose truncation fails unfinished (not on a corrupt
+// store) leaves the store refusing rounds instead, until a restart opens it,
+// which finishes the truncation: meanwhile the tracker commits fail, and
+// their rounds stay in memory.
 func (ht *historyTracker) verifyReplayed(r historyRound) {
 	err := verifyStored(ht.store, r)
 	if err != nil && !errors.Is(err, timetravel.ErrDiverged) && !errors.Is(err, timetravel.ErrClosed) {
@@ -237,7 +246,11 @@ func (ht *historyTracker) repair(rnd basics.Round, cause error) error {
 		},
 	})
 	if err != nil {
-		ht.log.Errorf("time travel: deleting store %s's history from round %d: %v", ht.path, rnd, err)
+		if ht.store.Truncating() {
+			ht.log.Errorf("time travel: deleting store %s's history from round %d: %v; the store refuses rounds until algod restarts, which finishes the deletion", ht.path, rnd, err)
+		} else {
+			ht.log.Errorf("time travel: deleting store %s's history from round %d: %v", ht.path, rnd, err)
+		}
 		return err
 	}
 	ht.log.Infof("time travel: deleted %d records of the history from round %d in %s", deleted, rnd, time.Since(start).Round(time.Second))
@@ -342,18 +355,25 @@ func (ht *historyTracker) checkCatchpoint(b basics.Round, hdr bookkeeping.BlockH
 // catchpoint (checkCatchpoint), then deletes its rounds after the balances
 // round, which takes minutes on mainnet. CompleteCatchup does it too, at no
 // cost once done; the catchpoint service runs it first, with a context that a
-// shutdown ends but an abort does not, since a truncation cut short leaves the
-// store refusing rounds until it is opened again. When ctx ends during the
-// truncation, it returns an ErrHistoryTruncationInterrupted error.
+// shutdown ends (even after an abort) but an abort alone does not, since a
+// truncation cut short leaves the store refusing rounds until it is opened
+// again. When ctx ends during the truncation, it returns an
+// ErrHistoryTruncationInterrupted error, and when the truncation fails
+// otherwise but leaves the store refusing rounds, an
+// ErrHistoryTruncationUnfinished one.
 func (c *catchpointCatchupAccessorImpl) PrepareCatchpointHistory(ctx context.Context) error {
 	ht := c.ledger.history
 	if ht == nil {
 		return nil
 	}
 	err := c.prepareHistory(ctx, ht)
-	if err != nil && ctx.Err() != nil && !errors.Is(err, timetravel.ErrCorrupt) {
+	switch {
+	case err == nil:
+	case ctx.Err() != nil && !errors.Is(err, timetravel.ErrCorrupt):
 		// whatever failed, the catchup can resume
 		err = fmt.Errorf("%w: %w", ErrHistoryTruncationInterrupted, err)
+	case ht.store.Truncating():
+		err = fmt.Errorf("%w: %w", ErrHistoryTruncationUnfinished, err)
 	}
 	return err
 }

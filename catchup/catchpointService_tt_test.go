@@ -43,6 +43,8 @@ type historyAccessorMock struct {
 	completeInterrupted bool
 	// onRelease runs as PrepareCatchpointHistory returns after release
 	onRelease func()
+	// releaseErr is what PrepareCatchpointHistory returns after release
+	releaseErr error
 }
 
 func (m *historyAccessorMock) PrepareCatchpointHistory(ctx context.Context) error {
@@ -54,7 +56,7 @@ func (m *historyAccessorMock) PrepareCatchpointHistory(ctx context.Context) erro
 		if m.onRelease != nil {
 			m.onRelease()
 		}
-		return nil
+		return m.releaseErr
 	}
 }
 
@@ -84,7 +86,8 @@ func (catchupModeNode) SetCatchpointCatchupMode(bool) <-chan context.Context {
 
 // TestProcessStageSwitchHistory checks that a shutdown interrupts the time
 // travel history's truncation and keeps the stage, to resume, while an abort
-// waits for it and then aborts.
+// waits for it and then aborts, unless a shutdown follows, and that a
+// truncation that fails unfinished keeps the node in catchup mode.
 func TestProcessStageSwitchHistory(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -92,11 +95,14 @@ func TestProcessStageSwitchHistory(t *testing.T) {
 	setup := func(t *testing.T) (*CatchpointCatchupService, *historyAccessorMock, chan error) {
 		ctx, cancel := context.WithCancel(context.Background())
 		abortCtx, abortCancel := context.WithCancel(context.Background())
+		stopCtx, stopCancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
 		t.Cleanup(abortCancel)
+		t.Cleanup(stopCancel)
 		acc := &historyAccessorMock{started: make(chan struct{}), release: make(chan struct{})}
 		cs := &CatchpointCatchupService{
 			ctx: ctx, cancelCtxFunc: cancel, abortCtx: abortCtx, abortCtxFunc: abortCancel,
+			stopCtx: stopCtx, stopCtxFunc: stopCancel,
 			ledgerAccessor: acc, node: catchupModeNode{}, log: logging.TestingLog(t),
 			stage: ledger.CatchpointCatchupStateSwitch,
 		}
@@ -143,5 +149,43 @@ func TestProcessStageSwitchHistory(t *testing.T) {
 		require.Error(t, <-done)
 		require.False(t, acc.completed, "the abort holds once the history is done")
 		require.True(t, acc.reset)
+	})
+
+	t.Run("abort then stop", func(t *testing.T) {
+		// a shutdown during the truncation an abort waits for interrupts it
+		cs, acc, done := setup(t)
+		cs.Abort()
+		select {
+		case <-done:
+			t.Fatal("an abort cut the truncation short")
+		case <-time.After(100 * time.Millisecond):
+		}
+		cs.Stop() // processStageSwitch runs outside run here: nothing to wait for
+		select {
+		case err := <-done:
+			require.Error(t, err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("a shutdown after an abort waits for the history")
+		}
+		require.False(t, acc.completed)
+		require.True(t, acc.reset, "the abort goes on once the truncation stops")
+	})
+
+	t.Run("unfinished", func(t *testing.T) {
+		// a truncation that fails and leaves the store refusing rounds neither
+		// aborts nor completes: the next start resumes
+		for _, abort := range []bool{false, true} {
+			cs, acc, done := setup(t)
+			acc.releaseErr = fmt.Errorf("%w: disk error", ledger.ErrHistoryTruncationUnfinished)
+			if abort {
+				cs.Abort()
+			}
+			close(acc.release)
+			require.ErrorIs(t, <-done, ledger.ErrHistoryTruncationUnfinished)
+			require.False(t, acc.completed)
+			require.False(t, acc.reset, "abort=%v: the staged catchpoint is kept, to resume", abort)
+			require.Error(t, cs.ctx.Err(), "run returns")
+			require.EqualValues(t, ledger.CatchpointCatchupStateSwitch, cs.stage)
+		}
 	})
 }

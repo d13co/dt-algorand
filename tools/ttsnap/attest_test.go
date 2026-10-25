@@ -240,8 +240,13 @@ func TestFetchCommitmentMismatch(t *testing.T) {
 	n := newTestNet(t)
 	n.publish()
 	n.rewriteLatest(func(m *Manifest) {
+		// another hex digit: a non-hex one fails the format check first
 		d := []byte(m.Commitment.Digest)
-		d[0] ^= 1
+		if d[0] == '0' {
+			d[0] = '1'
+		} else {
+			d[0] = '0'
+		}
 		m.Commitment.Digest = string(d)
 	})
 	dataDir := n.consumer()

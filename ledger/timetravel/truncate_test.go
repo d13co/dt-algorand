@@ -19,6 +19,7 @@ package timetravel
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"slices"
@@ -374,6 +375,45 @@ func TestStoreTruncateResumes(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, []byte{8}, v)
+}
+
+// TestStoreTruncateFails fails a truncation with an error that is neither a
+// cancellation nor a corrupt record, after it deleted the headers after b,
+// and checks that the store reports it unfinished and ends at b, refuses
+// rounds, and finishes it when reopened.
+func TestStoreTruncateFails(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	dir := t.TempDir()
+	s, err := Open(dir, Options{})
+	require.NoError(t, err)
+	obj := KvKey("x")
+	for r := range 20 {
+		require.NoError(t, s.AddRound(uint64(r), []Change{{Key: obj, Value: []byte{byte(r)}}}, hdrOf(uint64(r)), nil))
+	}
+	require.False(t, s.Truncating())
+	ioErr := errors.New("disk error")
+	split := func(*pebble.Snapshot, []byte, []byte, int) ([][]byte, error) { return nil, ioErr }
+	_, err = s.truncateAfter(context.Background(), 10, TruncateOptions{}, split)
+	require.ErrorIs(t, err, ioErr)
+	require.NotErrorIs(t, err, ErrCorrupt)
+	require.True(t, s.Truncating())
+	last, _ := s.Last()
+	require.EqualValues(t, 10, last, "the headers after b are gone")
+	require.ErrorContains(t, s.Verify(15, nil, hdrOf(15), nil), "not stored")
+	require.ErrorIs(t, s.AddRound(20, nil, hdrOf(20), nil), errTruncating)
+	require.NoError(t, s.Close())
+
+	s, err = Open(dir, Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	require.False(t, s.Truncating())
+	last, _ = s.Last()
+	require.EqualValues(t, 10, last)
+	require.False(t, hasRaw(t, s, keyTruncateMeta))
+	require.False(t, hasRaw(t, s, verKey(pfxCheckpoint, obj, 11)))
+	require.NoError(t, s.AddRound(11, []Change{{Key: obj, Value: []byte{11}}}, hdrOf(11), nil))
 }
 
 // TestStoreTruncateResumesPartial interrupts a truncation once it has
