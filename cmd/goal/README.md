@@ -166,6 +166,9 @@ goal account versions --address ${ACCOUNT} --exclude all
 
 # the raw pages, as JSON
 goal asset versions --assetid ${ASSETID} --json
+
+# the holders of an asset as of round 1000: address, amount, "frozen" (needs TimeTravelHoldersIndex)
+goal asset holders --assetid ${ASSETID} --round 1000 --all
 ```
 
 `--round 0` is the genesis round, except for `goal app box list`, where `--round 0` means the latest round. A node without time travel rejects `--round`. To explore the history of a stopped node offline, including the raw records, see `tools/ttdump`.

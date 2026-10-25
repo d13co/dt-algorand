@@ -51,6 +51,16 @@ func HoldingKey(addr basics.Address, aidx basics.AssetIndex) []byte {
 	return binary.BigEndian.AppendUint64(append([]byte{KindHolding}, addr[:]...), uint64(aidx))
 }
 
+// HoldingOf returns the account and asset of a holding's object key; ok is
+// false if obj is not a holding's.
+func HoldingOf(obj []byte) (addr basics.Address, asset uint64, ok bool) {
+	if len(obj) != 1+len(addr)+8 || obj[0] != KindHolding {
+		return addr, 0, false
+	}
+	copy(addr[:], obj[1:])
+	return addr, binary.BigEndian.Uint64(obj[1+len(addr):]), true
+}
+
 // LocalKey is the object key of an app local state.
 func LocalKey(addr basics.Address, aidx basics.AppIndex) []byte {
 	return binary.BigEndian.AppendUint64(append([]byte{KindLocal}, addr[:]...), uint64(aidx))

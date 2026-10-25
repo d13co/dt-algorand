@@ -142,6 +142,52 @@ func buildBoxIndex(dataDir string) error {
 	return nil
 }
 
+// buildHoldersIndex builds the asset holders index of the time travel store
+// of a data directory whose algod is stopped (timetravel.Store.IndexHolders).
+// Its config must set TimeTravelHoldersIndex: algod deletes the index at
+// launch otherwise.
+func buildHoldersIndex(dataDir string) error {
+	cfg, err := config.LoadConfigFromDisk(dataDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if !cfg.TimeTravelHoldersIndex {
+		return fmt.Errorf("the config.json of %s does not set TimeTravelHoldersIndex: algod would delete the index at its next launch", dataDir)
+	}
+	s, path, before, err := openStore(dataDir)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	last, _ := s.Last()
+	fmt.Printf("building the asset holders index of %s (rounds 0..%d, %.2f GiB; the index is %s)\n", path, last, gib(uint64(before)), s.HoldersIndexState())
+
+	start, printed := time.Now(), time.Now()
+	indexed, err := s.IndexHolders(context.Background(), func(scanned, indexed uint64) {
+		if time.Since(printed) >= progressInterval {
+			printed = time.Now()
+			fmt.Printf("scanned %d holding records, indexed %d holdings\n", scanned, indexed)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("indexed %d holdings in %v; compacting\n", indexed, time.Since(start).Round(time.Second))
+	start = time.Now()
+	if err = s.CompactHoldersIndex(context.Background()); err != nil {
+		return err
+	}
+	if err = s.Close(); err != nil {
+		return err
+	}
+	after, err := dirSize(path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("compacted in %v: %.2f GiB -> %.2f GiB\n", time.Since(start).Round(time.Second), gib(uint64(before)), gib(uint64(after)))
+	return nil
+}
+
 // dirSize returns the total size of the files in dir.
 func dirSize(dir string) (int64, error) {
 	var n int64

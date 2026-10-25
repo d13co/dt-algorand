@@ -69,6 +69,7 @@ var keyspaces = []struct {
 }{
 	{'E', "expired online stake", false},
 	{'H', "headers and digests", false},
+	{'a', "asset holders index", false},
 	{'b', "box index", false},
 	{'c', "checkpoints (versions)", true},
 	{'p', "patches", true},
@@ -92,6 +93,7 @@ type infoOut struct {
 	Incremental        bool       `json:"incremental"`
 	DiskBytes          int64      `json:"disk-bytes"`
 	BoxIndexFrom       *uint64    `json:"box-index-from,omitempty"` // absent while it is rebuilt
+	HoldersIndex       string     `json:"holders-index"`            // complete, stale or missing
 	Estimates          []estimate `json:"estimates"`
 }
 
@@ -100,7 +102,8 @@ func cmdInfo(e *env, args []string) error {
 		return err
 	}
 	out := infoOut{Path: e.path, First: uint64(e.first), Last: uint64(e.last),
-		CheckpointInterval: e.store.CheckpointInterval(), Incremental: e.store.Incremental()}
+		CheckpointInterval: e.store.CheckpointInterval(), Incremental: e.store.Incremental(),
+		HoldersIndex: e.store.HoldersIndexState().String()}
 	if from, ok := e.store.BoxIndexFrom(); ok {
 		out.BoxIndexFrom = &from
 	}
@@ -146,11 +149,23 @@ func cmdInfo(e *env, args []string) error {
 	fmt.Fprintf(e.out, "\ndisk         %s\n", sizeString(uint64(out.DiskBytes)))
 	switch from := out.BoxIndexFrom; {
 	case from == nil:
-		fmt.Fprint(e.out, "box index    being rebuilt (ttimport -index-boxes)\n\n")
+		fmt.Fprint(e.out, "box index    being rebuilt (ttimport -index-boxes)\n")
 	case *from > out.First:
-		fmt.Fprintf(e.out, "box index    from round %d (ttimport -index-boxes builds the rest)\n\n", *from)
+		fmt.Fprintf(e.out, "box index    from round %d (ttimport -index-boxes builds the rest)\n", *from)
 	default:
-		fmt.Fprint(e.out, "box index    complete\n\n")
+		fmt.Fprint(e.out, "box index    complete\n")
+	}
+	switch e.store.HoldersIndexState() {
+	case timetravel.HoldersComplete:
+		fmt.Fprint(e.out, "holders      index complete\n\n")
+	case timetravel.HoldersStale:
+		if n := out.CheckpointInterval; n != 1 {
+			fmt.Fprintf(e.out, "holders      index stale: it needs a store with N = 1, not %d\n\n", n)
+		} else {
+			fmt.Fprint(e.out, "holders      index stale: a build without it added rounds (ttimport -holders-index rebuilds it)\n\n")
+		}
+	default:
+		fmt.Fprint(e.out, "holders      no index (TimeTravelHoldersIndex, ttimport -holders-index)\n\n")
 	}
 	rows := make([][]string, 0, len(out.Estimates))
 	for _, est := range out.Estimates {

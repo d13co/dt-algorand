@@ -126,6 +126,18 @@ ttimport -fill https://mainnet-api.4160.nodely.dev -blocks /var/lib/algorand/mai
 
 It first rebuilds the last 10 stored rounds from their deltas and adds nothing unless their changes, headers and expired stake match the store. The expired stake comes from the account DB's online account history, which reaches back `MaxBalLookback` (320) rounds, so the gap must be shorter than ~310 rounds: past that, only an import from genesis rebuilds the store. Then rerun the import, or start the node.
 
+## Building the asset holders index
+
+`/v2/assets/{id}/holders` reads the store's [asset holders index](../../ledger/timetravel/README.md#holders-index), which exists only once built. Set `"TimeTravelHoldersIndex": true` in the data directory's `config.json` (`-holders-index` refuses otherwise, since algod deletes the index at launch when the option is off), then with the node stopped:
+
+```sh
+goal node stop -d ~/tt
+ttimport -holders-index -d ~/tt
+goal node start -d ~/tt
+```
+
+It scans the holding records once and writes an entry per holding that ever existed, then compacts the index; a rerun rebuilds it again. On a mainnet store (61.7 GiB, 115 M holdings ever) the index is ~3.6 GiB, and the build should take about 5 minutes, writes and compaction. From then on every round algod or a `ttimport` import adds keeps it up to date, so it can be built at any point of an import (stop it, build, rerun it to resume), and the earlier the faster. Ctrl-C is safe: it leaves no index (the endpoint answers 503), until a rerun. A build without the index that adds rounds to the store (an older algod) leaves it stale, and it needs `-holders-index` again; so does turning `TimeTravelHoldersIndex` off and on. `ttdump info` shows the index's state.
+
 ## Flags
 
 | flag | |
@@ -134,6 +146,7 @@ It first rebuilds the last 10 stored rounds from their deltas and adds nothing u
 | `-d` | the data directory to build: `genesis.json`, and `config.json` with `EnableTimeTravel` and without `Archival` |
 | `-dedup` | instead of importing, remove the no-op records from the time travel store of `-d` (no `-blocks`), and rebuild its box index |
 | `-index-boxes` | instead of importing, build the box index of the time travel store of `-d` (no `-blocks`) |
+| `-holders-index` | instead of importing, build the asset holders index of the time travel store of `-d` (no `-blocks`), whose `config.json` sets `TimeTravelHoldersIndex` |
 | `-fill <algod API URL>` | instead of importing, add to the time travel store of `-d` the rounds its account DB is ahead by, with deltas from the API and headers from `-blocks` |
 | `-v` | also print the ledger's info log |
 | `-cpuprofile <file>` | CPU profile of the run, kept on Ctrl-C |

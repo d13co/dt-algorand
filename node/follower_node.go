@@ -125,6 +125,11 @@ func MakeFollower(log logging.Logger, rootDir string, cfg config.Local, phoneboo
 		log.Errorf("Cannot initialize ledger (%v): %v", ledgerPaths, err)
 		return nil, err
 	}
+	// before any service reads the history: deleting the index needs that
+	if err = node.ledger.InitHoldersIndex(cfg.TimeTravelHoldersIndex); err != nil {
+		log.Errorf("Cannot initialize the asset holders index: %v", err)
+		return nil, err
+	}
 
 	node.ledger.RegisterBlockListeners([]ledgercore.BlockListener{node})
 
