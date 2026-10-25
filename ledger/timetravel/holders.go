@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
 )
@@ -45,16 +46,22 @@ import (
 // IndexHolders has finished. A build without the index adds rounds without
 // moving it: the index is then stale, and AddRound leaves it alone, since
 // finding the holdings those rounds changed means reading every holding, a
-// rebuild anyway. Open never writes the index, nor deletes it.
+// rebuild anyway. Open writes the index only to finish an interrupted
+// truncation.
 //
-// Records are never removed except by RemoveNoops, which removes only records
-// that repeat their object's state and tombstones before an object's first
-// value: no holding's existence changes, so neither does the index.
+// Records are removed by RemoveNoops, which removes only records that repeat
+// their object's state and tombstones before an object's first value: no
+// holding's existence changes, so neither does the index. TruncateAfter(b)
+// removes the rounds after b, and trims a complete index with them
+// (truncateHolders): it then covers the rounds up to b.
 //
 // IndexHolders and DropHoldersIndex rewrite the index without telling readers
 // (no generation counter, unlike the box index's): they run only while nothing
 // reads the store, in a tool on a stopped node or before the node's services
-// start.
+// start. TruncateAfter runs with readers (catchpoint catchup, replay repair):
+// it marks the index stale in memory before trimming or dropping it, so that
+// readers get ErrNoHoldersIndex; one already past that check reads the rounds
+// up to b as before, and those after b are going anyway.
 
 // keyHoldersMeta holds the round after the last one the asset holders index
 // covers.
@@ -224,6 +231,132 @@ func (s *Store) indexHolders(b *pebble.Batch, write []Change, rnd uint64) error 
 		}
 	}
 	return b.Set(keyHoldersMeta, holdersMeta(rnd+1), nil)
+}
+
+// truncateHolders prepares the asset holders index for TruncateAfter(b). A
+// complete index is trimmed to the rounds up to b: the boundaries after b go,
+// and so do the entries left with none (holdings created after b), which
+// leaves the entries IndexHolders builds from the records up to b. Readers get
+// ErrNoHoldersIndex meanwhile: the index stops covering the store's last
+// round, and endTruncate reloads its state. A stale index is dropped: it may
+// hold entries of rounds that a build truncating without this deleted, which
+// only a rebuild finds. A half-built one (no meta record) is left alone, since
+// IndexHolders clears it before building. A bad entry or meta record drops the
+// index rather than fail the truncation: it is derived, and ttimport
+// -holders-index rebuilds it. scanned and deleted count the entries read and
+// trimmed or deleted, for report. The caller holds writeMu.
+func (s *Store) truncateHolders(ctx context.Context, b uint64, scanned, deleted *atomic.Uint64, report func()) error {
+	v, closer, err := s.db.Get(keyHoldersMeta)
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	complete := len(v) == 8 && binary.BigEndian.Uint64(v) == s.next()
+	closer.Close()
+	if !complete {
+		s.infof("timetravel: dropping the asset holders index, which does not cover the store's last round, for the truncation: rebuild it with ttimport -holders-index")
+		return s.clearHolders()
+	}
+	s.holders.Store(uint32(HoldersStale))
+
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: []byte{pfxHolders}, UpperBound: []byte{pfxHolders + 1}})
+	if err != nil {
+		return err
+	}
+	defer it.Close()
+	var del, read uint64
+	committed := false // a batch since the last look at ctx
+	w := s.newWriter(func() {
+		committed = true
+		deleted.Add(del)
+		scanned.Add(read)
+		del, read = 0, 0
+		report()
+	})
+	defer func() { w.close() }()
+	for valid := it.First(); valid; valid = it.Next() {
+		if (committed || read%4096 == 0) && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		committed = false
+		read++
+		v := it.Value()
+		keep, err := intervalsThrough(v, b)
+		if err != nil {
+			s.infof("timetravel: dropping the asset holders index, which holds a bad entry %x: rebuild it with ttimport -holders-index", it.Key())
+			return s.clearHolders()
+		}
+		switch {
+		case keep == len(v):
+			continue
+		case keep == 0:
+			err = w.b.Delete(it.Key(), nil)
+		default:
+			err = w.b.Set(it.Key(), v[:keep], nil)
+		}
+		if err != nil {
+			return err
+		}
+		del++
+		if err := w.maybeCommit(); err != nil {
+			return err
+		}
+	}
+	if err := it.Error(); err != nil {
+		return err
+	}
+	return w.finish()
+}
+
+// intervalsThrough returns the length of the prefix of intervals that holds
+// its boundaries up to round b.
+func intervalsThrough(intervals []byte, b uint64) (int, error) {
+	var at uint64
+	n := 0
+	for n < len(intervals) {
+		d, k := binary.Uvarint(intervals[n:])
+		if k <= 0 || at+d < at {
+			return 0, fmt.Errorf("timetravel: bad asset holders index entry")
+		}
+		if at += d; at > b {
+			break
+		}
+		n += k
+	}
+	return n, nil
+}
+
+// truncateHoldersMeta adds to batch, for a truncation after b once
+// truncateHolders has trimmed a complete index, the meta record of the index
+// covering the rounds up to b. A truncation that left no meta record (no
+// index, dropped or half built) adds nothing.
+func (s *Store) truncateHoldersMeta(batch *pebble.Batch, b uint64) error {
+	v, closer, err := s.db.Get(keyHoldersMeta)
+	if errors.Is(err, pebble.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer closer.Close()
+	if len(v) != 8 {
+		return batch.Delete(keyHoldersMeta, nil)
+	}
+	if binary.BigEndian.Uint64(v) > b+1 {
+		return batch.Set(keyHoldersMeta, holdersMeta(b+1), nil)
+	}
+	return nil
+}
+
+// dropHoldersInBatch adds to batch the deletion of the holders index and its
+// meta record, after anything else batch writes to them.
+func dropHoldersInBatch(batch *pebble.Batch) error {
+	if err := batch.Delete(keyHoldersMeta, nil); err != nil {
+		return err
+	}
+	return batch.DeleteRange([]byte{pfxHolders}, []byte{pfxHolders + 1}, nil)
 }
 
 // holdersEntry returns the index entry at key, nil if there is none.

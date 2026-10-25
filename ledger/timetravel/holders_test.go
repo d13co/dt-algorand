@@ -671,3 +671,283 @@ func TestStoreCompactHoldersIndexInSteps(t *testing.T) {
 	require.Equal(t, uint64(tables/2*addrs), index)
 	require.Equal(t, live, entries, "the tables hold only live records")
 }
+
+// holdersIndexOf returns the index entries that IndexHolders builds from
+// rounds 0..b of changes.
+func holdersIndexOf(t *testing.T, changes [][]Change, b int) []string {
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := 0; r <= b; r++ {
+		require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+	}
+	_, err = s.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	return holdersRange(t, s)
+}
+
+// TestStoreHoldersTruncate checks that TruncateAfter(b) trims the index to
+// what IndexHolders builds from the rounds up to b, keeps a complete index
+// complete, and that AddRound then maintains it over different rounds.
+func TestStoreHoldersTruncate(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
+	removeNoopsBatchOps = 3 // commit while trimming
+
+	const rounds = 40
+	changes, history := holderRounds(7, rounds)
+	other, _ := holderRounds(8, rounds) // the rounds written again after b
+	for _, b := range []int{0, 3, 5, 9, rounds / 2, rounds - 1} {
+		t.Run(fmt.Sprintf("b=%d", b), func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := Open(dir, Options{DedupEntries: 24})
+			require.NoError(t, err)
+			for r := 0; r < rounds; r++ {
+				require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+			}
+			_, err = s.IndexHolders(context.Background(), nil)
+			require.NoError(t, err)
+			_, err = s.TruncateAfter(context.Background(), uint64(b), TruncateOptions{})
+			require.NoError(t, err)
+			require.Equal(t, HoldersComplete, s.HoldersIndexState())
+			require.Equal(t, holdersMeta(uint64(b+1)), holdersMetaRecord(t, s))
+			require.Equal(t, holdersIndexOf(t, changes, b), holdersRange(t, s))
+			checkHolders(t, s, history[:b+1])
+
+			// the node writes the rounds after b again, differently
+			for r := b + 1; r < rounds; r++ {
+				require.NoError(t, s.AddRound(uint64(r), other[r], nil, nil))
+			}
+			require.Equal(t, HoldersComplete, s.HoldersIndexState())
+			requireRebuildEqual(t, s, "maintained after the truncation")
+			require.NoError(t, s.Close())
+			s, err = Open(dir, Options{})
+			require.NoError(t, err)
+			require.Equal(t, HoldersComplete, s.HoldersIndexState())
+			require.NoError(t, s.Close())
+		})
+	}
+}
+
+// TestStoreHoldersTruncateStale checks that a truncation drops a stale index,
+// whatever round it covered: an older build may have truncated it without
+// trimming.
+func TestStoreHoldersTruncateStale(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	const rounds, k = 30, 15 // the index covers rounds 0..k-1
+	changes, _ := holderRounds(3, rounds)
+	for _, b := range []int{k - 5, k - 1, k, k + 5} {
+		t.Run(fmt.Sprintf("b=%d", b), func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := Open(dir, Options{})
+			require.NoError(t, err)
+			for r := 0; r < rounds; r++ {
+				if r == k {
+					_, err = s.IndexHolders(context.Background(), nil)
+					require.NoError(t, err)
+					s.skipHolders = true // a build without the index adds the rest
+				}
+				require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+			}
+			s.skipHolders = false
+			require.NoError(t, s.Close())
+			s, err = Open(dir, Options{})
+			require.NoError(t, err)
+			defer s.Close()
+			require.Equal(t, HoldersStale, s.HoldersIndexState())
+
+			_, err = s.TruncateAfter(context.Background(), uint64(b), TruncateOptions{})
+			require.NoError(t, err)
+			require.Equal(t, HoldersNone, s.HoldersIndexState())
+			require.Empty(t, holdersRange(t, s))
+			require.Nil(t, holdersMetaRecord(t, s))
+		})
+	}
+}
+
+// TestStoreHoldersTruncateResumes checks that a truncation cancelled before
+// it trims the index leaves it unreadable, and trims it when the store is next
+// opened, the index's state then read for the truncated store.
+func TestStoreHoldersTruncateResumes(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	const rounds, b = 30, 12
+	changes, history := holderRounds(5, rounds)
+	dir := t.TempDir()
+	s, err := Open(dir, Options{})
+	require.NoError(t, err)
+	for r := 0; r < rounds; r++ {
+		require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+	}
+	_, err = s.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	before := holdersRange(t, s)
+	_, err = s.TruncateAfter(ctx, b, TruncateOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, before, holdersRange(t, s), "cancelled before trimming")
+	require.Equal(t, HoldersStale, s.HoldersIndexState())
+	require.ErrorIs(t, s.AssetHolders(1, nil, func([]byte, []byte) bool { return true }), ErrNoHoldersIndex)
+	require.NoError(t, s.Close())
+
+	s, err = Open(dir, Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	last, _ := s.Last()
+	require.EqualValues(t, b, last)
+	require.Equal(t, HoldersComplete, s.HoldersIndexState())
+	require.Equal(t, holdersIndexOf(t, changes, b), holdersRange(t, s))
+	checkHolders(t, s, history[:b+1])
+}
+
+// TestStoreHoldersTruncateBadEntry checks that a bad index entry drops the
+// index rather than fail the truncation.
+func TestStoreHoldersTruncateBadEntry(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	changes, _ := holderRounds(5, 20)
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := range changes {
+		require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+	}
+	_, err = s.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	require.NoError(t, s.db.Set(holdersKey(1, make([]byte, 32)), []byte{0x80}, pebble.Sync))
+	_, err = s.TruncateAfter(context.Background(), 10, TruncateOptions{})
+	require.NoError(t, err)
+	last, _ := s.Last()
+	require.EqualValues(t, 10, last)
+	require.Equal(t, HoldersNone, s.HoldersIndexState())
+	require.Empty(t, holdersRange(t, s))
+	require.Nil(t, holdersMetaRecord(t, s))
+}
+
+func TestIntervalsThrough(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	enc := func(rounds ...uint64) []byte {
+		var out []byte
+		var at uint64
+		for _, r := range rounds {
+			out = binary.AppendUvarint(out, r-at)
+			at = r
+		}
+		return out
+	}
+	iv := enc(3, 7, 200, 1<<40)
+	for _, tc := range []struct {
+		b    uint64
+		want []byte
+	}{{0, nil}, {2, nil}, {3, enc(3)}, {6, enc(3)}, {7, enc(3, 7)}, {199, enc(3, 7)}, {200, enc(3, 7, 200)}, {1 << 40, iv}, {^uint64(0), iv}} {
+		n, err := intervalsThrough(iv, tc.b)
+		require.NoError(t, err)
+		require.Equal(t, len(tc.want), n, "b=%d", tc.b)
+		require.True(t, bytes.Equal(tc.want, iv[:n]), "b=%d", tc.b)
+	}
+	_, err := intervalsThrough([]byte{0x80}, 5)
+	require.Error(t, err)
+	_, err = intervalsThrough(append(enc(1<<63), binary.AppendUvarint(nil, 1<<63)...), ^uint64(0))
+	require.Error(t, err, "boundaries that wrap around")
+}
+
+// TestStoreHoldersTruncateResumesPartial cancels a truncation once it has
+// trimmed some entries, and checks that readers get ErrNoHoldersIndex while it
+// runs and that reopening the store finishes the trim. Not parallel: it sets
+// removeNoopsBatchOps.
+func TestStoreHoldersTruncateResumesPartial(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
+	removeNoopsBatchOps = 1
+
+	const rounds, b = 40, 8
+	changes, history := holderRounds(11, rounds)
+	dir := t.TempDir()
+	s, err := Open(dir, Options{})
+	require.NoError(t, err)
+	for r := 0; r < rounds; r++ {
+		require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+	}
+	_, err = s.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	before, want := holdersRange(t, s), holdersIndexOf(t, changes, b)
+	require.NotEqual(t, before, want)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reads int
+	_, err = s.TruncateAfter(ctx, b, TruncateOptions{Progress: func(_, deleted uint64) {
+		require.Equal(t, HoldersStale, s.HoldersIndexState())
+		require.ErrorIs(t, s.AssetHolders(1, nil, func([]byte, []byte) bool { return true }), ErrNoHoldersIndex)
+		reads++
+		if deleted > 0 {
+			cancel()
+		}
+	}})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Positive(t, reads)
+	mid := holdersRange(t, s)
+	require.NotEqual(t, before, mid, "trimmed some")
+	require.NotEqual(t, want, mid, "cut short")
+	require.NoError(t, s.Close())
+
+	s, err = Open(dir, Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	require.Equal(t, HoldersComplete, s.HoldersIndexState())
+	require.Equal(t, want, holdersRange(t, s))
+	checkHolders(t, s, history[:b+1])
+}
+
+// TestStoreHoldersTruncateAbandoned checks that a truncation that finds the
+// store corrupt drops the index: records after b that it did not reach remain.
+func TestStoreHoldersTruncateAbandoned(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	changes, _ := holderRounds(5, 20)
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := range changes {
+		require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+	}
+	_, err = s.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	require.NoError(t, s.db.Set(verKey(pfxCheckpoint, []byte("z"), 1), []byte("F"), pebble.Sync)) // no object kind
+	_, err = s.TruncateAfter(context.Background(), 10, TruncateOptions{})
+	require.ErrorIs(t, err, ErrCorrupt)
+	_, diverged, err := s.Diverged()
+	require.NoError(t, err)
+	require.True(t, diverged)
+	require.Equal(t, HoldersNone, s.HoldersIndexState())
+	require.Empty(t, holdersRange(t, s))
+	require.Nil(t, holdersMetaRecord(t, s))
+}
+
+// TestStoreHoldersTruncateHalfBuilt checks that a truncation leaves a
+// half-built index (no meta record) alone: IndexHolders clears it first.
+func TestStoreHoldersTruncateHalfBuilt(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	defer func(n uint32) { removeNoopsBatchOps = n }(removeNoopsBatchOps)
+	removeNoopsBatchOps = 3
+
+	changes, _ := holderRounds(5, 20)
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := range changes {
+		require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err = s.IndexHolders(ctx, func(uint64, uint64) { cancel() })
+	require.ErrorIs(t, err, context.Canceled)
+	half := holdersRange(t, s)
+	require.NotEmpty(t, half)
+	require.Nil(t, holdersMetaRecord(t, s))
+	_, err = s.TruncateAfter(context.Background(), 5, TruncateOptions{})
+	require.NoError(t, err)
+	require.Equal(t, HoldersNone, s.HoldersIndexState())
+	require.Equal(t, half, holdersRange(t, s))
+}

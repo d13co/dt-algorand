@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/config"
@@ -259,6 +261,36 @@ func TestPublishFetch(t *testing.T) {
 	n.publish()
 	_, err = n.fetch(dataDir)
 	require.ErrorContains(t, err, "already exists", "an installed history is not replaced")
+}
+
+// TestPublishFetchHoldersIndex checks that a producer's asset holders index,
+// which the commitment does not cover, is dropped at install rather than
+// trusted, or refused by the strict commitment.
+func TestPublishFetchHoldersIndex(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	n := newTestNet(t)
+	st, err := timetravel.Open(filepath.Join(n.producer, historyDir), timetravel.Options{})
+	require.NoError(t, err)
+	_, err = st.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	// an entry no holding record backs, as a bad producer could ship
+	require.NoError(t, st.DB().Set(append([]byte{'a'}, make([]byte, 8+32)...), []byte{1}, pebble.Sync))
+	require.Equal(t, timetravel.HoldersComplete, st.HoldersIndexState())
+	require.NoError(t, st.Close())
+	m := n.publish()
+
+	dataDir := n.consumer()
+	got, err := n.fetch(dataDir)
+	require.NoError(t, err)
+	require.Equal(t, m.History, got.History)
+	st, err = timetravel.Open(n.installedHistory(dataDir), timetravel.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer st.Close()
+	require.Equal(t, timetravel.HoldersNone, st.HoldersIndexState())
+	it, err := st.DB().NewIter(&pebble.IterOptions{LowerBound: []byte{'a'}, UpperBound: []byte{'b'}})
+	require.NoError(t, err)
+	require.False(t, it.First(), "no holders index entry is installed")
+	require.NoError(t, it.Close())
 }
 
 // TestFetchRefuses checks that a manifest that is not the producer's, or that

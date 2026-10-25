@@ -55,17 +55,19 @@ type TruncateOptions struct {
 	// Workers is the goroutines that scan the object records; 0: GOMAXPROCS.
 	Workers int
 	// Progress, if not nil, is called from time to time with the object
-	// records scanned and the records deleted so far, possibly from several
-	// goroutines at once.
+	// records and holders index entries scanned and the records deleted so
+	// far, possibly from several goroutines at once.
 	Progress func(scanned, deleted uint64)
 }
 
 // TruncateAfter deletes every record of the rounds after b: object versions,
-// headers, expired stake and box index entries. The store then ends at b and
+// headers, expired stake and box index entries; it trims a complete asset
+// holders index to the rounds up to b, and drops a stale one. The store then ends at b and
 // holds nothing of a later round that its own AddRound calls did not write,
 // which is what a node needs of a store installed from elsewhere before it
 // writes the rounds after b from its own evaluation. It returns the object
-// records and box index entries it deleted.
+// records, box index entries and holders index entries it deleted (or, for
+// the holders index, trimmed).
 //
 // It reads every object record, and refuses a store with a record key whose
 // object part is not a ValidObjectKey, or out of order, which no node writes:
@@ -162,6 +164,9 @@ func (s *Store) truncate(ctx context.Context, b uint64, o TruncateOptions, split
 	if err := s.truncateBoxIndex(ctx, b, &deleted); err != nil {
 		return deleted.Load(), err
 	}
+	if err := s.truncateHolders(ctx, b, &scanned, &deleted, report); err != nil {
+		return deleted.Load(), err
+	}
 	if err := s.truncateVersions(ctx, b, o.Workers, splits, &scanned, &deleted, report); err != nil {
 		return deleted.Load(), err
 	}
@@ -208,6 +213,9 @@ func (s *Store) endTruncate(b uint64, extra func(*pebble.Batch) error) error {
 			return err
 		}
 	}
+	if err := s.truncateHoldersMeta(batch, b); err != nil {
+		return err
+	}
 	if extra != nil {
 		if err := extra(batch); err != nil {
 			return err
@@ -224,7 +232,7 @@ func (s *Store) endTruncate(b uint64, extra func(*pebble.Batch) error) error {
 	// it may know states of records that are gone
 	s.dedup.reset()
 	s.truncating.Store(false)
-	return nil
+	return s.loadHolders()
 }
 
 // truncateBoxIndex deletes the box index entries of rounds after b, and the
@@ -403,6 +411,11 @@ func (s *Store) abandonTruncate(b uint64, reason string) error {
 		return err
 	}
 	return s.endTruncate(b, func(batch *pebble.Batch) error {
+		// the records after b that the scan did not reach remain, which the
+		// index, trimmed to b, does not reflect
+		if err := dropHoldersInBatch(batch); err != nil {
+			return err
+		}
 		if diverged {
 			return nil
 		}
