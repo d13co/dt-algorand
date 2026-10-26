@@ -338,6 +338,12 @@ func (node *AlgorandFollowerNode) AppendParticipationKeys(_ account.Participatio
 	return fmt.Errorf("cannot append participation keys in follower mode")
 }
 
+// ParticipationRefused reports whether the node refuses participation keys: on mainnet, testnet and betanet unless
+// DangerouslyEnableParticipation is set (config.Local.ParticipationRefused). A follower can't install keys either way.
+func (node *AlgorandFollowerNode) ParticipationRefused() bool {
+	return node.config.ParticipationRefused(node.genesisID)
+}
+
 // InstallParticipationKey returns an error in follower mode
 func (node *AlgorandFollowerNode) InstallParticipationKey(_ []byte) (account.ParticipationID, error) {
 	return account.ParticipationID{}, fmt.Errorf("cannot install participation key in follower mode")

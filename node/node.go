@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -188,35 +189,42 @@ type TxnWithStatus struct {
 
 // MakeFull sets up an Algorand full node
 // (i.e., it returns a node that participates in consensus)
-func MakeFull(log logging.Logger, rootDir string, cfg config.Local, phonebookAddresses []string, genesis bookkeeping.Genesis) (*AlgorandFullNode, error) {
+func MakeFull(log logging.Logger, rootDir string, cfg config.Local, phonebookAddresses []string, genesis bookkeeping.Genesis) (_ *AlgorandFullNode, err error) {
 	node := new(AlgorandFullNode)
 	node.log = log.With("name", cfg.NetAddress)
 	node.genesisID = genesis.ID()
 	node.genesisHash = genesis.Hash()
 	node.devMode = genesis.DevMode
 	node.config = cfg
-	var err error
 	node.genesisDirs, err = cfg.EnsureAndResolveGenesisDirs(rootDir, genesis.ID(), log)
 	if err != nil {
 		return nil, err
 	}
 
-	// The registry and the participation check come before the network and the ledger, so that a node that refuses
-	// to start opens neither.
+	// The participation check comes before the network and the ledger, so that a node that refuses to start opens
+	// neither. Without a registry yet, it checks the partkey files before creating one, so that a refused start
+	// leaves no new partregistry.sqlite behind.
+	node.participationRefused = cfg.ParticipationRefused(node.genesisID)
+	registryPath := filepath.Join(node.genesisDirs.ColdGenesisDir, config.ParticipationRegistryFilename)
+	_, statErr := os.Stat(registryPath)
+	registryExists := !errors.Is(statErr, fs.ErrNotExist)
+	if node.participationRefused && !registryExists {
+		if err = checkNoParticipationKeys(node.genesisID, node.genesisDirs, nil); err != nil {
+			return nil, err
+		}
+	}
 	registry, err := ensureParticipationDB(node.genesisDirs.ColdGenesisDir, node.log)
 	if err != nil {
 		log.Errorf("unable to initialize the participation registry database: %v", err)
 		return nil, err
 	}
-	// close the registry if MakeFull fails before the account manager owns it
-	registryOwned := false
+	// The account manager doesn't close the registry when MakeFull fails, so close it on any failure.
 	defer func() {
-		if !registryOwned {
+		if err != nil {
 			registry.Close()
 		}
 	}()
-	node.participationRefused = cfg.ParticipationRefused(node.genesisID)
-	if node.participationRefused {
+	if node.participationRefused && registryExists {
 		if err = checkNoParticipationKeys(node.genesisID, node.genesisDirs, registry); err != nil {
 			return nil, err
 		}
@@ -292,7 +300,6 @@ recreateNetwork:
 	}
 
 	node.accountManager = data.MakeAccountManager(log, registry)
-	registryOwned = true
 
 	err = node.loadParticipationKeys()
 	if err != nil {
@@ -918,10 +925,11 @@ func ensureParticipationDB(genesisDir string, log logging.Logger) (account.Parti
 
 // ErrParticipationRefused is returned when the node refuses participation keys: on mainnet, testnet and betanet
 // unless DangerouslyEnableParticipation is set (config.Local.ParticipationRefused).
-var ErrParticipationRefused = errors.New("participation in consensus is disabled: this fork (dtalgorand) is not audited for running validators; set \"DangerouslyEnableParticipation\": true in config.json to override")
+var ErrParticipationRefused = config.ErrParticipationRefused
 
 // checkNoParticipationKeys returns ErrParticipationRefused, with where the keys are, if the node holds participation
 // keys: partkey files in the root genesis directory, which the node would load, or keys in its participation registry.
+// A nil registry is one that doesn't exist yet, and holds no keys.
 func checkNoParticipationKeys(genesisID string, dirs config.ResolvedGenesisDirs, registry account.ParticipationRegistry) error {
 	var found []string
 	files, err := os.ReadDir(dirs.RootGenesisDir)
@@ -933,13 +941,15 @@ func checkNoParticipationKeys(genesisID string, dirs config.ResolvedGenesisDirs,
 			found = append(found, "partkey file "+filepath.Join(dirs.RootGenesisDir, info.Name()))
 		}
 	}
-	if records := registry.GetAll(); len(records) > 0 {
-		accounts := make([]string, len(records))
-		for i, record := range records {
-			accounts[i] = record.Account.String()
+	if registry != nil {
+		if records := registry.GetAll(); len(records) > 0 {
+			accounts := make([]string, len(records))
+			for i, record := range records {
+				accounts[i] = record.Account.String()
+			}
+			found = append(found, fmt.Sprintf("%d key(s) for %s in the participation registry %s", len(records),
+				strings.Join(accounts, ", "), filepath.Join(dirs.ColdGenesisDir, config.ParticipationRegistryFilename)))
 		}
-		found = append(found, fmt.Sprintf("%d key(s) for %s in the participation registry %s", len(records),
-			strings.Join(accounts, ", "), filepath.Join(dirs.ColdGenesisDir, config.ParticipationRegistryFilename)))
 	}
 	if len(found) == 0 {
 		return nil
@@ -1036,6 +1046,12 @@ func createTemporaryParticipationKey(outDir string, partKeyBinary []byte) (strin
 	}
 
 	return tempFile, nil
+}
+
+// ParticipationRefused reports whether the node refuses participation keys: on mainnet, testnet and betanet unless
+// DangerouslyEnableParticipation is set (config.Local.ParticipationRefused).
+func (node *AlgorandFullNode) ParticipationRefused() bool {
+	return node.participationRefused
 }
 
 // InstallParticipationKey Given a participation key binary stream install the participation key.

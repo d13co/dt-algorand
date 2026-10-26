@@ -89,8 +89,9 @@ func TestParticipationRefusedPartKeyFile(t *testing.T) {
 	require.ErrorIs(t, err, ErrParticipationRefused)
 	require.ErrorContains(t, err, keyFile)
 	require.ErrorContains(t, err, "testnet-v1.0")
-	// the refused node opened no ledger
+	// the refused node opened no ledger, and created no participation registry
 	require.NoFileExists(t, filepath.Join(rootDir, genesis.ID(), "ledger.tracker.sqlite"))
+	require.NoFileExists(t, filepath.Join(rootDir, genesis.ID(), config.ParticipationRegistryFilename))
 
 	n = startGateNode(t, rootDir, gateConfig(true), genesis)
 	keys, err := n.ListParticipationKeys()
@@ -139,6 +140,14 @@ func TestParticipationRefusedRegistry(t *testing.T) {
 	require.ErrorIs(t, err, ErrParticipationRefused)
 	require.ErrorContains(t, err, filepath.Join(coldDir, genesis.ID(), config.ParticipationRegistryFilename))
 	require.ErrorContains(t, err, record.Account.String())
+
+	// with a registry, a partkey file is named alongside its keys
+	keyFile := writeGatePartKey(t, filepath.Join(rootDir, genesis.ID()), "gate")
+	n, err = MakeFull(logging.TestingLog(t), rootDir, cfg, []string{}, genesis)
+	require.Nil(t, n)
+	require.ErrorIs(t, err, ErrParticipationRefused)
+	require.ErrorContains(t, err, keyFile)
+	require.ErrorContains(t, err, record.Account.String())
 }
 
 // TestParticipationRefusedInstall: on a gated network without keys the node starts, and refuses to install keys.
@@ -152,6 +161,7 @@ func TestParticipationRefusedInstall(t *testing.T) {
 
 	n := startGateNode(t, rootDir, gateConfig(false), genesis)
 	defer n.Stop()
+	require.True(t, n.ParticipationRefused())
 	_, err = n.InstallParticipationKey(keyBinary)
 	require.ErrorIs(t, err, ErrParticipationRefused)
 

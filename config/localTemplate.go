@@ -17,6 +17,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -889,6 +890,9 @@ type P2PHybridConfigError struct {
 func (e P2PHybridConfigError) Error() string {
 	return e.msg
 }
+
+// ErrParticipationRefused is the error for refused participation keys (Local.ParticipationRefused).
+var ErrParticipationRefused = errors.New("participation in consensus is disabled: this fork (dtalgorand) is not audited for running validators; set \"DangerouslyEnableParticipation\": true in config.json to override")
 
 // ParticipationRefused reports whether the node must refuse participation keys on the network genesisID:
 // mainnet, testnet and betanet, unless DangerouslyEnableParticipation is set.
