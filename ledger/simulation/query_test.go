@@ -237,6 +237,64 @@ func TestQueryAppID(t *testing.T) {
 	require.Empty(t, calls[1].Logs)
 }
 
+// TestQueryForeignBoxReads: a query reads the boxes of an app that allowed no foreign reads, with
+// app_box_get, app_box_extract and app_box_len, also from an app it calls, but may not write them.
+// Simulate refuses the same reads.
+func TestQueryForeignBoxReads(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+
+	// relay logs box b of the app its argument names.
+	relay := f.env.CreateApp(f.env.Accounts[1].Addr, simulationtesting.AppParams{
+		ApprovalProgram: `#pragma version 13
+txn ApplicationID; bz ok
+txna ApplicationArgs 0; btoi; byte "b"; app_box_get; assert; log
+ok: int 1`,
+		ClearStateProgram: "#pragma version 13\nint 1",
+	})
+	program := fmt.Sprintf(`#pragma version 13
+int %[1]d; byte "b"; app_box_get; assert; log
+int %[1]d; byte "b"; int 0; int 3; app_box_extract; log
+int %[1]d; byte "b"; app_box_len; assert; itob; log
+int %[1]d; byte "nope"; app_box_get; itob; log; log
+itxn_begin
+int appl; itxn_field TypeEnum
+int %[2]d; itxn_field ApplicationID
+int %[1]d; itob; itxn_field ApplicationArgs
+itxn_submit
+itxn Logs 0; log
+txna ApplicationArgs 0; byte "write"; ==; bz done
+int %[1]d; byte "b"; byte "xxxxxx"; app_box_put
+done: int 1`, f.reader, relay)
+
+	result, err := s.Query(f.request(t, program, args("read"), args("write")))
+	require.NoError(t, err)
+	calls := result.Rounds[0].Calls
+	require.Empty(t, calls[0].Error)
+	require.Equal(t, []string{"boxval", "box", u64(6), u64(0), "", "boxval"}, calls[0].Logs)
+	require.Contains(t, calls[1].Error, fmt.Sprintf("may not write box of %d", f.reader))
+
+	txn := f.env.TxnInfo.NewTxn(txntest.Txn{
+		Type:              protocol.ApplicationCallTx,
+		Sender:            f.env.FeeSinkAccount.Addr,
+		Fee:               1_000_000,
+		ApprovalProgram:   program,
+		ClearStateProgram: "#pragma version 13\nint 1",
+		ApplicationArgs:   [][]byte{[]byte("read")},
+	})
+	simResult, err := s.Simulate(simulation.Request{
+		TxnGroups:             [][]transactions.SignedTxn{{txn.SignedTxn()}},
+		AllowEmptySignatures:  true,
+		AllowUnnamedResources: true,
+	})
+	require.NoError(t, err)
+	require.Contains(t, simResult.TxnGroups[0].FailureMessage, fmt.Sprintf("may not read box of %d", f.reader))
+}
+
 // TestQueryBudget: the budget bounds each call, and cost reports what it used.
 func TestQueryBudget(t *testing.T) {
 	partitiontest.PartitionTest(t)

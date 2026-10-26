@@ -37,7 +37,8 @@ import (
 
 // QueryState runs app calls on the state a round left, each as if it were the first transaction of
 // the next block, alone in its group. There are no signatures, fees, minimum balances, duplicate or
-// lease checks, and no block. A call may write state, but its writes are dropped when it ends, so
+// lease checks, and no block. A call may read any app's boxes, as if every app had set
+// ForeignBoxReads. A call may write state, but its writes are dropped when it ends, so
 // every call sees the state the round left. The state's lookups are cached: later calls reuse the
 // reads of earlier ones.
 //
@@ -137,6 +138,8 @@ func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (l
 		ep.MaxLogCalls = bounds.MaxLogCalls
 	}
 	ep.UnnamedResources = opts.UnnamedResources
+	// The call, and the apps it calls, may read any app's boxes (app_box_get and the like).
+	ep.AllowForeignBoxReads = true
 	if ep.FeeCredit != nil {
 		*ep.FeeCredit = basics.MicroAlgos{Raw: math.MaxUint64}
 	}

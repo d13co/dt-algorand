@@ -304,6 +304,10 @@ type EvalConstants struct {
 	// UnnamedResources, if provided, allows resources to be used without being named according to
 	// this policy.
 	UnnamedResources UnnamedResourcePolicy
+
+	// AllowForeignBoxReads lets an app read any other app's boxes, as if every app had set
+	// ForeignBoxReads. Only POST /v2/query sets it, never block evaluation. Non-standard fork feature.
+	AllowForeignBoxReads bool
 }
 
 // RuntimeEvalConstants gives a set of const params used in normal runtime of opcodes
