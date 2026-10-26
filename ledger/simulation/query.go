@@ -218,13 +218,12 @@ func (r QueryRequest) Validate(developerAPI bool) error {
 		}
 	}
 	// The largest app any protocol allows; a round whose protocol allows less fails the calls.
-	current := config.Consensus[protocol.ConsensusCurrentVersion]
 	programLen := len(r.Program) + len(r.ClearProgram)
 	if len(r.Program) > 0 && len(r.ClearProgram) == 0 {
 		clear, _ := defaultClearProgram(r.Program)
 		programLen += len(clear)
 	}
-	if maxLen := current.MaxAppTotalProgramLen * (1 + current.MaxExtraAppProgramPages); programLen > maxLen {
+	if maxLen := maxQueryProgramLen(); programLen > maxLen {
 		return invalidQuery("program and clear-program are %d bytes, more than the %d an app may have", programLen, maxLen)
 	}
 	if len(r.Calls) == 0 {
@@ -365,6 +364,17 @@ func (r *QueryRequest) callTxn(call *QueryCall, nextHdr bookkeeping.BlockHeader,
 		txn.ExtraProgramPages = extraProgramPages(len(r.Program), len(clear), proto)
 	}
 	return transactions.SignedTxn{Txn: txn}
+}
+
+// maxQueryProgramLen is the most bytes of programs an app may have under any known protocol. Extra
+// pages past MaxExtraAppProgramPages cost fees, which queries do not charge, so the bound uses
+// MaxAbsoluteExtraProgramPages.
+func maxQueryProgramLen() int {
+	maxLen := 0
+	for _, proto := range config.Consensus {
+		maxLen = max(maxLen, proto.MaxAppTotalProgramLen*(1+proto.MaxAbsoluteExtraProgramPages))
+	}
+	return maxLen
 }
 
 // extraProgramPages returns the fewest extra pages an app with programs of these lengths needs.

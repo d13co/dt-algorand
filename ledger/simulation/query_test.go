@@ -293,7 +293,7 @@ func TestQueryValidate(t *testing.T) {
 		{"budget over", simulation.QueryRequest{Program: program, Calls: many[:1], Budget: limits.MaxCallBudget + 1}, "over the limit"},
 		{"budget negative", simulation.QueryRequest{Program: program, Calls: many[:1], Budget: -1}, "negative"},
 		{"old program", simulation.QueryRequest{Program: assemble(t, "#pragma version 2\nint 1"), Calls: many[:1]}, "send a clear-program"},
-		{"too long", simulation.QueryRequest{Program: append([]byte{10}, make([]byte, 9000)...), Calls: many[:1]}, "more than the"},
+		{"too long", simulation.QueryRequest{Program: append([]byte{10}, make([]byte, 17000)...), Calls: many[:1]}, "more than the"},
 		{"bad protocol", simulation.QueryRequest{Program: program, Calls: many[:1], Protocol: "v1000"}, "unknown protocol"},
 		{"future round", simulation.QueryRequest{Program: program, Calls: many[:1], Rounds: []basics.Round{f.env.TxnInfo.LatestRound() + 1}}, "after the latest round"},
 	} {
@@ -314,6 +314,15 @@ func TestQueryValidate(t *testing.T) {
 	// A pre-v3 program runs with its own clear program.
 	old := simulation.QueryRequest{Program: assemble(t, "#pragma version 2\nint 1"), ClearProgram: assemble(t, "#pragma version 2\nint 1"), Calls: many[:1], Limits: limits}
 	result, err := s.Query(old)
+	require.NoError(t, err)
+	require.Empty(t, result.Rounds[0].Calls[0].Error)
+
+	// A program over the 4 pages apps get without extra fees runs: queries charge no fees, so the
+	// absolute page limit applies.
+	chunk := "pushbytes 0x" + strings.Repeat("ab", 3000) + "\npop\n"
+	large := assemble(t, "#pragma version 10\n"+strings.Repeat(chunk, 3)+"int 1")
+	require.Greater(t, len(large), 8192)
+	result, err = s.Query(simulation.QueryRequest{Program: large, Calls: many[:1], Limits: limits})
 	require.NoError(t, err)
 	require.Empty(t, result.Rounds[0].Calls[0].Error)
 }
