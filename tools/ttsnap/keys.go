@@ -26,6 +26,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -80,9 +81,14 @@ func readKeys(path string) ([]Key, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseKeys(f, path)
+}
+
+// parseKeys reads a keys file (see readKeys) from r; path names it in errors.
+func parseKeys(r io.Reader, path string) ([]Key, error) {
 	var keys []Key
 	names, ids := map[string]bool{}, map[string]bool{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 8<<10), 64<<10)
 	for line := 1; sc.Scan(); line++ {
 		text := strings.TrimSpace(sc.Text())

@@ -7,7 +7,7 @@
 | what | how it is checked |
 |---|---|
 | the files are the published ones | SHA-256 of each file, listed in the manifest |
-| the manifest is the producer's | Falcon-1024 signature by a producer key of `/usr/share/dtalgorand/ttsnap/keys` (or `-keys`), before anything is written |
+| the manifest is the producer's | Falcon-1024 signature by a producer key of the package's keys file (`/usr/share/dtalgorand/ttsnap/keys`; with Homebrew, `$(brew --prefix)/opt/dtalgorand/share/dtalgorand/ttsnap/keys`) or of `-keys`, before anything is written |
 | the history's content is what the producer says | `fetch` recomputes the history's [commitment](#commitment) from the downloaded files and compares it with the manifest's, before it installs anything. It refuses a store that holds anything readers could see besides what the commitment covers (records after the snapshot's round, keys outside the store's keyspaces, unknown meta records), deletes the records the commitment leaves out (no-ops, lone tombstones), drops an asset holders index the snapshot carries (build one with `ttimport -holders-index`) and rebuilds the box index, so the installed store answers like any other with that commitment |
 | the history's content is what other nodes have | with `-min-attest N`, N attester keys of the keys file must have signed the snapshot's [statement](#statements) (its round, header hash and commitment), checked before the download. An attester signs only what its own history, built without a snapshot, says |
 | every header is the chain's | `fetch`, before it installs anything (and `ttsnap verify` later): every header is of this network (its genesis hash) and hashes to the next one's `Branch`. algod then checks that header 0 is the genesis block, when it opens the ledger, and the history's header of B against the catchpoint, whose blocks chain to the labelled one |
@@ -24,11 +24,16 @@ A full snapshot (`-full`) also carries the producer's tracker and block DBs, so 
 2. Download and install the latest history snapshot into the data directory. The node must not have a history yet.
 
    ```sh
-   sudo -u dtalgorand ttsnap fetch -url https://<snapshot host> -d /var/lib/dtalgorand
+   sudo -u dtalgorand ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d /var/lib/dtalgorand
    ```
 
-   Downloads resume when rerun; files land next to their targets (`*.ttsnap-partial`) and move into place once all of them check out, the history's headers chain from genesis and its commitment is the manifest's (minutes on mainnet; `-workers` sets the goroutines). A rerun of an install that stopped while moving files finishes it. `-keys` selects another keys file; `-min-attest N` requires N attesters' signatures of the snapshot's statement. The latest pointer is not signed, so a mirror could keep serving an old one: `fetch` refuses a latest snapshot older than `-max-age` (7 days); `-manifest` installs a given one.
-3. Start algod and catch up from the network's latest catchpoint (or `-label <round>#<hash>`):
+   `https://tt-snapshots-mainnet.d13.co` serves mainnet's snapshots. Downloads resume when rerun; files land next to their targets (`*.ttsnap-partial`) and move into place once all of them check out, the history's headers chain from genesis and its commitment is the manifest's (minutes on mainnet; `-workers` sets the goroutines). A rerun of an install that stopped while moving files finishes it. `-keys` selects another keys file; `-min-attest N` requires N attesters' signatures of the snapshot's statement. The latest pointer is not signed, so a mirror could keep serving an old one: `fetch` refuses a latest snapshot older than `-max-age` (7 days); `-manifest` installs a given one.
+3. Build the asset holders index, if `config.json` sets `TimeTravelHoldersIndex` (new package installs do): `fetch` installs the history without it, since the commitment doesn't cover it. About 5 minutes on mainnet; the catchup then keeps it complete, and the node maintains it from there.
+
+   ```sh
+   sudo -u dtalgorand ttimport -holders-index -d /var/lib/dtalgorand
+   ```
+4. Start algod and catch up from the network's latest catchpoint (or `-label <round>#<hash>`):
 
    ```sh
    sudo systemctl start dtalgorand
@@ -36,13 +41,49 @@ A full snapshot (`-full`) also carries the producer's tracker and block DBs, so 
    ```
 
    The catchpoint's balances round (its round − 320) must be at most the history's last round. Snapshots are daily and catchpoints come every 10,000 rounds (about 8 hours on mainnet), so the network's latest catchpoint is usually past the snapshot. `catchup` then stops, names the catchpoint the producer recorded in the manifest (the latest one before the snapshot) and prints the command that uses it: `-snapshot-label` uses it, `-label` takes one from a source you trust (a catchpoint-tracking node of your own), or wait for the next snapshot. `goal node catchup <label>` works the same way; algod refuses a catchpoint the history does not reach. Before it applies the catchpoint, the catchup deletes the history's rounds after the balances round (minutes on mainnet; a shutdown interrupts it and the catchup resumes on the next start, an abort waits for it), and the node writes them again. Before the catchup, the node serves the installed history only for the rounds it has synced.
-4. Optionally, with algod stopped, check the headers (minutes on mainnet) and sample rounds against an archival node:
+5. Optionally, with algod stopped, check the headers (minutes on mainnet) and sample rounds against an archival node:
 
    ```sh
    ttsnap verify -d /var/lib/dtalgorand -deltas https://mainnet-api.4160.nodely.dev -sample 1000
    ```
 
+### macOS
+
+The Homebrew package (Apple silicon, macOS 14 or later; see [macOS](../../installer/dtalgorand/README.md#macos)) includes ttsnap and its keys file. The steps are the ones above without `sudo` or systemd: the node runs as you, its data directory is `$(brew --prefix)/var/dtalgorand`, and `brew services` starts it.
+
+1. Install the package, and don't start the node yet: a first start syncs from genesis. To keep the history (about 70 GB on mainnet) on another disk, set `TimeTravelDBDir` now:
+
+   ```sh
+   brew install d13co/tap/dtalgorand
+   dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p TimeTravelDBDir -v /Volumes/<disk>/dtalgorand
+   ```
+2. Download and install the latest history snapshot:
+
+   ```sh
+   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d $(brew --prefix)/var/dtalgorand
+   ```
+3. Build the asset holders index (the package's `config.json` turns it on):
+
+   ```sh
+   ttimport -holders-index -d $(brew --prefix)/var/dtalgorand
+   ```
+4. Start the node and catch up from a catchpoint (`-snapshot-label` when `catchup` asks for it, as above):
+
+   ```sh
+   brew services start dtalgorand
+   ttsnap catchup -d $(brew --prefix)/var/dtalgorand
+   ```
+5. Optionally, check the history with the node stopped (`brew services stop dtalgorand`):
+
+   ```sh
+   ttsnap verify -d $(brew --prefix)/var/dtalgorand -deltas https://mainnet-api.4160.nodely.dev -sample 1000
+   ```
+
+The node stops while the Mac sleeps, and so does a download (rerun `fetch` to resume it). Keep the Mac awake on power in System Settings, or run `caffeinate -s -w $(cat $(brew --prefix)/var/dtalgorand/algod.pid)`. Time Machine backs up the history unless you exclude it (`tmutil addexclusion <dir>`). A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
+
 ## Producer
+
+Producing snapshots needs Linux, for btrfs; installing them (above) and [attesting](#attesters) also work on macOS.
 
 The producer is a time travel node whose genesis directory, history included, lives in one btrfs subvolume, so that one snapshot covers the tracker DB, the blocks and the history at the same instant. Taken while algod runs, a snapshot opens like a ledger after a crash: blocks are written before the trackers commit them, and the history is synced before the tracker DB commits. `TestTimeTravelSnapshotSoak` (ledger package, `TT_SNAPSHOT_SOAK=N`) copies a running ledger N times at random instants and checks that every copy opens and answers like the original.
 
@@ -73,9 +114,11 @@ The long commands (`prepare`, `publish`, `fetch`, `verify`) report progress on s
 
 An attester runs a time travel node whose history it built itself: synced from genesis, or imported from an archival node's blocks with `ttimport`. It signs the statement its own history makes about a snapshot's round, if it is the snapshot's; consumers with `-min-attest` require such signatures. The node computes the commitment through an admin endpoint (`GET /v2/timetravel/commitment/<round>`, not in the REST spec, one at a time); a node that is not running is read directly.
 
+An attester can run on macOS, with the Homebrew package (`-d $(brew --prefix)/var/dtalgorand`), as long as its node built its own history (synced or imported with `ttimport`): one installed with `ttsnap fetch` can't attest.
+
 ```sh
 ttsnap keygen -o ~/attester_key -name <your name> -role attester   # give the printed line to the consumers
-ttsnap attest -key ~/attester_key -d <data dir> -url https://<snapshot host> -o <out>
+ttsnap attest -key ~/attester_key -d <data dir> -url https://tt-snapshots-mainnet.d13.co -o <out>
 ```
 
 `attest` writes `<out>/snapshots/<genesis id>/statements/<round>/<key id>.sig`, for the producer's tree (or the on-chain registry). It refuses a node whose history was installed from a snapshot (`fetch` marks the store, and writes `ttsnap.json` to the data directory), and a history whose statement differs from the snapshot's. `-round R` attests a round of its own instead; `ttsnap commitment -d <data dir> -round R` prints the statement without signing it. The endpoint reads with half the node's CPUs; stopping algod cancels it.

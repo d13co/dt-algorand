@@ -48,7 +48,7 @@ apt trusts every key in `d13co.asc`, so check that it holds exactly one primary 
 
 ## Starting the node
 
-The package does not enable or start `dtalgorand.service`. A time travel node syncs from genesis, and a node that synced without time travel cannot turn it on later. On a new install, the package writes a `config.json` with `"EnableTimeTravel": true`. Before the first start:
+The package does not enable or start `dtalgorand.service`. A time travel node syncs from genesis, and a node that synced without time travel cannot turn it on later. On a new install, the package writes a `config.json` with `"EnableTimeTravel": true` and `"TimeTravelHoldersIndex": true`: the node keeps an [asset holders index](../../ledger/timetravel/README.md#holders-index) up to date once it is built (step 3), for `GET /v2/assets/{asset-id}/holders` (`goal asset holders`), which answers 503 until then. Before the first start:
 
 1. Optionally, put the history on a fast disk. `ProtectHome` keeps the node out of `/home`.
 
@@ -64,7 +64,13 @@ The package does not enable or start `dtalgorand.service`. A time travel node sy
    sudo chown -R dtalgorand:dtalgorand /var/lib/dtalgorand /mnt/fast/dtalgorand
    ```
 
-3. Start the node:
+3. Build the asset holders index, with the node stopped (about 5 minutes on mainnet; see [ttimport](../../tools/ttimport/README.md#building-the-asset-holders-index)). After a snapshot or an import, do it now; a node that syncs from genesis has holdings to index only once synced, so stop it then and build it. Without it the node runs as usual and logs a warning at start; to do without, set `TimeTravelHoldersIndex` to `false`, and the node deletes any index at its next start.
+
+   ```sh
+   sudo -u dtalgorand ttimport -holders-index -d /var/lib/dtalgorand
+   ```
+
+4. Start the node:
 
    ```sh
    sudo systemctl enable --now dtalgorand
@@ -92,7 +98,7 @@ Don't point dtalgorand at a validator's data directory: give it its own, or run 
 installer/dtalgorand/build_darwin.sh tmp/dtalgorand
 ```
 
-Run it on a Mac: the binaries need cgo (libsodium, SQLite). It builds into `tmp/dtalgorand/darwin-<arch>/bin` and writes `dtalgorand_<version>_darwin-<arch>.tar.gz`, versioned as the .deb is (`installer/dtalgorand/version.sh`; `PKG_VERSION` pins it). The tarball holds the binaries under their stock names in `bin/` and, in `share/`, what the .deb puts in the data directory. The binaries run on macOS 14 and later (`MACOSX_DEPLOYMENT_TARGET`, 14.0 by default); releases build on `macos-15`. They are signed ad hoc, which Apple silicon requires and Homebrew-installed command-line tools need no more than: Homebrew doesn't mark its downloads as quarantined, so Gatekeeper doesn't check them.
+Run it on a Mac: the binaries need cgo (libsodium, SQLite). It builds into `tmp/dtalgorand/darwin-<arch>/bin` and writes `dtalgorand_<version>_darwin-<arch>.tar.gz`, versioned as the .deb is (`installer/dtalgorand/version.sh`; `PKG_VERSION` pins it). The tarball holds the binaries under their stock names in `bin/` and, in `share/`, what the .deb puts in the data directory, plus `ttsnap/keys` (the .deb's `/usr/share/dtalgorand/ttsnap/keys`); the formula installs `share/` as `share/dtalgorand`. The binaries run on macOS 14 and later (`MACOSX_DEPLOYMENT_TARGET`, 14.0 by default); releases build on `macos-15`. They are signed ad hoc, which Apple silicon requires and Homebrew-installed command-line tools need no more than: Homebrew doesn't mark its downloads as quarantined, so Gatekeeper doesn't check them.
 
 The `darwin` workflow builds the tarball on pull requests that touch the packaging, installs it with the formula from a local tap, and starts the node under launchd.
 
@@ -104,14 +110,50 @@ brew services start dtalgorand
 dtgoal node status -d $(brew --prefix)/var/dtalgorand
 ```
 
+A new node syncs from genesis, which takes weeks on mainnet. To start from a history snapshot instead, install it with [ttsnap](../../tools/ttsnap/README.md#macos) before the first `brew services start`.
+
 | Path | |
 |---|---|
 | `$(brew --prefix)/opt/dtalgorand/libexec/` | the binaries under their stock names |
-| `$(brew --prefix)/bin/dt*` | links to them: `dtalgod`, `dtgoal`, ..., and `ttimport` |
-| `$(brew --prefix)/var/dtalgorand/` | the node's data directory, set up as the .deb's is; a new one starts with `"EnableTimeTravel": true` |
+| `$(brew --prefix)/bin/` | links to them: `dtalgod`, `dtgoal`, ..., and `ttimport`, `ttsnap` under their own names |
+| `$(brew --prefix)/opt/dtalgorand/share/dtalgorand/ttsnap/keys` | the snapshot keys `ttsnap fetch` trusts, found from the binary's location |
+| `$(brew --prefix)/var/dtalgorand/` | the node's data directory, set up as the .deb's is; a new one starts with `"EnableTimeTravel": true` and `"TimeTravelHoldersIndex": true` |
 | `$(brew --prefix)/var/log/dtalgorand.log` | the service's stdout and stderr (algod logs to `node.log` in the data directory) |
 
 The node runs as the logged-in user, under launchd (`brew services`), and stops while the Mac sleeps. Unlike the .deb, an upgrade doesn't restart it: run `brew services restart dtalgorand`.
+
+### Running the node
+
+The steps of [Starting the node](#starting-the-node), on a Mac: no `sudo`, `chown` or systemd, since the node runs as you and `brew services` starts and stops it. `D` below is `$(brew --prefix)/var/dtalgorand`.
+
+1. Optionally, put the history on another disk, before the first start. Keep that disk mounted whenever the node runs, and leave it out of Time Machine, which would otherwise back up the whole history:
+
+   ```sh
+   D=$(brew --prefix)/var/dtalgorand
+   mkdir -p /Volumes/<disk>/dtalgorand
+   dtalgocfg set -d $D -p TimeTravelDBDir -v /Volumes/<disk>/dtalgorand
+   tmutil addexclusion /Volumes/<disk>/dtalgorand
+   ```
+
+2. Install a history snapshot ([ttsnap](../../tools/ttsnap/README.md#macos)), sync from the network (weeks on mainnet), or import an archival node's blocks as yourself, into `D` directly:
+
+   ```sh
+   ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d $D
+   ```
+
+3. Build the asset holders index, with the node stopped (`brew services stop dtalgorand`; after a sync from genesis, once it has synced):
+
+   ```sh
+   ttimport -holders-index -d $D
+   ```
+
+4. Start the node: `brew services start dtalgorand`.
+
+[Participation](#participation) works the same, with the config in `D/config.json` (`dtalgocfg set -d $D ...`). One difference: when the node refuses to start because it holds participation keys, systemd leaves it stopped (`RestartPreventExitStatus=78`), while launchd starts it again about every 10 seconds. Run `brew services stop dtalgorand` and read `D/node.log`.
+
+`brew uninstall dtalgorand` removes the binaries only: delete `D` (and the history's directory, if `TimeTravelDBDir` put it elsewhere) and `$(brew --prefix)/var/log/dtalgorand.log` by hand, after `brew services stop dtalgorand`. `brew untap d13co/tap` removes the tap.
+
+### File descriptors
 
 algod raises its own file descriptor limit, so launchd's default (256) doesn't matter: Go raises the soft limit at startup up to `kern.maxfilesperproc` (macOS refuses more, even below the hard limit), and algod then raises it to what its connections, the ledger and the time travel store need. The time travel store can hold up to 4096 files open; if the hard limit leaves less room, algod logs a warning and runs anyway.
 

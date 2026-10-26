@@ -77,6 +77,19 @@ A time travel node's history comes from every round's state delta since genesis:
 
    algod catches up the rounds after the archive's last one from the network, verifying certificates as usual. The node no longer needs the archive.
 
+### Into a package's data directory
+
+The examples build `~/tt` and start it with `goal`. To build the node of a dtalgorand package instead, import into the package's data directory before the node's first start, then start it as the package does. The package's `config.json` already sets `EnableTimeTravel` and `TimeTravelHoldersIndex`, so build the [holders index](#building-the-asset-holders-index) after the import.
+
+- **Debian:** `/var/lib/dtalgorand`, as root, then hand the result to the `dtalgorand` user (see [Starting the node](../../installer/dtalgorand/README.md#starting-the-node)): an algod's ledger directory is private to its user.
+- **macOS (Homebrew):** `$(brew --prefix)/var/dtalgorand`, as yourself, with no `chown`: the node runs as you (see [macOS](../../installer/dtalgorand/README.md#running-the-node)). The archive is wherever that archival node's data directory is: `/var/lib/algorand/...` in the examples is the Linux package's.
+
+  ```sh
+  ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d $(brew --prefix)/var/dtalgorand
+  ttimport -holders-index -d $(brew --prefix)/var/dtalgorand
+  brew services start dtalgorand
+  ```
+
 ## Removing no-op records
 
 Stores written before the ledger skipped [no-op writes](../../ledger/timetravel/README.md#no-op-writes) hold a record for the totals and the rewards pool in nearly every round. With the node stopped, remove them:
@@ -128,7 +141,7 @@ It first rebuilds the last 10 stored rounds from their deltas and adds nothing u
 
 ## Building the asset holders index
 
-`/v2/assets/{id}/holders` reads the store's [asset holders index](../../ledger/timetravel/README.md#holders-index), which exists only once built. Set `"TimeTravelHoldersIndex": true` in the data directory's `config.json` (`-holders-index` refuses otherwise, since algod deletes the index at launch when the option is off), then with the node stopped:
+`/v2/assets/{id}/holders` reads the store's [asset holders index](../../ledger/timetravel/README.md#holders-index), which exists only once built. Set `"TimeTravelHoldersIndex": true` in the data directory's `config.json` (the dtalgorand packages set it on a new install) (`-holders-index` refuses otherwise, since algod deletes the index at launch when the option is off), then with the node stopped:
 
 ```sh
 goal node stop -d ~/tt
