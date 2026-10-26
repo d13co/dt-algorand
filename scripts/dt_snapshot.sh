@@ -15,8 +15,8 @@
 #   4. make the snapshot read-only, keep the newest KEEP snapshots, ttsnap gc OUT (keeping GC_KEEP
 #      snapshots of each kind), then run UPLOAD if set (e.g. an rclone sync of OUT to a bucket)
 #
-# Run it as root from a systemd timer, e.g. daily; runs don't overlap (flock). Snapshots pin the
-# blocks the node has rewritten since they were taken, so keep KEEP small.
+# Run it as root from a timer (installer/tt-snapshot runs it once per catchpoint); runs don't overlap.
+# Snapshots pin the blocks the node has rewritten since they were taken, so keep KEEP small.
 #
 # Usage: dt_snapshot.sh
 # Env: OUT and KEY (required), ROOT (default /mnt/dtalgod-mainnet-hot-root), TTSNAP (default

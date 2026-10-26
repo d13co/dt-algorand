@@ -40,7 +40,7 @@ A full snapshot (`-full`) also carries the producer's tracker and block DBs, so 
    sudo -u dtalgorand ttsnap catchup -d /var/lib/dtalgorand
    ```
 
-   The catchpoint's balances round (its round − 320) must be at most the history's last round. Snapshots are daily and catchpoints come every 10,000 rounds (about 8 hours on mainnet), so the network's latest catchpoint is usually past the snapshot. `catchup` then stops, names the catchpoint the producer recorded in the manifest (the latest one before the snapshot) and prints the command that uses it: `-snapshot-label` uses it, `-label` takes one from a source you trust (a catchpoint-tracking node of your own), or wait for the next snapshot. `goal node catchup <label>` works the same way; algod refuses a catchpoint the history does not reach. Before it applies the catchpoint, the catchup deletes the history's rounds after the balances round (minutes on mainnet; a shutdown interrupts it and the catchup resumes on the next start, an abort waits for it), and the node writes them again. Before the catchup, the node serves the installed history only for the rounds it has synced.
+   The catchpoint's balances round (its round − 320) must be at most the history's last round. Catchpoints come every 10,000 rounds (about 7.7 hours on mainnet), and mainnet's producer takes a snapshot in the 320 rounds before each one, so each snapshot reaches the next catchpoint and the one before it. The network's latest catchpoint fits the latest snapshot, and keeps fitting the one you installed until the catchpoint after those two is published, about 7.7 hours after the snapshot. When it is past the snapshot (an install that took longer, or a missed run), `catchup` stops, names the catchpoint the producer recorded in the manifest (the latest one before the snapshot) and prints the command that uses it: `-snapshot-label` uses it, `-label` takes one from a source you trust (a catchpoint-tracking node of your own), or wait for the next snapshot. `goal node catchup <label>` works the same way; algod refuses a catchpoint the history does not reach. Before it applies the catchpoint, the catchup deletes the history's rounds after the balances round (minutes on mainnet; a shutdown interrupts it and the catchup resumes on the next start, an abort waits for it), and the node writes them again. Before the catchup, the node serves the installed history only for the rounds it has synced.
 5. Optionally, with algod stopped, check the headers (minutes on mainnet) and sample rounds against an archival node:
 
    ```sh
@@ -93,13 +93,15 @@ The producer is a time travel node whose genesis directory, history included, li
    ```sh
    ttsnap keygen -o /root/ttsnap_key -name d13 -role producer
    ```
-3. Run [scripts/dt_snapshot.sh](../../scripts/dt_snapshot.sh) from a timer, daily: it looks up the network's latest catchpoint label, snapshots `@live`, runs `ttsnap prepare` and `ttsnap publish` on the snapshot, keeps a few snapshots and garbage-collects the tree. Serve `OUT` as static files (anything that answers range requests), or copy it to a bucket with `UPLOAD`: blobs first, then the manifests, then the latest pointers, and deletions last, so that a reader never finds a manifest whose blobs aren't there yet. Manifests and blobs never change once written; only the pointers do.
+3. Run [scripts/dt_snapshot.sh](../../scripts/dt_snapshot.sh) from a timer: it looks up the network's latest catchpoint label, snapshots `@live`, runs `ttsnap prepare` and `ttsnap publish` on the snapshot, keeps a few snapshots and garbage-collects the tree. Serve `OUT` as static files (anything that answers range requests), or copy it to a bucket with `UPLOAD`: blobs first, then the manifests, then the latest pointers, and deletions last, so that a reader never finds a manifest whose blobs aren't there yet. Manifests and blobs never change once written; only the pointers do.
 
    ```sh
    OUT=/srv/snapshots KEY=/root/ttsnap_key \
    UPLOAD='rclone copy "$OUT/blobs" r2:snapshots/blobs && rclone copy --exclude "latest-*" "$OUT/snapshots" r2:snapshots/snapshots && rclone copy "$OUT/snapshots" r2:snapshots/snapshots && rclone sync "$OUT" r2:snapshots' \
    scripts/dt_snapshot.sh
    ```
+
+   [installer/tt-snapshot](../../installer/tt-snapshot/README.md) sets this up with systemd, as mainnet's producer runs it: a snapshot just before each catchpoint, so that it reaches the catchpoint (see [New node](#new-node)), and an upload to a Cloudflare R2 bucket.
 
 The commands it runs:
 
