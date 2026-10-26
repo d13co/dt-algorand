@@ -5,15 +5,19 @@
 #   1. blobs (named by their SHA-256, so one already in the bucket is never sent again)
 #   2. manifests, their signatures and the statements
 #   3. the latest-* pointers, so a reader never finds a manifest whose blobs aren't there yet
-#   4. deletions: whatever ttsnap gc removed from OUT
+#   4. deletions: whatever ttsnap gc removed from OUT, and *.tmp files of interrupted publishes
 #
-# dt_snapshot.sh runs it as UPLOAD after each publish. By hand:
-#   sudo bash -c 'set -a; . /etc/tt-snapshot.env; /usr/local/lib/tt-snapshot/upload.sh'
+# It holds dt_snapshot.sh's lock, ROOT/@snap/.lock, so that no publish runs during an upload (step 3
+# would send a pointer whose new blobs step 1 missed). dt_snapshot.sh runs it as UPLOAD after each
+# publish, and tt-snapshot-upload.service runs it when the bucket lags OUT. By hand:
+#   sudo systemctl start tt-snapshot-upload.service && journalctl -fu tt-snapshot-upload
 set -euo pipefail
 
 out=${OUT:?set OUT to the snapshot tree}
 out=${out%/}
 bucket=${R2_BUCKET:?set R2_BUCKET}
+root=${ROOT:-/mnt/dtalgod-mainnet-hot-root}
+root=${root%/}
 dst=r2:$bucket
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -24,9 +28,16 @@ command -v rclone >/dev/null || die "rclone not found"
 compgen -G "$out/snapshots/*/latest-*" >/dev/null || die "$out holds no latest-* pointer; not uploading"
 [[ -d $out/blobs ]] || die "$out/blobs does not exist"
 
+if [[ -d $root/@snap ]]; then
+  # run by dt_snapshot.sh, this inherits the lock it holds as fd 9
+  [[ /proc/self/fd/9 -ef $root/@snap/.lock ]] || exec 9>"$root/@snap/.lock"
+  flock -n 9 || die "dt_snapshot.sh or another upload is running"
+fi
+
 # about transfers x upload-concurrency x chunk-size of RAM at most (1 GiB)
 common=(--fast-list --transfers 4 --checkers 16 --s3-upload-concurrency 8 --s3-chunk-size 32M
-  --retries 5 --low-level-retries 20 --stats 1m --stats-one-line --stats-log-level NOTICE)
+  --retries 5 --low-level-retries 20 --stats 1m --stats-one-line --stats-log-level NOTICE
+  --exclude '*.tmp' --exclude '*.tmp.sig')
 
 log "blobs"
 rclone copy "${common[@]}" --ignore-existing "$out/blobs" "$dst/blobs"
@@ -35,5 +46,5 @@ rclone copy "${common[@]}" --exclude 'latest-*' "$out/snapshots" "$dst/snapshots
 log "latest pointers"
 rclone copy "${common[@]}" "$out/snapshots" "$dst/snapshots"
 log "deleting what gc removed"
-rclone sync "${common[@]}" "$out" "$dst"
+rclone sync "${common[@]}" --delete-excluded "$out" "$dst"
 log "done"

@@ -15,7 +15,7 @@
 #   4. make the snapshot read-only, keep the newest KEEP snapshots, ttsnap gc OUT (keeping GC_KEEP
 #      snapshots of each kind), then run UPLOAD if set (e.g. an rclone sync of OUT to a bucket)
 #
-# Run it as root from a timer (installer/tt-snapshot runs it once per catchpoint); runs don't overlap.
+# Run it as root, from a timer (installer/tt-snapshot runs it per catchpoint); runs don't overlap.
 # Snapshots pin the blocks the node has rewritten since they were taken, so keep KEEP small.
 #
 # Usage: dt_snapshot.sh
@@ -60,6 +60,14 @@ fi
 exec 9>"$root/@snap/.lock"
 flock -n 9 || die "another dt_snapshot.sh is running"
 
+# a failed run's snapshot stays writable, kept for a look until this next run: retries don't pile
+# them up, each pinning the blocks the node rewrites
+for s in "$root"/@snap/2*Z; do
+  [[ -d $s && $(btrfs property get -ts "$s" ro) == ro=false ]] || continue
+  log "deleting $(basename "$s"), the snapshot of a failed run"
+  btrfs subvolume delete "$s" >/dev/null
+done
+
 # the latest catchpoint before the snapshot, so that the history reaches its balances round
 catchpoint=${CATCHPOINT:-}
 network=${NETWORK:-}
@@ -76,7 +84,7 @@ ledger=$snap${sub:+/$sub}
 log "snapshotting $root/@live to $snap"
 btrfs subvolume snapshot "$root/@live" "$snap" >/dev/null
 
-# a snapshot whose prepare or publish failed is kept for a look; later runs prune it with the rest
+# a snapshot whose prepare or publish failed is kept for a look; the next run deletes it
 trap 'echo "error: failed; the snapshot is kept at $snap" >&2' ERR
 
 log "preparing $snap"

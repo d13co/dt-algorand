@@ -1,5 +1,5 @@
 [Unit]
-Description=Start a ttsnap snapshot after each catchpoint's balances round
+Description=Start a ttsnap snapshot after each catchpoint's balances round, or an upload when the bucket lags
 After=network-online.target dtalgorand.service
 
 [Service]

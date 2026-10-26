@@ -6,11 +6,12 @@ It expects the producer laid out as the ttsnap README's [Producer](../../tools/t
 
 | file | installed as | does |
 |---|---|---|
-| `setup.sh` | | installs or updates everything below, and rclone 1.59 or later from rclone.org when needed (Ubuntu 22.04's rclone has no R2 support) |
-| `tt-snapshot.env` | `/etc/tt-snapshot.env` (0600, kept when it exists) | `dt_snapshot.sh` settings, the bucket and the R2 credentials |
-| `tt-snapshot.service` | `/etc/systemd/system/` | one run of `dt_snapshot.sh`: btrfs snapshot, `ttsnap prepare`, `publish` and `gc`, then the upload. Runs at low CPU and IO priority, and starts at most twice an hour, so a failing run isn't retried in a loop |
-| `tt-snapshot-trigger.timer`, `.service`, `trigger.sh` | `/etc/systemd/system/`, `/usr/local/lib/tt-snapshot/` | every 2 minutes: starts `tt-snapshot.service` when a snapshot is due ([when](#when-it-runs)) |
-| `upload.sh` | `/usr/local/lib/tt-snapshot/` | `dt_snapshot.sh`'s `UPLOAD`: mirrors `OUT` into the bucket with rclone |
+| `setup.sh` | | installs or updates everything below, rclone 1.59 or later from rclone.org when needed (Ubuntu 22.04's rclone has no R2 support; the download's signature is checked against rclone's release key), and jq |
+| `tt-snapshot.env` | `/etc/tt-snapshot.env` (0600, kept when it exists; `setup.sh` adds the settings it lacks) | `dt_snapshot.sh` settings, the bucket and the R2 credentials |
+| `tt-snapshot.service` | `/etc/systemd/system/` | one run of `dt_snapshot.sh`: btrfs snapshot, `ttsnap prepare`, `publish` and `gc`, then the upload. Runs at low CPU and IO priority |
+| `tt-snapshot-upload.service` | `/etc/systemd/system/` | `upload.sh` alone, when the bucket lags `OUT` (a failed upload) |
+| `tt-snapshot-trigger.timer`, `.service`, `trigger.sh` | `/etc/systemd/system/`, `/usr/local/lib/tt-snapshot/` | every 2 minutes: starts `tt-snapshot.service` when a snapshot is due ([when](#when-it-runs)), or `tt-snapshot-upload.service` when the bucket lags |
+| `upload.sh` | `/usr/local/lib/tt-snapshot/` | `dt_snapshot.sh`'s `UPLOAD`: mirrors `OUT` into the bucket with rclone, holding `dt_snapshot.sh`'s lock |
 | `r2-check.sh` | `/usr/local/lib/tt-snapshot/` | checks that the credentials list and write the bucket, and that the domain serves what was written, with range requests |
 
 ## Cloudflare
@@ -34,19 +35,21 @@ sudo systemctl start --no-block tt-snapshot.service && journalctl -fu tt-snapsho
 sudo systemctl enable --now tt-snapshot-trigger.timer
 ```
 
-The first run copies the whole history into `OUT` and uploads it: on mainnet, 70 GB, about 12 minutes to publish and 10 to upload on a gigabit link. Later runs copy and upload only the tables that changed since the run before, usually a few MB. Rerun `setup.sh` to update ttsnap or the scripts; it keeps `/etc/tt-snapshot.env`.
+The first run copies the whole history into `OUT` and uploads it: on mainnet, 70 GB, about 12 minutes to publish and 10 to upload on a gigabit link. Later runs copy and upload only the tables that changed since the run before, usually a few MB. Rerun `setup.sh` to update ttsnap or the scripts; it keeps `/etc/tt-snapshot.env` and adds the settings it lacks. Also rerun it after changing `ROOT` or `OUT` there: the units' mount dependencies (`RequiresMountsFor=`, in `tt-snapshot.service.d/paths.conf` and `tt-snapshot-upload.service.d/paths.conf`) come from them.
 
 ## When it runs
 
-A node that installs a snapshot catches up to a catchpoint C only if C's balances round (C − 320) is at most the snapshot's last round. Catchpoints come every 10,000 rounds, about 7.7 hours on mainnet, which no clock schedule follows. The trigger reads the node's round from its REST API (the address in the data directory's `algod.net`) and starts a run once the round is 30 rounds past the next catchpoint's balances round, unless the latest published snapshot already reaches that balances round. The snapshot then reaches C and the catchpoint before it, so `ttsnap catchup` with the network's latest catchpoint works for a node that installs it until the catchpoint after C is published.
+A node that installs a snapshot catches up to a catchpoint C only if C's balances round (C − 320) is at most the snapshot's last round. Catchpoints come every 10,000 rounds, about 7.7 hours on mainnet, which no clock schedule follows. Every 2 minutes, the trigger reads the node's round from its REST API (the address and token in the data directory's `algod.net` and `algod.token`) and takes the latest balances round the node is 30 rounds past. It starts a run when the snapshot tree's latest history ends before that round: normally 30 rounds after each balances round, which leaves about 13 minutes before C, or as soon as it can when that run was missed (algod was down, or the run failed). An on-time snapshot reaches C and the catchpoint before it, so `ttsnap catchup` with the network's latest catchpoint works for a node that installs it until the catchpoint after C is published. A late one reaches C only.
 
-`trigger.sh` takes `ALGOD_DATA`, `ALGOD_URL`, `INTERVAL`, `LOOKBACK` and `MARGIN` from the environment or `/etc/tt-snapshot.env`; `DRY_RUN=1` prints what it would do. It logs only when it starts a run or cannot reach the node.
+When the tree is current, the trigger reads the bucket's `latest-history` through the domain, and starts `tt-snapshot-upload.service` when it names an older snapshot than the tree's, as after a failed upload. It starts nothing while either unit runs, and after a unit fails, it starts it again only 30 minutes after its last start (`RETRY`).
+
+`trigger.sh` takes `ALGOD_DATA`, `ALGOD_URL`, `ALGOD_TOKEN`, `INTERVAL`, `LOOKBACK`, `MARGIN` and `RETRY` from the environment, then from `/etc/tt-snapshot.env`; `DRY_RUN=1` prints what it would do. It logs only when it starts a unit, or cannot read the node or the bucket.
 
 ## Operating it
 
-- Logs: `journalctl -u tt-snapshot -u tt-snapshot-trigger`.
+- Logs: `journalctl -u tt-snapshot -u tt-snapshot-upload -u tt-snapshot-trigger`.
 - A snapshot now, whatever the round: `sudo systemctl start --no-block tt-snapshot.service`.
-- Only the upload: `sudo bash -c 'set -a; . /etc/tt-snapshot.env; /usr/local/lib/tt-snapshot/upload.sh'`.
-- A failed run keeps its btrfs snapshot in `ROOT/@snap` for a look; the next successful run deletes it. After two failed starts in an hour, systemd refuses more until `sudo systemctl reset-failed tt-snapshot`.
-- The upload mirrors `OUT`: it deletes from the bucket what `OUT` lacks, and refuses an `OUT` without a `latest-*` pointer. Put attesters' signatures in `OUT/snapshots/<genesis id>/statements/<round>/`, not in the bucket.
+- Only the upload: `sudo systemctl start --no-block tt-snapshot-upload.service`. It refuses to run during a snapshot run.
+- A failed run keeps its btrfs snapshot in `ROOT/@snap` for a look; the next run deletes it. The trigger retries a failed unit 30 minutes after its last start; `sudo systemctl reset-failed tt-snapshot tt-snapshot-upload` lets it retry on its next check.
+- The upload mirrors `OUT`: it deletes from the bucket what `OUT` lacks, and refuses an `OUT` without a `latest-*` pointer. It leaves out the `*.tmp` files of an interrupted publish, and deletes them from the bucket. Put attesters' signatures in `OUT/snapshots/<genesis id>/statements/<round>/`, not in the bucket.
 - Consumers refuse a latest snapshot older than 7 days (`ttsnap fetch -max-age`), so runs that keep failing break new installs after a week.

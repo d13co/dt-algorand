@@ -1,0 +1,16 @@
+[Unit]
+Description=Mirror the ttsnap snapshot tree to R2
+Wants=network-online.target
+After=network-online.target tt-snapshot.service
+# mounts for the env file's ROOT and OUT: setup.sh writes tt-snapshot-upload.service.d/paths.conf
+# tt-snapshot-trigger starts it when the bucket lags OUT (a failed upload); retries after 30 minutes
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tt-snapshot.env
+ExecStart=/usr/local/lib/tt-snapshot/upload.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+IOWeight=20
+TimeoutStartSec=6h

@@ -2,11 +2,8 @@
 Description=Publish a ttsnap history snapshot of the mainnet time travel node to R2
 Wants=network-online.target
 After=network-online.target dtalgorand.service
-RequiresMountsFor=/mnt/dtalgod-mainnet-hot-root /var/lib/dtalgorand /srv/snapshots
-# tt-snapshot-trigger retries every 2 minutes while a snapshot is due; a failing run keeps its btrfs
-# snapshot, so don't let it pile them up (systemctl reset-failed tt-snapshot clears the limit)
-StartLimitIntervalSec=1h
-StartLimitBurst=2
+# mounts for the env file's ROOT and OUT: setup.sh writes tt-snapshot.service.d/paths.conf
+# tt-snapshot-trigger starts it once per catchpoint, and retries a failed run after 30 minutes
 
 [Service]
 Type=oneshot

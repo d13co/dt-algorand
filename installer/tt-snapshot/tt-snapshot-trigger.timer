@@ -1,5 +1,5 @@
 [Unit]
-Description=Check every 2 minutes whether a ttsnap snapshot is due (once per catchpoint)
+Description=Check every 2 minutes whether a ttsnap snapshot (once per catchpoint) or upload is due
 
 [Timer]
 OnCalendar=*:0/2

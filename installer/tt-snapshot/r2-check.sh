@@ -5,8 +5,21 @@
 #   sudo /usr/local/lib/tt-snapshot/r2-check.sh      (reads /etc/tt-snapshot.env)
 set -euo pipefail
 
+# the env file's settings, except those the environment sets
+load_env() {
+  local f=$1 name kv keep=()
+  [[ -r $f ]] || return 0
+  for name in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$f"); do
+    if [[ -v $name ]]; then keep+=("$name=${!name}"); fi
+  done
+  set -a
+  # shellcheck source=tt-snapshot.env
+  . "$f"
+  set +a
+  for kv in "${keep[@]}"; do export "$kv"; done
+}
 env=${ENV_FILE:-/etc/tt-snapshot.env}
-if [[ -r $env ]]; then set -a; . "$env"; set +a; fi
+load_env "$env"
 bucket=${R2_BUCKET:?set R2_BUCKET}
 url=${R2_PUBLIC_URL:?set R2_PUBLIC_URL}
 url=${url%/}
@@ -30,10 +43,10 @@ got=$(curl -fsS --max-time 30 "$url/$obj") || die "GET $url/$obj failed (custom 
 [[ $got == "$body" ]] || die "GET $url/$obj returned something else"
 ok "GET $url/$obj"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -r 5-14 --max-time 30 "$url/$obj")
+code=$(curl -sS -o /dev/null -w '%{http_code}' -r 5-14 --max-time 30 "$url/$obj") || die "range request to $url/$obj failed"
 [[ $code == 206 ]] || die "a range request returned HTTP $code, not 206"
 ok "range request (206)"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$url/snapshots/no-such-file")
+code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$url/snapshots/no-such-file") || die "GET $url/snapshots/no-such-file failed"
 [[ $code == 404 ]] || echo "warning: a missing object returned HTTP $code, not 404" >&2
 echo "R2 is ready"
