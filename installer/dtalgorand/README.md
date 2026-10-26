@@ -72,3 +72,14 @@ The package does not enable or start `dtalgorand.service`. A time travel node sy
    ```
 
 Upgrades restart the nodes that are running.
+
+## Participation
+
+This fork changes the ledger, evaluator and REST layers to serve historical queries, and is not audited for running validators. On mainnet, testnet and betanet the node therefore refuses participation keys unless `config.json` sets `"DangerouslyEnableParticipation": true`. Other networks, such as private networks, devmode, fnet and devnet, are not affected.
+
+While the flag is off on those networks:
+
+- The node won't start if it holds participation keys (a follower, `EnableFollowMode`, starts anyway: it can't use them): partkey files in the genesis directory, or keys in the participation registry (`partregistry.sqlite`, in `ColdDataDir` if set). algod exits with code 78 and names the keys it found; the systemd units don't restart it (`RestartPreventExitStatus=78`). Under `goal node start` the message is in `algod-err.log` and `node.log`; goal only reports that algod exited early.
+- Installing keys (`POST /v2/participation`, `goal account addpartkey`, `installpartkey`, `renewpartkey`) fails. `POST /v2/participation/generate/{address}` is refused before it generates anything. `goal account addpartkey` and `renewpartkey` generate the keys locally, which takes minutes, so they check the data directory's `config.json` and the node's network first and stop before generating; if goal can't read the config, the node still refuses the keys when goal installs them.
+
+Don't point dtalgorand at a validator's data directory: give it its own, or run upstream algod on the validator's. Deleting the keys to get the node to start is irreversible: keys installed through the REST API (as goal installs them) exist only in the participation registry, and the account would need a new key registration. Once keys are installed with the flag on, turning it off stops the node from starting until they are moved away, and that includes expired `.partkey` files, which algod doesn't delete. To remove keys from the registry, start the node once with the flag on and run `goal account deletepartkey`, or move `partregistry.sqlite` (and its `-wal` and `-shm` files) aside while the node is stopped.

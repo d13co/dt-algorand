@@ -1072,6 +1072,24 @@ func changeAccountOnlineStatus(
 	return err
 }
 
+// ensureParticipationAllowed stops before generating keys, which takes minutes, if the node refuses participation
+// keys (config.Local.ParticipationRefused): installing them would fail. It reads the config from the data directory,
+// which the node may not have loaded yet; the node enforces the refusal either way, so it skips the check if it can't
+// read the config or the genesis ID.
+func ensureParticipationAllowed(dataDir string, client libgoal.Client) {
+	cfg, err := config.LoadConfigFromDisk(dataDir)
+	if err != nil && !os.IsNotExist(err) {
+		return
+	}
+	genesisID, err := client.GenesisID()
+	if err != nil {
+		return
+	}
+	if cfg.ParticipationRefused(genesisID) {
+		reportErrorf("%v (network %s)", config.ErrParticipationRefused, genesisID)
+	}
+}
+
 var addParticipationKeyCmd = &cobra.Command{
 	Use:   "addpartkey",
 	Short: "Generate and install participation key for the specified account",
@@ -1086,6 +1104,7 @@ var addParticipationKeyCmd = &cobra.Command{
 
 		// Generate a participation keys database and install it
 		client := ensureFullClient(dataDir)
+		ensureParticipationAllowed(dataDir, client)
 
 		reportInfof("Please stand by while generating keys. This might take a few minutes...")
 
@@ -1161,6 +1180,7 @@ var renewParticipationKeyCmd = &cobra.Command{
 		dataDir := datadir.EnsureSingleDataDir()
 
 		client := ensureAlgodClient(dataDir)
+		ensureParticipationAllowed(dataDir, client)
 
 		currentRound, err := client.CurrentRound()
 		if err != nil {

@@ -306,7 +306,7 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 		return fmt.Errorf("node has not been installed: %s", err)
 	}
 	if err != nil {
-		return fmt.Errorf("couldn't initialize the node: %s", err)
+		return fmt.Errorf("couldn't initialize the node: %w", err)
 	}
 	s.node = serverNode
 

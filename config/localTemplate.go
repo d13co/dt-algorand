@@ -17,6 +17,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -656,6 +657,14 @@ type Local struct {
 	// was created. Turning it off deletes the index at launch; turning it on again needs ttimport -holders-index.
 	TimeTravelHoldersIndex bool `version[39]:"false"`
 
+	// DangerouslyEnableParticipation lets the node participate in consensus (vote, propose, sign state proofs and
+	// heartbeats) on mainnet, testnet and betanet. This fork changes the ledger, evaluator and REST layers to serve
+	// historical queries and is not audited for running validators. While it is false, a node on those networks
+	// refuses to start if it holds participation keys (partkey files in the data directory or keys in its
+	// participation registry), and refuses to install or generate new ones. Other networks are not affected.
+	// Non-standard fork feature.
+	DangerouslyEnableParticipation bool `version[39]:"false"`
+
 	// EnableTxnEvalTracer turns on features in the BlockEvaluator which collect data on transactions, exposing them via algod APIs.
 	// It will store txn deltas created during block evaluation, potentially consuming much larger amounts of memory,
 	EnableTxnEvalTracer bool `version[27]:"false"`
@@ -880,6 +889,23 @@ type P2PHybridConfigError struct {
 
 func (e P2PHybridConfigError) Error() string {
 	return e.msg
+}
+
+// ErrParticipationRefused is the error for refused participation keys (Local.ParticipationRefused).
+var ErrParticipationRefused = errors.New("participation in consensus is disabled: this fork (dtalgorand) is not audited for running validators; set \"DangerouslyEnableParticipation\": true in config.json to override")
+
+// ParticipationRefused reports whether the node must refuse participation keys on the network genesisID:
+// mainnet, testnet and betanet, unless DangerouslyEnableParticipation is set.
+func (cfg Local) ParticipationRefused(genesisID string) bool {
+	if cfg.DangerouslyEnableParticipation {
+		return false
+	}
+	for _, network := range []protocol.NetworkID{Mainnet, Testnet, Betanet} {
+		if genesisID == string(network)+"-v1.0" {
+			return true
+		}
+	}
+	return false
 }
 
 // TimeTravelGenesisDir returns the directory of the time travel store as
