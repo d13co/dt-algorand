@@ -92,7 +92,7 @@ Every simulate request, with or without `rounds`, is bounded in time and stops w
 - **Time limit.** A request may run for `RestWriteTimeoutSeconds` less a margin to encode and write the answer before the server's write deadline: a tenth of the timeout and at least a second, so 108 s at the default 120 s, or half the timeout when it is under 2 s; no limit at 0. The deadline counts from the request's arrival, so a slow request body uses up the time too. A request without `rounds` that reaches it gets a 504. With `rounds`, the rounds that finished keep their results and the others get the `error` `not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)`.
 - **Client gone.** When the client disconnects (or a load balancer closes the connection), the simulation stops and no response is written.
 - Both stop the simulation between groups, between rounds, and inside a running program every 16,384 units of budget, so a large extra opcode budget can't keep the node busy after either. A group that finished keeps its result even when the limit passes right after. Ledger reads between two checks are not stopped: a cold read costs a unit or two of budget, and at a past round it can be a disk read of the history. They are bounded by the consensus limits on the resources a group may touch, times `SimulateResourceLimitMultiplier`, so keep the multiplier at 1 on a node with time travel open to others.
-- **Node-wide concurrency.** `SimulateParallelism` (default 0 = GOMAXPROCS) is the most simulations that run at once across the node: one per request, a `rounds` request included. A request that can't get a slot within 250 ms gets a 503 with `Retry-After: 1`, so a load balancer can send it to another node. A `rounds` request releases its slot once its last round ends, before the answer is written.
+- **Node-wide concurrency.** `SimulateParallelism` (default 0 = GOMAXPROCS) is the most simulations that run at once across the node: one per request, a `rounds` request included, plus the free slots the extra workers of a `/v2/query` request take. A request that can't get a slot within 250 ms gets a 503 with `Retry-After: 1`, so a load balancer can send it to another node. A `rounds` request releases its slot once its last round ends, before the answer is written.
 - **Time travel reads.** The versions endpoints stop at the same time limit (504) and when the client goes away. A `/v2/deltas/{round}` older than the in-memory deltas is rebuilt by re-evaluating its block in one of two node-wide slots: it waits at most 250 ms for one, then gets a 503 with `Retry-After: 1`, and it stops at the time limit or when the client goes away.
 
 #### Effort header
@@ -146,12 +146,75 @@ The response's `protocol-override` (in each `round-results` entry instead, with 
 
 Notes are about the real protocol, not version numbers (FNet's fnet1 already had incentives, for instance). Values that come from the protocol itself, such as `global PayoutsEnabled` or `global MinTxnFee`, are the target's. The limits of simulating at an old round (below) still apply; in particular `online_stake` fails where the history has no record of the online stake.
 
+### Read-only queries (POST /v2/query)
+
+`POST /v2/query` (`dtalgorand` tag) runs read-only TEAL, the way clients use simulate as a query language (ghost contracts), without the parts of a block evaluation a query never uses. It takes the program once plus a list of calls, and runs each call alone at each listed round:
+
+```json
+{ "program": "<base64 approval program>", "calls": [ { "args": ["<base64>"] }, { "args": ["<base64>"] } ], "rounds": [0, 30000000] }
+```
+
+answering
+
+```json
+{ "last-round": 52000000, "rounds": [ { "round": 52000000, "calls": [ { "logs": ["<base64>"], "cost": 2310 }, { "logs": [], "cost": 12, "error": "logic eval error: ..." } ] }, ... ] }
+```
+
+Request fields:
+
+| field | meaning |
+|---|---|
+| `program` or `app-id` | exactly one: the approval program of an app each call creates, or a deployed app each call calls (NoOp) |
+| `clear-program`, `global-schema`, `local-schema` | for `program` only; the clear program defaults to `pushint 1` at the program's version (v3 or later; older programs must send one). Extra pages follow from the program's length |
+| `sender` | defaults to the fee sink of the queried round |
+| `rounds` | rounds to query, 0 for the latest; defaults to the latest; at most `max-rounds` entries, duplicates included; a round after the latest is a 400 |
+| `protocol` | as simulate's `protocol` ([A later protocol at a past round](#a-later-protocol-at-a-past-round)), but the default is `latest`; `round` runs each round under the protocol it really had |
+| `budget` | opcode budget of each call, shared by the apps it calls; defaults to, and may be at most, `max-call-budget`. At a round before cost pooling (protocols before v30, with `protocol: round`) each program has the protocol's budget instead, as in simulate |
+| `calls` | `{args, accounts, foreign-apps, foreign-assets, boxes}`; the references are only needed by programs before v9, which address resources by index. A box's `app` 0 is the called app; an app not in `foreign-apps` is added to it |
+
+Each call:
+
+- is an app call alone in its group (group index 0, group size 1, no group ID), valid in the round after the queried one only (`FirstValid = LastValid = R+1`), with the genesis hash and the minimum fee;
+- creates its app at `TxnCounter(R)+1`, the id the next block would give it, the same for every call;
+- sees `global Round` R+1, `global LatestTimestamp` the timestamp of R, the rewards state of R+1, and headers up to R with `block`;
+- may use every account, asset, app, holding, local state and box without naming it; the budget bounds what it reads, and it may write as many box bytes as a full group of box references allows (16 × 8 × `BytesPerBoxReference`, as simulate with `allow-unnamed-resources`), plus the extra pages of the app it creates;
+- runs inner transactions normally (up to the protocol's 256 per call), paid from an unlimited fee credit, so inner fees left at their default are 0;
+- is not checked for fees, minimum balances, signatures, duplicates or leases, and may write state; its writes are dropped when it ends, so every call sees the state R left. Its sender pays no fee, so a sender's balance is the one R left, where simulate has already taken the fee; the rewards pool has the round's rewards withdrawn, as at the start of a block;
+- reports its own error, partial logs included; the other calls are unaffected.
+
+Each call result has the called app's `logs` (each of its programs may log up to `max-call-log-bytes`, in up to 2048 logs), its `cost` (the budget it used, the apps it called included) and its `error`, with the disassembly around the failing opcode. Inner transactions, state changes and budgets are never echoed. A round that can't be queried (outside the history, or a protocol it can't run under) has an `error` and no calls. A round's `protocol` is present when the request named a protocol, or when the default `latest` changed the round's; its notes' hits name the call in `group`.
+
+Errors of the whole request: 400 for an invalid request or once its results pass `max-response-bytes` (their logs and errors, each log counting 48 bytes more, a round listed twice counting twice), 503 with `Retry-After` when the node is busy, 504 at the node's time limit. The calls run on up to `QueryParallelism` workers. The first runs in the request's slot of `SimulateParallelism`, the node-wide limit simulate uses too; each other worker takes a free slot before each share of work and stops when none is free, never waiting, so a busy node runs the request on fewer workers rather than making new requests wait; a worker runs its share of a round's calls on one state, so they share its lookups, and starts over with a new one once its cache holds about 32 MiB. `EnableEffortHeader` reports opcodes and lookups as for simulate.
+
+How it differs from simulate: there is no signature check, no fee, minimum balance, duplicate or lease check, no block assembly or end-of-block work (rewards pool, state proof voters), and no execution trace or unnamed-resource bookkeeping per opcode; the response has logs, cost and error only. For time travel queries, wall time is dominated by the history lookups, which stay the same; the gain is the per-call overhead, response size and decode time, and the lookups shared by the calls of a worker.
+
+`BenchmarkQueryVsSimulate` (`ledger/simulation`): 16 calls per op, each reading the balance, minimum balance and asset count of 127 accounts and logging one entry per account, at the latest round of an in-memory test ledger, so without time travel lookups (Ryzen 7 5700U, 8 threads):
+
+| | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| simulate, one group of 16 | 25.4 ms | 7.7 MB | 107,626 |
+| simulate, `parallel-groups` (8 workers) | 16.4 ms | 13.7 MB | 147,481 |
+| query, 1 worker | 15.0 ms | 5.9 MB | 78,826 |
+| query, 4 workers | 8.2 ms | 7.1 MB | 86,769 |
+
+Over a third of the query's time goes to building the error that `logic` makes, then drops, when a program uses an account it did not name; simulate pays it too.
+
+On a copy of an FNet time travel node (2026-10-26, round 25,339,414, same machine), with GhostV11 sent as ghostkit sends it to simulate (one app create per group from the fee sink, `parallel-groups`, `rewrite-validity-window`, `protocol: latest`, resource limit multiplier 128) and the same calls to `/v2/query`, 256 rounds × 16 calls, msgpack, `QueryParallelism` 8 (simulate's parallel groups use the 8 CPUs). Every log was the same in both, and the calls that failed failed alike:
+
+| workload | simulate | query | response simulate → query | algosdk 3.8.0-dt.2 decode |
+|---|---|---|---|---|
+| `acctBalanceData`, 63 random accounts per call, rounds 1M to 25.2M | 6.29 s | 4.61 s (4 workers: 5.29 s) | 40.4 → 13.4 MB | 197 → 28 ms |
+| `blkData`, 40 blocks per call, 256 rounds within 765 | 10.99 s | 10.06 s (4 workers: 11.42 s) | 11.6 → 8.4 MB | 39 → 18 ms |
+
+The simulate responses were decoded into algosdk's `SimulateResponse`, the query ones with `msgpackRawDecode`, as algosdk has no query model yet. `blkData` is bound by reading block headers, which both pay alike.
+
 ### Simulate limits
 
 `GET /v2/transactions/simulate/limits` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients what this node's simulate accepts, with each value as the handlers clamp it:
 
 ```json
-{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-limit-seconds": 108, "time-travel": true, "developer-api": false }
+{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-limit-seconds": 108, "time-travel": true, "developer-api": false,
+  "query": { "max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-response-bytes": 67108864, "max-rounds": 16 } }
 ```
 
 | field | node config | meaning |
@@ -163,15 +226,16 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 | `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest a request may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
 | `time-travel` | `EnableTimeTravel` | `round` and `rounds` reach back to genesis, not only `MaxAcctLookback` rounds |
 | `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a traced request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
+| `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-response-bytes` (0: no limit) and `max-rounds` (a config of 0 counts as 1); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint |
 
-The response holds the values after these rules, so `max-rounds` and `time-limit-seconds` are the only fields that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
+The response holds the values after these rules, so `max-rounds`, `time-limit-seconds` and two of `query`'s are the only fields that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 
 Two limits are not in the response, because they don't come from the node's config:
 
 - A request body is at most 1,000,000 bytes, whatever `max-txn-groups` allows; a larger one gets a 400 `http: request body too large`. A full group of 16 transactions takes several KB, so a request near the 256-group ceiling can reach it first.
 - Groups simulated in order share one block, so together they may take at most the protocol's `MaxTxnBytesPerBlock`, counting what they produce (logs, inner transactions) as well as what was sent. A group that doesn't fit fails with `block does not have space for transaction`, without a `failed-at`, and the later groups still run; a smaller one may still fit. With `parallel-groups` every group gets a block of its own.
 
-A stock algod answers 404, which tells a client it can't use any of the fork's simulate features. `SimulateParallelism` is left out: it limits how many requests run at once, not what one may ask.
+A stock algod answers 404, which tells a client it can't use any of the fork's simulate features. `QueryParallelism` and `SimulateParallelism` are left out: they limit how fast a request runs, not what it may ask.
 
 ## Design
 

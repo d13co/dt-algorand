@@ -178,6 +178,11 @@ func (m *mockNode) Simulate(request simulation.Request) (simulation.Result, erro
 	return simulator.Simulate(request.WithNodeLimits(m.config))
 }
 
+func (m *mockNode) Query(request simulation.QueryRequest) (simulation.QueryResult, error) {
+	request.Limits = simulation.QueryLimitsFromConfig(m.config)
+	return simulation.MakeSimulator(m.ledger.(*data.Ledger), m.config.EnableDeveloperAPI).Query(request)
+}
+
 func (m *mockNode) GetPendingTransaction(txID transactions.Txid) (res node.TxnWithStatus, found bool) {
 	res = node.TxnWithStatus{}
 	found = true

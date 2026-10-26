@@ -50,6 +50,16 @@ func timeLimitSeconds(limit time.Duration) uint64 {
 // Request.WithNodeLimits and clamps them with the functions simulate checks them with.
 func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
 	limits := simulation.Request{}.WithNodeLimits(cfg)
+	var query *model.QueryLimits
+	if q := simulation.QueryLimitsFromConfig(cfg); q.MaxCalls > 0 {
+		query = &model.QueryLimits{
+			MaxCalls:         uint64(q.MaxCalls),
+			MaxCallBudget:    uint64(q.MaxCallBudget),
+			MaxCallLogBytes:  uint64(q.MaxCallLogBytes),
+			MaxResponseBytes: q.MaxResponseBytes,
+			MaxRounds:        uint64(q.MaxRounds),
+		}
+	}
 	return model.SimulateLimitsResponse{
 		MaxTxnGroups:            uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
 		MaxRounds:               uint64(effectiveMaxSimulateRounds(cfg.MaxAPISimulateRounds)),
@@ -58,5 +68,6 @@ func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
 		TimeLimitSeconds:        timeLimitSeconds(requestTimeLimit(cfg)),
 		TimeTravel:              cfg.EnableTimeTravel,
 		DeveloperApi:            cfg.EnableDeveloperAPI,
+		Query:                   query,
 	}
 }

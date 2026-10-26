@@ -621,11 +621,40 @@ type Local struct {
 	// Deprecated: no effect.
 	SimulateRoundsParallelism int `version[39]:"4"`
 
-	// SimulateParallelism is the most simulate requests that run at once across the node; the rounds of a
-	// "rounds" request run one after another in its slot. A request that can't get a slot within 250 ms is
-	// refused with 503 and Retry-After, so a load balancer can send it to another node. 0 or less means
-	// GOMAXPROCS, the CPUs the process may use. Non-standard fork feature.
+	// SimulateParallelism is the most simulations that run at once across the node: one for each simulate
+	// request, whose "rounds" run one after another in its slot, and one for each running worker of a POST
+	// /v2/query request. A request that can't get a slot within 250 ms is refused with 503 and Retry-After, so
+	// a load balancer can send it to another node. 0 or less means GOMAXPROCS, the CPUs the process may use.
+	// Non-standard fork feature.
 	SimulateParallelism int `version[39]:"0"`
+
+	// MaxAPIQueryCalls is the most calls one POST /v2/query request may hold; each runs at every round of the
+	// request. 0 disables the endpoint. Non-standard fork feature.
+	MaxAPIQueryCalls uint64 `version[39]:"1024"`
+
+	// MaxAPIQueryCallBudget is the most opcode budget a POST /v2/query call may ask for, and the budget of a
+	// call that asks for none. It is shared by the app the call runs and the apps it calls. Values below 1
+	// count as 1; values above 320000000 count as 320000000. Non-standard fork feature.
+	MaxAPIQueryCallBudget uint64 `version[39]:"320000"`
+
+	// MaxAPIQueryCallLogBytes is the most bytes each program of a POST /v2/query call may log, in up to 2048
+	// logs. 0 keeps the protocol's limits (1024 bytes in 32 logs). Non-standard fork feature.
+	MaxAPIQueryCallLogBytes uint64 `version[39]:"65536"`
+
+	// MaxAPIQueryResponseBytes is the most bytes of logs and errors one POST /v2/query request may return,
+	// across all of its calls and rounds, a round listed twice counting twice, and each log counting 48 bytes
+	// more; a request that goes over fails with 400. 0 means no limit. Non-standard fork feature.
+	MaxAPIQueryResponseBytes uint64 `version[39]:"67108864"`
+
+	// MaxAPIQueryRounds is the most rounds one POST /v2/query request may list; duplicates count against the
+	// limit. Values below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
+	MaxAPIQueryRounds uint64 `version[39]:"16"`
+
+	// QueryParallelism is the most workers that run the calls of one POST /v2/query request at once. The
+	// first runs in the request's slot of SimulateParallelism, the limit of the whole node; each other worker
+	// takes a free slot before each piece of work and stops when none is free, never waiting for one. Values
+	// below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
+	QueryParallelism int `version[39]:"4"`
 
 	// EnableEffortHeader adds an X-Algod-Effort response header, the work the request did, to simulate
 	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=). It is

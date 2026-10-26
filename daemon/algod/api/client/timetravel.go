@@ -17,6 +17,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -125,5 +126,28 @@ func (client RestClient) ApplicationBoxVersions(appID basics.AppIndex, name stri
 	q := p.query()
 	q.Name = name
 	err = client.get(&response, fmt.Sprintf("/v2/applications/%d/box/versions", appID), q)
+	return
+}
+
+func init() {
+	// The query body is JSON, not form values.
+	rawRequestPaths["/v2/query"] = true
+}
+
+// Query runs read-only TEAL calls at one or more rounds (POST /v2/query).
+// Only dtalgorand nodes have it: GET /v2/transactions/simulate/limits
+// reports a query object when they do.
+func (client RestClient) Query(request model.QueryRequest) (response model.QueryResponse, err error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return response, err
+	}
+	err = client.post(&response, "/v2/query", nil, body, false)
+	return
+}
+
+// SimulateLimits gets the limits of simulate and query requests.
+func (client RestClient) SimulateLimits() (response model.SimulateLimitsResponse, err error) {
+	err = client.get(&response, "/v2/transactions/simulate/limits", nil)
 	return
 }

@@ -258,6 +258,12 @@ func (node *AlgorandFollowerNode) Simulate(request simulation.Request) (result s
 	return simulate(node.ledger, node.config, request)
 }
 
+// Query runs read-only TEAL calls at one or more rounds (POST /v2/query). Non-standard fork
+// feature.
+func (node *AlgorandFollowerNode) Query(request simulation.QueryRequest) (simulation.QueryResult, error) {
+	return query(node.ledger, node.config, request)
+}
+
 // GetPendingTransaction no-ops in follower mode
 func (node *AlgorandFollowerNode) GetPendingTransaction(_ transactions.Txid) (res TxnWithStatus, found bool) {
 	return

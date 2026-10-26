@@ -62,6 +62,7 @@ func TestSimulateLimits(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
+	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxResponseBytes: 64 << 20, MaxRounds: 16}
 	for _, tc := range []struct {
 		name      string
 		configure func(*config.Local)
@@ -69,7 +70,24 @@ func TestSimulateLimits(t *testing.T) {
 	}{
 		{"defaults", func(*config.Local) {}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
+			TimeLimitSeconds: 108, Query: defaultQuery,
+		}},
+		{"query disabled", func(c *config.Local) {
+			c.MaxAPIQueryCalls = 0
+		}, model.SimulateLimitsResponse{
+			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
 			TimeLimitSeconds: 108,
+		}},
+		{"query floors and ceilings", func(c *config.Local) {
+			c.MaxAPIQueryCalls = 3
+			c.MaxAPIQueryCallBudget = 0
+			c.MaxAPIQueryCallLogBytes = 0
+			c.MaxAPIQueryResponseBytes = 0
+			c.MaxAPIQueryRounds = 1_000_000
+		}, model.SimulateLimitsResponse{
+			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
+			TimeLimitSeconds: 108,
+			Query:            &model.QueryLimits{MaxCalls: 3, MaxCallBudget: 1, MaxRounds: simulation.MaxQueryRounds},
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
@@ -78,7 +96,7 @@ func TestSimulateLimits(t *testing.T) {
 			c.SimulateResourceLimitMultiplier = 0
 			c.RestWriteTimeoutSeconds = 0
 		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 1, MaxRounds: 0, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
+			MaxTxnGroups: 1, MaxRounds: 0, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1, Query: defaultQuery,
 		}},
 		{"above the ceilings", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 1_000_000
@@ -88,7 +106,7 @@ func TestSimulateLimits(t *testing.T) {
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: simulation.MaxSimulateGroups, MaxRounds: simulation.MaxSimulateRounds,
 			MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling, ResourceLimitMultiplier: simulation.MaxResourceLimitMultiplier,
-			TimeLimitSeconds: 108,
+			TimeLimitSeconds: 108, Query: defaultQuery,
 		}},
 		{"set values and features", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 3
@@ -102,12 +120,14 @@ func TestSimulateLimits(t *testing.T) {
 			MaxTxnGroups: 3, MaxRounds: 5, MaxExtraOpcodeBudget: 1_000, ResourceLimitMultiplier: 8,
 			TimeLimitSeconds: 58,
 			TimeTravel:       true, DeveloperApi: true,
+			Query: defaultQuery,
 		}},
 		{"short write timeout", func(c *config.Local) {
 			c.RestWriteTimeoutSeconds = 1
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
 			TimeLimitSeconds: 1,
+			Query:            defaultQuery,
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

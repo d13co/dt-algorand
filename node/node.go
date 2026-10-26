@@ -670,6 +670,19 @@ func (node *AlgorandFullNode) Simulate(request simulation.Request) (result simul
 	return simulate(node.ledger, node.config, request)
 }
 
+// Query runs read-only TEAL calls at one or more rounds (POST /v2/query). Non-standard fork
+// feature.
+func (node *AlgorandFullNode) Query(request simulation.QueryRequest) (simulation.QueryResult, error) {
+	return query(node.ledger, node.config, request)
+}
+
+// query runs a query request on l with the node's query limits from cfg. Both the full and the
+// follower node use it.
+func query(l *data.Ledger, cfg config.Local, request simulation.QueryRequest) (simulation.QueryResult, error) {
+	request.Limits = simulation.QueryLimitsFromConfig(cfg)
+	return simulation.MakeSimulator(l, cfg.EnableDeveloperAPI).Query(request)
+}
+
 // simulate runs a simulate request on l with the node's simulate limits from cfg. Both the full
 // and the follower node use it, so the limits are set in one place.
 func simulate(l *data.Ledger, cfg config.Local, request simulation.Request) (simulation.Result, error) {

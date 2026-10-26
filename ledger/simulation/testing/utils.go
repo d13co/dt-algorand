@@ -75,7 +75,7 @@ func (info TxnInfo) NewTxn(txn txntest.Txn) txntest.Txn {
 // provides convenience methods to execute transactions against the ledger prior to simulation. This
 // allows you to create specific a ledger state before running a simulation.
 type Environment struct {
-	t      *testing.T
+	t      testing.TB
 	Ledger *data.Ledger
 	Config config.Local
 	// Accounts is a list of all accounts in the ledger, excluding the fee sink and rewards pool
@@ -240,12 +240,12 @@ func (env *Environment) Rekey(account, rekeyTo basics.Address) {
 
 // PrepareSimulatorTest creates an environment to test transaction simulations. The caller is
 // responsible for calling Close() on the returned Environment.
-func PrepareSimulatorTest(t *testing.T, configure ...func(*config.Local)) Environment {
+func PrepareSimulatorTest(t testing.TB, configure ...func(*config.Local)) Environment {
 	return PrepareSimulatorTestAt(t, protocol.ConsensusFuture, configure...)
 }
 
 // PrepareSimulatorTestAt is PrepareSimulatorTest with a ledger whose genesis runs proto.
-func PrepareSimulatorTestAt(t *testing.T, proto protocol.ConsensusVersion, configure ...func(*config.Local)) Environment {
+func PrepareSimulatorTestAt(t testing.TB, proto protocol.ConsensusVersion, configure ...func(*config.Local)) Environment {
 	genesisInitState, keys := ledgertesting.GenerateInitState(t, proto, 200)
 
 	// Prepare ledger
