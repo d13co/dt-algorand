@@ -2,9 +2,9 @@
 # Install or update the ttsnap producer service on this host (see README.md):
 #
 #   - the given ttsnap, scripts/dt_snapshot.sh and this directory's upload, check and trigger
-#     scripts into /usr/local/lib/tt-snapshot
-#   - /etc/tt-snapshot.env from tt-snapshot.env; an existing one is kept, and gets the settings it
-#     lacks
+#     scripts and their lib.sh into /usr/local/lib/tt-snapshot
+#   - /etc/tt-snapshot.env from tt-snapshot.env; an existing one is kept, and gets the settings new
+#     since setup.sh last ran, not ones removed from it by hand
 #   - tt-snapshot.service, tt-snapshot-upload.service and tt-snapshot-trigger.service/.timer, which
 #     start a snapshot once per catchpoint and an upload when the bucket lags (the timer is
 #     installed, not enabled; an earlier daily tt-snapshot.timer is removed), with mount
@@ -20,6 +20,8 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
+# shellcheck source=lib.sh
+. "$here/lib.sh"
 lib=/usr/local/lib/tt-snapshot
 env=/etc/tt-snapshot.env
 units=/etc/systemd/system
@@ -36,7 +38,7 @@ ttsnap=$1
 [[ -x $ttsnap ]] || die "$ttsnap is not an executable"
 usage=$("$ttsnap" 2>&1 || true)
 grep -q 'Falcon-1024' <<<"$usage" || die "$ttsnap does not sign with Falcon-1024: use dtalgorand 5.0.4-dt3 or later, or build it from this branch"
-for f in "$repo/scripts/dt_snapshot.sh" "$here"/{upload.sh,r2-check.sh,trigger.sh,tt-snapshot.env} \
+for f in "$repo/scripts/dt_snapshot.sh" "$here"/{lib.sh,upload.sh,r2-check.sh,trigger.sh,tt-snapshot.env} \
   "$here"/{tt-snapshot.service,tt-snapshot-upload.service,tt-snapshot-trigger.service,tt-snapshot-trigger.timer}; do
   [[ -f $f ]] || die "$f is missing"
 done
@@ -55,7 +57,9 @@ if ! rclone_ok; then
     i386) arch=386 ;;
     *) die "rclone.org has no .deb for $(dpkg --print-architecture): install rclone 1.59 or later yourself" ;;
   esac
-  command -v gpg >/dev/null && command -v gpgv >/dev/null || die "gpg or gpgv not found (apt-get install gnupg): they check the rclone download"
+  if ! command -v gpg >/dev/null || ! command -v gpgv >/dev/null; then
+    die "gpg or gpgv not found (apt-get install gnupg): they check the rclone download"
+  fi
   ver=$(curl -fsS --max-time 30 https://downloads.rclone.org/version.txt | awk '{print $2}')
   [[ $ver == v[0-9]* ]] || die "could not look up the current rclone version"
   deb=rclone-$ver-linux-$arch.deb
@@ -87,26 +91,41 @@ log "installing $lib"
 install -d -m 755 "$lib"
 # the installed one may be passed, to keep it
 [[ $ttsnap -ef $lib/ttsnap ]] || install -m 755 "$ttsnap" "$lib/ttsnap"
+# lib.sh first: the scripts source it, and the trigger may run in between
+install -m 644 "$here/lib.sh" "$lib/"
 install -m 755 "$repo/scripts/dt_snapshot.sh" "$here/upload.sh" "$here/r2-check.sh" "$here/trigger.sh" "$lib/"
 
 # --- env file -------------------------------------------------------------------------------------
-names() { sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$1" | sort -u; }
+names() { env_names "$1" | sort -u; }
+# the template's settings as setup.sh has offered them, by installing the env file, adding to it or
+# finding them in it: one of these the env file lacks was removed by hand, and stays out
+offered=$state_dir/env-names
+install -d -m 755 "$state_dir"
 if [[ -e $env ]]; then
   # compare names only: the file holds the R2 credentials
   log "keeping $env"
+  # an install from before the list was offered the settings of the first tt-snapshot.env
+  [[ -e $offered ]] || printf '%s\n' GC_KEEP KEEP KEY OUT R2_BUCKET R2_PUBLIC_URL RCLONE_CONFIG \
+    RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_ENDPOINT RCLONE_CONFIG_R2_NO_CHECK_BUCKET \
+    RCLONE_CONFIG_R2_PROVIDER RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_CONFIG_R2_TYPE ROOT TTSNAP \
+    UPLOAD | sort -u >"$offered"
   added=
-  for name in $(comm -13 <(names "$env") <(names "$here/tt-snapshot.env")); do
+  for name in $(comm -23 <(names "$here/tt-snapshot.env") <(sort -u "$offered" <(names "$env"))); do
     [[ -n $added ]] || printf '\n# added by tt-snapshot setup.sh on %s\n' "$(date -u +%F)" >>"$env"
     line=$(grep -m1 "^$name=" "$here/tt-snapshot.env")
     echo "$line" >>"$env"
     log "added to $env: $line"
     added=1
   done
+  left=$(comm -23 <(names "$here/tt-snapshot.env") <(names "$env") | xargs)
+  [[ -z $left ]] || log "not adding back what was removed from $env by hand: $left"
   extra=$(comm -23 <(names "$env") <(names "$here/tt-snapshot.env") | xargs)
   [[ -z $extra ]] || log "$env also sets $extra"
+  sort -u -o "$offered" "$offered" <(names "$here/tt-snapshot.env")
 else
   log "installing $env (fill in the R2 credentials)"
   install -m 600 -o root -g root "$here/tt-snapshot.env" "$env"
+  names "$env" >"$offered"
 fi
 set -a
 # shellcheck source=tt-snapshot.env

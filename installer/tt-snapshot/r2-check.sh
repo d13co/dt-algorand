@@ -5,19 +5,8 @@
 #   sudo /usr/local/lib/tt-snapshot/r2-check.sh      (reads /etc/tt-snapshot.env)
 set -euo pipefail
 
-# the env file's settings, except those the environment sets
-load_env() {
-  local f=$1 name kv keep=()
-  [[ -r $f ]] || return 0
-  for name in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$f"); do
-    if [[ -v $name ]]; then keep+=("$name=${!name}"); fi
-  done
-  set -a
-  # shellcheck source=tt-snapshot.env
-  . "$f"
-  set +a
-  for kv in "${keep[@]}"; do export "$kv"; done
-}
+# shellcheck source=lib.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.sh"
 env=${ENV_FILE:-/etc/tt-snapshot.env}
 load_env "$env"
 bucket=${R2_BUCKET:?set R2_BUCKET}

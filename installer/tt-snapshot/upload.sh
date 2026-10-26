@@ -8,11 +8,15 @@
 #   4. deletions: whatever ttsnap gc removed from OUT, and *.tmp files of interrupted publishes
 #
 # It holds dt_snapshot.sh's lock, ROOT/@snap/.lock, so that no publish runs during an upload (step 3
-# would send a pointer whose new blobs step 1 missed). dt_snapshot.sh runs it as UPLOAD after each
+# would send a pointer whose new blobs step 1 missed). When all four steps succeed, it records a
+# digest of what it mirrored in /var/lib/tt-snapshot/uploaded (lib.sh's mirror_digest), so that the
+# trigger can tell an upload that failed at any step. dt_snapshot.sh runs it as UPLOAD after each
 # publish, and tt-snapshot-upload.service runs it when the bucket lags OUT. By hand:
 #   sudo systemctl start tt-snapshot-upload.service && journalctl -fu tt-snapshot-upload
 set -euo pipefail
 
+# shellcheck source=lib.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib.sh"
 out=${OUT:?set OUT to the snapshot tree}
 out=${out%/}
 bucket=${R2_BUCKET:?set R2_BUCKET}
@@ -25,7 +29,7 @@ log() { echo "==> $(date -u +%FT%TZ) upload: $*"; }
 
 command -v rclone >/dev/null || die "rclone not found"
 # the final sync deletes what OUT lacks: refuse an OUT that isn't a published tree
-compgen -G "$out/snapshots/*/latest-*" >/dev/null || die "$out holds no latest-* pointer; not uploading"
+[[ -n $(pointers "$out") ]] || die "$out holds no latest-* pointer; not uploading"
 [[ -d $out/blobs ]] || die "$out/blobs does not exist"
 
 if [[ -d $root/@snap ]]; then
@@ -33,6 +37,9 @@ if [[ -d $root/@snap ]]; then
   [[ /proc/self/fd/9 -ef $root/@snap/.lock ]] || exec 9>"$root/@snap/.lock"
   flock -n 9 || die "dt_snapshot.sh or another upload is running"
 fi
+# before the copies: OUT may still change during them (statements added by hand), and the receipt
+# must then differ from it
+digest=$(mirror_digest "$out" "$bucket")
 
 # about transfers x upload-concurrency x chunk-size of RAM at most (1 GiB)
 common=(--fast-list --transfers 4 --checkers 16 --s3-upload-concurrency 8 --s3-chunk-size 32M
@@ -47,4 +54,7 @@ log "latest pointers"
 rclone copy "${common[@]}" "$out/snapshots" "$dst/snapshots"
 log "deleting what gc removed"
 rclone sync "${common[@]}" --delete-excluded "$out" "$dst"
+mkdir -p "$state_dir"
+echo "$digest" >"$uploaded.tmp"
+mv "$uploaded.tmp" "$uploaded"
 log "done"
