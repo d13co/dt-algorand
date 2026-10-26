@@ -101,6 +101,10 @@ type historyTracker struct {
 	// sticky is an untrusted reason that a reload keeps: a difference the
 	// store could not be marked with. Guarded by mu.
 	sticky error
+
+	// holdersIndex is TimeTravelHoldersIndex: loadFromDisk builds the asset
+	// holders index of a store that holds only the genesis round.
+	holdersIndex bool
 }
 
 type historyRound struct {
@@ -148,7 +152,7 @@ func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger
 	if err != nil {
 		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
 	}
-	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2), log: log}, nil
+	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2), log: log, holdersIndex: cfg.TimeTravelHoldersIndex}, nil
 }
 
 // checkAccountsNotAhead refuses an account DB ahead of the block DB, which
@@ -216,7 +220,12 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 		if err := ht.checkHeader(l, dbRound); err != nil {
 			return err
 		}
-		return ht.loadDiverged()
+		if err := ht.loadDiverged(); err != nil {
+			return err
+		}
+		// a launch that stopped between writing round 0 and indexing it
+		ht.indexHoldersAtGenesis()
+		return nil
 	}
 	if dbRound != 0 {
 		return fmt.Errorf("time travel store %s is empty but the ledger is at round %d: if the store was moved, remove this empty one and point TimeTravelDBDir at it; otherwise the node must sync from genesis (no fast catchup)", ht.path, dbRound)
@@ -233,7 +242,31 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 	if err := ht.store.AddRound(0, timetravel.GenesisChanges(l.GenesisAccounts(), totals), protocol.Encode(&hdr), nil); err != nil {
 		return err
 	}
-	return ht.store.Sync()
+	if err := ht.store.Sync(); err != nil {
+		return err
+	}
+	ht.indexHoldersAtGenesis()
+	return nil
+}
+
+// indexHoldersAtGenesis builds the asset holders index of a store that holds
+// only the genesis round, when TimeTravelHoldersIndex is on and the store's N
+// is 1: a node or ttimport syncing from genesis then has the index from the
+// start, and AddRound keeps it up to date, so it never needs ttimport
+// -holders-index. Indexing one round is instant. Nothing reads the store yet.
+// A failure is only logged: the index is derived, the endpoint answers 503
+// without it, and InitHoldersIndex says how to build it.
+func (ht *historyTracker) indexHoldersAtGenesis() {
+	s := ht.store
+	if last, ok := s.Last(); !ht.holdersIndex || !ok || last != 0 || s.CheckpointInterval() != 1 || s.HoldersIndexState() == timetravel.HoldersComplete {
+		return
+	}
+	n, err := s.IndexHolders(context.Background(), nil)
+	if err != nil {
+		ht.log.Warnf("time travel store %s: building the asset holders index of the genesis round: %v", ht.path, err)
+		return
+	}
+	ht.log.Infof("time travel store %s: built the asset holders index of the genesis round (%d holdings): the ledger keeps it up to date from now on", ht.path, n)
 }
 
 // loadOnline loads the online accounts at the tracker DB round from its

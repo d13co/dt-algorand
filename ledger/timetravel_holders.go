@@ -65,7 +65,10 @@ var (
 // is false (TimeTravelHoldersIndex is off), and otherwise warns if it is not
 // usable. Only the node calls it, after loading the ledger and before its
 // services start: tools that load a ledger (ttimport) leave the index alone,
-// and keep a complete one up to date. A no-op without EnableTimeTravel.
+// and keep a complete one up to date. The ledger itself builds the index of a
+// store it starts from genesis with the option on (indexHoldersAtGenesis), so
+// a node syncing from genesis finds it complete. A no-op without
+// EnableTimeTravel.
 func (l *Ledger) InitHoldersIndex(on bool) error {
 	if l.history == nil {
 		return nil

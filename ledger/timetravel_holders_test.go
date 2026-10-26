@@ -646,3 +646,117 @@ func TestTimeTravelAssetHoldersFirstRound(t *testing.T) {
 		require.Equal(t, w, p.Holders, "reader round %d", rnd)
 	}
 }
+
+// TestTimeTravelHoldersIndexFromGenesis checks that a ledger starting its
+// store from genesis with TimeTravelHoldersIndex and N = 1, as a node syncing
+// from genesis does, builds the index at once (holdings of the genesis
+// included) and keeps it up to date, with no ttimport -holders-index; that it
+// builds none with the option off or another N; and that a launch finding
+// only round 0 without the index, as one stopped in between leaves it, builds
+// it then.
+func TestTimeTravelHoldersIndexFromGenesis(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+	// an asset that exists at genesis, held by its creator and another account
+	const genAsset = basics.AssetIndex(1 << 40)
+	creator := genBalances.Balances[addrs[0]]
+	creator.AssetParams = map[basics.AssetIndex]basics.AssetParams{genAsset: {Total: 100, UnitName: "g"}}
+	creator.Assets = map[basics.AssetIndex]basics.AssetHolding{genAsset: {Amount: 60}}
+	genBalances.Balances[addrs[0]] = creator
+	holder := genBalances.Balances[addrs[9]]
+	holder.Assets = map[basics.AssetIndex]basics.AssetHolding{genAsset: {Amount: 40, Frozen: true}}
+	genBalances.Balances[addrs[9]] = holder
+
+	newCfg := func(on bool, n uint64) config.Local {
+		cfg := config.GetDefaultLocal()
+		cfg.EnableTimeTravel = true
+		cfg.TimeTravelHoldersIndex = on
+		cfg.TimeTravelCheckpointInterval = n
+		cfg.MaxAcctLookback = 4
+		return cfg
+	}
+	// check compares the holders of the assets at every round with the oracle
+	check := func(l *Ledger, assets []basics.AssetIndex) {
+		for rnd := basics.Round(0); rnd <= l.Latest(); rnd++ {
+			for _, aidx := range assets {
+				w, exists := ttHolders(t, l, addrs, rnd, aidx)
+				if !exists {
+					continue
+				}
+				p, err := l.AssetHoldersAt(rnd, aidx, nil, 1000)
+				require.NoError(t, err)
+				require.Equal(t, w, p.Holders, "round %d asset %d", rnd, aidx)
+			}
+		}
+	}
+
+	t.Run("on", func(t *testing.T) {
+		t.Parallel()
+		var logged logBuffer
+		log := logging.NewLogger()
+		log.SetOutput(&logged)
+		dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, newCfg(true, 1), simpleLedgerNotArchival(), simpleLedgerLogger(log))
+		defer dl.Close()
+		l := dl.validator
+		st, _ := l.HoldersIndexState()
+		require.Equal(t, timetravel.HoldersComplete, st)
+		require.Contains(t, logged.String(), "built the asset holders index of the genesis round (2 holdings)")
+		p, err := l.AssetHoldersAt(0, genAsset, nil, 10)
+		require.NoError(t, err)
+		require.Len(t, p.Holders, 2)
+		logged.Reset()
+		require.NoError(t, l.InitHoldersIndex(true))
+		require.NotContains(t, logged.String(), "holders", "the node's launch has nothing to say")
+
+		assets, _ := holdersHistory(t, &dl, addrs, 9, 12)
+		commitRoundLookback(0, l)
+		st, _ = l.HoldersIndexState()
+		require.Equal(t, timetravel.HoldersComplete, st)
+		check(l, append(assets, genAsset))
+	})
+
+	for name, cfg := range map[string]config.Local{"off": newCfg(false, 1), "N=3": newCfg(true, 3)} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var logged logBuffer
+			log := logging.NewLogger()
+			log.SetOutput(&logged)
+			dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, simpleLedgerNotArchival(), simpleLedgerLogger(log))
+			defer dl.Close()
+			st, _ := dl.validator.HoldersIndexState()
+			require.Equal(t, timetravel.HoldersNone, st)
+			require.NotContains(t, logged.String(), "the genesis round", "neither built nor tried")
+		})
+	}
+
+	t.Run("stopped before indexing", func(t *testing.T) {
+		t.Parallel()
+		dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, newCfg(false, 1), simpleLedgerOnDisk(), simpleLedgerNotArchival())
+		defer func() { dl.Close() }() // Close has a value receiver: close the ledger opened below
+		l := dl.validator
+		last, ok := l.history.store.Last()
+		require.True(t, ok)
+		require.Zero(t, last)
+		st, _ := l.HoldersIndexState()
+		require.Equal(t, timetravel.HoldersNone, st)
+		dir, genHash := l.dirsAndPrefix.HotGenesisDir, l.GenesisHash()
+		l.Close()
+
+		var logged logBuffer
+		log := logging.NewLogger()
+		log.SetOutput(&logged)
+		genBlock, err := bookkeeping.MakeGenesisBlock(protocol.ConsensusFuture, genBalances, "test", genHash)
+		require.NoError(t, err)
+		l, err = OpenLedger(log, dir, false, ledgercore.InitState{Block: genBlock, Accounts: genBalances.Balances, GenesisHash: genHash}, newCfg(true, 1))
+		require.NoError(t, err)
+		dl.validator = l
+		st, _ = l.HoldersIndexState()
+		require.Equal(t, timetravel.HoldersComplete, st)
+		require.Contains(t, logged.String(), "built the asset holders index of the genesis round")
+		assets, _ := holdersHistory(t, &dl, addrs, 10, 6)
+		commitRoundLookback(0, l)
+		check(l, append(assets, genAsset))
+	})
+}
