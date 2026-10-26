@@ -1,6 +1,6 @@
 # dt-algorand
 
-An experimental fork of [go-algorand](https://github.com/algorand/go-algorand) that adds **time travel**: a node that keeps the value of every account, asset, app and box at every round since genesis, and serves the REST API and transaction simulation **at any past round**. It is meant to replace an archival node for historical state queries: on mainnet the history takes ≈65 GB, against ≈3.5 TB of archived blocks.
+An experimental fork of [go-algorand](https://github.com/algorand/go-algorand) that adds **time travel**: a node that keeps the value of every account, asset, app and box at every round since genesis, and serves the REST API and transaction simulation **at any past round**. On mainnet the history takes ≈65 GB, against ≈3.5 TB of archived blocks.
 
 It changes no consensus rule, but it is not an official Algorand release: the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](ledger/timetravel/README.md#limitations)). Releases follow upstream's stable releases: `v5.0.3-dt1` is upstream `5.0.3` plus fork revision 1. Development happens on the `dtalgorand` branch.
 
