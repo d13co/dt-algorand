@@ -1,6 +1,6 @@
 # dtalgorand
 
-The Debian package of this fork ([time travel](../../ledger/timetravel/README.md)), published on apt.d13.co. It installs alongside the stock `algorand` package.
+The Debian package of this fork ([time travel](../../ledger/timetravel/README.md)), published on apt.d13.co. It installs alongside the stock `algorand` package. For macOS (Apple silicon), the same release builds a tarball that the `d13co/tap` Homebrew formula installs: see [macOS](#macos).
 
 ## Building
 
@@ -14,7 +14,7 @@ The version is the upstream stable release the fork is based on plus a fork revi
 
 ## Releasing
 
-Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the .deb, attaches it to a GitHub release and, once approved, publishes it to apt.d13.co. Number the fork revisions from 1 on each upstream base: after merging upstream's `v5.0.3-stable`, the next release is `v5.0.3-dt1`; a fork-only fix on top of it is `v5.0.3-dt2`. The workflow fails if the tag's `x.y.z` isn't the upstream release `dtalgorand` is based on.
+Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the .deb, attaches it to a GitHub release and, once approved, publishes it to apt.d13.co. In parallel it builds the macOS tarball on a Mac runner, attaches it to the same release and, once approved, points the `d13co/tap` formula at it. Number the fork revisions from 1 on each upstream base: after merging upstream's `v5.0.3-stable`, the next release is `v5.0.3-dt1`; a fork-only fix on top of it is `v5.0.3-dt2`. The workflow fails if the tag's `x.y.z` isn't the upstream release `dtalgorand` is based on.
 
 ## Layout
 
@@ -83,3 +83,41 @@ While the flag is off on those networks:
 - Installing keys (`POST /v2/participation`, `goal account addpartkey`, `installpartkey`, `renewpartkey`) fails. `POST /v2/participation/generate/{address}` is refused before it generates anything. `goal account addpartkey` and `renewpartkey` generate the keys locally, which takes minutes, so they check the data directory's `config.json` and the node's network first and stop before generating; if goal can't read the config, the node still refuses the keys when goal installs them.
 
 Don't point dtalgorand at a validator's data directory: give it its own, or run upstream algod on the validator's. Deleting the keys to get the node to start is irreversible: keys installed through the REST API (as goal installs them) exist only in the participation registry, and the account would need a new key registration. Once keys are installed with the flag on, turning it off stops the node from starting until they are moved away, and that includes expired `.partkey` files, which algod doesn't delete. To remove keys from the registry, start the node once with the flag on and run `goal account deletepartkey`, or move `partregistry.sqlite` (and its `-wal` and `-shm` files) aside while the node is stopped.
+
+## macOS
+
+### Building
+
+```sh
+installer/dtalgorand/build_darwin.sh tmp/dtalgorand
+```
+
+Run it on a Mac: the binaries need cgo (libsodium, SQLite). It builds into `tmp/dtalgorand/darwin-<arch>/bin` and writes `dtalgorand_<version>_darwin-<arch>.tar.gz`, versioned as the .deb is (`installer/dtalgorand/version.sh`; `PKG_VERSION` pins it). The tarball holds the binaries under their stock names in `bin/` and, in `share/`, what the .deb puts in the data directory. The binaries run on macOS 14 and later (`MACOSX_DEPLOYMENT_TARGET`, 14.0 by default); releases build on `macos-15`. They are signed ad hoc, which Apple silicon requires and Homebrew-installed command-line tools need no more than: Homebrew doesn't mark its downloads as quarantined, so Gatekeeper doesn't check them.
+
+The `darwin` workflow builds the tarball on pull requests that touch the packaging, installs it with the formula from a local tap, and starts the node under launchd.
+
+### Installing
+
+```sh
+brew install d13co/tap/dtalgorand
+brew services start dtalgorand
+dtgoal node status -d $(brew --prefix)/var/dtalgorand
+```
+
+| Path | |
+|---|---|
+| `$(brew --prefix)/opt/dtalgorand/libexec/` | the binaries under their stock names |
+| `$(brew --prefix)/bin/dt*` | links to them: `dtalgod`, `dtgoal`, ..., and `ttimport` |
+| `$(brew --prefix)/var/dtalgorand/` | the node's data directory, set up as the .deb's is; a new one starts with `"EnableTimeTravel": true` |
+| `$(brew --prefix)/var/log/dtalgorand.log` | the service's stdout and stderr (algod logs to `node.log` in the data directory) |
+
+The node runs as the logged-in user, under launchd (`brew services`), and stops while the Mac sleeps. Unlike the .deb, an upgrade doesn't restart it: run `brew services restart dtalgorand`.
+
+algod raises its own file descriptor limit, so launchd's default (256) doesn't matter: Go raises the soft limit at startup up to `kern.maxfilesperproc` (macOS refuses more, even below the hard limit), and algod then raises it to what its connections, the ledger and the time travel store need. The time travel store can hold up to 4096 files open; if the hard limit leaves less room, algod logs a warning and runs anyway.
+
+### The tap
+
+The formula lives in [d13co/homebrew-tap](https://github.com/d13co/homebrew-tap), as `Formula/dtalgorand.rb`, rendered from [homebrew/dtalgorand.rb.in](homebrew/dtalgorand.rb.in) by [homebrew/render.sh](homebrew/render.sh). The release workflow's `homebrew` job commits it there. It needs, once:
+
+1. The `d13co/homebrew-tap` repository (public, so that `brew` can clone it), with a first commit (a README): the job checks it out.
+2. A deploy key with write access on it: `ssh-keygen -t ed25519 -N '' -C dt-algorand-release -f tap_key`, add `tap_key.pub` as a deploy key of the tap with write access, and `tap_key` as the `HOMEBREW_TAP_DEPLOY_KEY` secret of a `homebrew` environment on d13co/dt-algorand (restricted to `v*` tags, with required reviewers, as `apt` is). Then delete both files.

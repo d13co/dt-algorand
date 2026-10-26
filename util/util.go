@@ -25,14 +25,15 @@ import (
 
 /* misc */
 
-// GetFdLimits returns a current values for file descriptors limits.
+// GetFdLimits returns a current values for file descriptors limits. The hard limit is
+// the highest soft limit this OS accepts, which on macOS can be below RLIMIT_NOFILE's.
 func GetFdLimits() (soft uint64, hard uint64, err error) {
 	var rLimit syscall.Rlimit
 	err = syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit)
 	if err != nil {
 		return 0, 0, fmt.Errorf("GetFdSoftLimit() err: %w", err)
 	}
-	return rLimit.Cur, rLimit.Max, nil
+	return rLimit.Cur, maxFdLimit(rLimit.Max), nil
 }
 
 // RaiseFdSoftLimit raises the file descriptors soft limit to the specified value,
@@ -42,13 +43,13 @@ func RaiseFdSoftLimit(newLimit uint64) error {
 	if err != nil {
 		return fmt.Errorf("RaiseFdSoftLimit() err: %w", err)
 	}
-	if newLimit <= soft {
-		// Current limit is sufficient; no need to change it.
-		return nil
-	}
 	if newLimit > hard {
 		// New limit exceeds the hard limit; set it to the hard limit.
 		newLimit = hard
+	}
+	if newLimit <= soft {
+		// Current limit is sufficient (or as high as it gets); no need to change it.
+		return nil
 	}
 	return SetFdSoftLimit(newLimit)
 }
