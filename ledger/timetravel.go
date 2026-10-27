@@ -101,6 +101,9 @@ type historyTracker struct {
 	// sticky is an untrusted reason that a reload keeps: a difference the
 	// store could not be marked with. Guarded by mu.
 	sticky error
+
+	// holdersIndex is TimeTravelHoldersIndex, as the store was opened with it
+	holdersIndex bool
 }
 
 type historyRound struct {
@@ -144,11 +147,11 @@ func TimeTravelPath(dirs DirsAndPrefix) string {
 
 func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
 	path := TimeTravelPath(dirs)
-	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}, Infof: log.Infof})
+	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}, Infof: log.Infof, HoldersIndex: cfg.TimeTravelHoldersIndex})
 	if err != nil {
 		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
 	}
-	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2), log: log}, nil
+	return &historyTracker{store: s, path: path, reeval: make(chan struct{}, 2), log: log, holdersIndex: cfg.TimeTravelHoldersIndex}, nil
 }
 
 // checkAccountsNotAhead refuses an account DB ahead of the block DB, which
@@ -230,8 +233,13 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 	for _, ad := range l.GenesisAccounts() {
 		totals.AddAccount(l.GenesisProto().RewardUnit, ledgercore.ToAccountData(ad), &ot)
 	}
+	// with TimeTravelHoldersIndex the store starts the asset holders index in
+	// the same batch, and AddRound keeps it up to date: no -holders-index build
 	if err := ht.store.AddRound(0, timetravel.GenesisChanges(l.GenesisAccounts(), totals), protocol.Encode(&hdr), nil); err != nil {
 		return err
+	}
+	if ht.holdersIndex && ht.store.HoldersIndexState() == timetravel.HoldersComplete {
+		ht.log.Infof("time travel store %s: indexing asset holders from the genesis round", ht.path)
 	}
 	return ht.store.Sync()
 }

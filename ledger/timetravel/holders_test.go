@@ -371,6 +371,112 @@ func TestStoreHoldersIndex(t *testing.T) {
 	}
 }
 
+// TestStoreHoldersIndexOption checks that a new N = 1 store opened with
+// Options.HoldersIndex has the index from its first round, which AddRound
+// writes in that round's batch, whatever that round, with and without the
+// dedup cache, and keeps it after a reopen without the option; that a first
+// round that fails to commit leaves no index and its retry starts it; and that
+// the option starts nothing on a store with another N or an existing store.
+func TestStoreHoldersIndexOption(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	const rounds = 30
+	changes, history := holderRounds(11, rounds)
+	add := func(s *Store, lo, hi int) {
+		for r := lo; r < hi; r++ {
+			require.NoError(t, s.AddRound(uint64(r), changes[r], nil, nil))
+		}
+	}
+
+	for _, dedup := range []int{0, -1} {
+		t.Run(fmt.Sprintf("dedup=%d", dedup), func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := Open(dir, Options{HoldersIndex: true, DedupEntries: dedup})
+			require.NoError(t, err)
+			require.Equal(t, HoldersNone, s.HoldersIndexState())
+			add(s, 0, 1)
+			require.Equal(t, HoldersComplete, s.HoldersIndexState())
+			require.Equal(t, holdersMeta(1), holdersMetaRecord(t, s))
+			add(s, 1, rounds/2)
+			require.NoError(t, s.Close())
+
+			// the index is the store's: a reopen without the option keeps it
+			s, err = Open(dir, Options{DedupEntries: dedup})
+			require.NoError(t, err)
+			defer s.Close()
+			require.Equal(t, HoldersComplete, s.HoldersIndexState())
+			add(s, rounds/2, rounds)
+			checkHolders(t, s, history)
+			requireRebuildEqual(t, s, "started with the first round")
+		})
+	}
+
+	// first rounds with holderRounds' odd changes: a tombstone of what is not
+	// there (2), a creation (3), a creation and deletion within the round (4),
+	// a deletion and recreation within it (5), a deletion of what is not
+	// there (8), a key changed twice (9) and no-ops (10)
+	for _, first := range []int{2, 3, 4, 5, 8, 9, 10} {
+		for _, dedup := range []int{0, -1} {
+			t.Run(fmt.Sprintf("first round %d dedup=%d", first, dedup), func(t *testing.T) {
+				s, err := Open(t.TempDir(), Options{HoldersIndex: true, DedupEntries: dedup})
+				require.NoError(t, err)
+				defer s.Close()
+				add(s, first, first+1)
+				require.Equal(t, HoldersComplete, s.HoldersIndexState())
+				require.Equal(t, holdersMeta(uint64(first+1)), holdersMetaRecord(t, s))
+				requireRebuildEqual(t, s, "the first round's index")
+				add(s, first+1, rounds)
+				require.Equal(t, holdersMeta(rounds), holdersMetaRecord(t, s))
+				requireRebuildEqual(t, s, "maintained from the first round")
+			})
+		}
+	}
+
+	t.Run("first round fails", func(t *testing.T) {
+		s, err := Open(t.TempDir(), Options{HoldersIndex: true})
+		require.NoError(t, err)
+		defer s.Close()
+		defer func(f func(*pebble.Batch) error) { commitBatch = f }(commitBatch)
+		commitBatch = func(*pebble.Batch) error { return errors.New("injected") }
+		require.EqualError(t, s.AddRound(0, changes[0], nil, nil), "injected")
+		_, ok := s.Last()
+		require.False(t, ok)
+		require.Equal(t, HoldersNone, s.HoldersIndexState(), "nothing was stored")
+		require.Empty(t, holdersRange(t, s))
+		require.Nil(t, holdersMetaRecord(t, s))
+		commitBatch = func(b *pebble.Batch) error { return b.Commit(pebble.NoSync) }
+		add(s, 0, rounds)
+		require.Equal(t, HoldersComplete, s.HoldersIndexState(), "the retry starts the index")
+		checkHolders(t, s, history)
+		requireRebuildEqual(t, s, "started by the retry")
+	})
+
+	t.Run("N=3", func(t *testing.T) {
+		s, err := Open(t.TempDir(), Options{HoldersIndex: true, CheckpointInterval: 3})
+		require.NoError(t, err)
+		defer s.Close()
+		add(s, 0, 10)
+		require.Equal(t, HoldersNone, s.HoldersIndexState())
+		require.Empty(t, holdersRange(t, s))
+		require.Nil(t, holdersMetaRecord(t, s))
+	})
+
+	t.Run("existing store", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := Open(dir, Options{})
+		require.NoError(t, err)
+		add(s, 0, 1)
+		require.NoError(t, s.Close())
+		s, err = Open(dir, Options{HoldersIndex: true})
+		require.NoError(t, err)
+		defer s.Close()
+		add(s, 1, 10)
+		require.Equal(t, HoldersNone, s.HoldersIndexState())
+		require.Empty(t, holdersRange(t, s))
+		require.Nil(t, holdersMetaRecord(t, s))
+	})
+}
+
 // TestStoreHoldersMaintenance checks the entry of one holding after each
 // round: only creations and deletions write it.
 func TestStoreHoldersMaintenance(t *testing.T) {

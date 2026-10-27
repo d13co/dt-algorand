@@ -41,13 +41,15 @@ import (
 // reopened within a round has no boundary.
 //
 // IndexHolders builds the index from the holding records; from then on every
-// AddRound keeps it up to date, in the round's batch. keyHoldersMeta holds
-// the round after the last one the index covers, and exists only once
-// IndexHolders has finished. A build without the index adds rounds without
-// moving it: the index is then stale, and AddRound leaves it alone, since
-// finding the holdings those rounds changed means reading every holding, a
-// rebuild anyway. Open writes the index only to finish an interrupted
-// truncation.
+// AddRound keeps it up to date, in the round's batch. A store created with
+// Options.HoldersIndex needs no build: its first AddRound starts the index in
+// the round's batch, so the round is never stored without it. keyHoldersMeta
+// holds the round after the last one the index covers, and exists only once
+// IndexHolders has finished or a first AddRound has started the index. A build
+// without the index adds rounds without moving it: the index is then stale,
+// and AddRound leaves it alone, since finding the holdings those rounds
+// changed means reading every holding, a rebuild anyway. Open writes the index
+// only to finish an interrupted truncation.
 //
 // Records are removed by RemoveNoops, which removes only records that repeat
 // their object's state and tombstones before an object's first value: no
