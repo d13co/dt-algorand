@@ -477,6 +477,10 @@ type objRead struct {
 	// absent, the object had no version by then: it is reported deleted,
 	// with no Changed.
 	asOf, absent bool
+	// havePrev: prev is the value before round (nil: none), found with the
+	// version, so addObject need not read it for changed keys.
+	prev     []byte
+	havePrev bool
 }
 
 // keyed reports whether the version lists changed state keys with keys.
@@ -491,7 +495,8 @@ func (o objRead) needsValue(values, keys bool) bool {
 
 // addObject decodes o into v. hdr is v's round's header: the account's
 // pending rewards are those at v's round. It returns the size of the values
-// read: o.val, and with keys the value before o.round, which it reads.
+// read: o.val, and with keys the value before o.round, which it reads
+// unless o has it.
 func addObject(h *histView, v *Version, hdr *bookkeeping.BlockHeader, o objRead, values, keys bool) (uint64, error) {
 	obj, val, deleted := o.obj, o.val, !o.ok
 	size := uint64(len(val))
@@ -502,7 +507,9 @@ func addObject(h *histView, v *Version, hdr *bookkeeping.BlockHeader, o objRead,
 	// the keys of a state come from its value and the one before
 	withKeys := o.keyed(keys)
 	var prev []byte
-	if withKeys && o.round > 0 {
+	if withKeys && o.havePrev {
+		prev = o.prev
+	} else if withKeys && o.round > 0 {
 		var ok bool
 		var err error
 		if prev, ok, err = h.Get(obj, uint64(o.round)-1); err != nil {
@@ -511,8 +518,8 @@ func addObject(h *histView, v *Version, hdr *bookkeeping.BlockHeader, o objRead,
 		if !ok {
 			prev = nil // created: every key is new
 		}
-		size += uint64(len(prev))
 	}
+	size += uint64(len(prev))
 	var err error
 	switch obj[0] {
 	case timetravel.KindAccount:
@@ -611,13 +618,17 @@ func addObject(h *histView, v *Version, hdr *bookkeeping.BlockHeader, o objRead,
 }
 
 // latestVersion finds obj's latest version at or before rnd: its round, and
-// its value (ok false: deleted). found is false if it has none.
-func latestVersion(h *histView, obj []byte, rnd basics.Round) (at basics.Round, val []byte, ok, found bool, err error) {
-	err = h.Versions(obj, 0, uint64(rnd), true, func(r uint64, v []byte, exists bool) bool {
+// its value (ok false: deleted). found is false if it has none. prev is the
+// value before it, at at-1, for changed keys (nil: none).
+func latestVersion(h *histView, obj []byte, rnd basics.Round) (at basics.Round, val, prev []byte, ok, found bool, err error) {
+	err = h.VersionsPrev(obj, 0, uint64(rnd), true, func(r uint64, v []byte, exists bool, p []byte, pOK bool) bool {
 		at, val, ok, found = basics.Round(r), v, exists, true
+		if pOK {
+			prev = p
+		}
 		return false
 	})
-	return at, val, ok, found, err
+	return at, val, prev, ok, found, err
 }
 
 // versionsAt builds a Rounds page: per round, each of srcs as of it, from its
@@ -639,7 +650,7 @@ func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (Version
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
 		var n uint64
 		for j, obj := range srcs {
-			at, val, ok, found, err := latestVersion(h, obj, R)
+			at, val, prev, ok, found, err := latestVersion(h, obj, R)
 			if err != nil {
 				return VersionPage{}, err
 			}
@@ -647,7 +658,7 @@ func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (Version
 			if !always && (!found || !ok) {
 				continue
 			}
-			o := objRead{obj: obj, round: at, ok: found && ok, asOf: true, absent: !found}
+			o := objRead{obj: obj, round: at, ok: found && ok, asOf: true, absent: !found, prev: prev, havePrev: true}
 			if o.needsValue(r.Values, r.Keys) {
 				o.val = val
 			}
@@ -700,7 +711,7 @@ func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, 
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
 		var n uint64
 		for _, b := range boxes {
-			at, val, ok, found, err := latestVersion(h, b.obj, R)
+			at, val, _, ok, found, err := latestVersion(h, b.obj, R)
 			if err != nil {
 				return VersionPage{}, err
 			}
@@ -789,10 +800,20 @@ func (h *pageHeap) Pop() any {
 // Versions is timetravel.Store.Versions with the in-memory rounds merged in.
 // fn must not modify val.
 func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+	return v.VersionsPrev(obj, lo, hi, desc, func(rnd uint64, val []byte, ok bool, _ []byte, _ bool) bool {
+		return fn(rnd, val, ok)
+	})
+}
+
+// VersionsPrev is timetravel.Store.VersionsPrev with the in-memory rounds
+// merged in. fn must not modify val or prev.
+func (v *histView) VersionsPrev(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) error {
 	type version struct {
-		rnd uint64
-		val []byte
-		ok  bool
+		rnd    uint64
+		val    []byte
+		ok     bool
+		prev   []byte // the value at rnd-1
+		prevOK bool
 	}
 	// the in-memory rounds that change obj, oldest first
 	var mem []version
@@ -802,7 +823,7 @@ func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd ui
 			continue
 		}
 		if j, ok := p.idx[string(obj)]; ok {
-			mem = append(mem, version{uint64(p.rnd), p.changes[j].Value, !p.changes[j].Deleted})
+			mem = append(mem, version{rnd: uint64(p.rnd), val: p.changes[j].Value, ok: !p.changes[j].Deleted})
 		}
 	}
 	if len(mem) > 0 {
@@ -813,6 +834,7 @@ func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd ui
 		changed := mem[:0]
 		for _, m := range mem {
 			if prevOK != m.ok || (m.ok && !bytes.Equal(prev, m.val)) {
+				m.prev, m.prevOK = prev, prevOK
 				changed = append(changed, m)
 			}
 			prev, prevOK = m.val, m.ok
@@ -821,15 +843,15 @@ func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd ui
 	}
 	if desc {
 		for i := len(mem) - 1; i >= 0; i-- {
-			if !fn(mem[i].rnd, mem[i].val, mem[i].ok) {
+			if !fn(mem[i].rnd, mem[i].val, mem[i].ok, mem[i].prev, mem[i].prevOK) {
 				return nil
 			}
 		}
 	}
 	if storeHi := min(hi, uint64(v.last)); lo <= storeHi {
 		stopped := false
-		err := v.store.Versions(obj, lo, storeHi, desc, func(rnd uint64, val []byte, ok bool) bool {
-			stopped = !fn(rnd, val, ok)
+		err := v.store.VersionsPrev(obj, lo, storeHi, desc, func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
+			stopped = !fn(rnd, val, ok, prev, prevOK)
 			return !stopped
 		})
 		if err != nil || stopped {
@@ -838,7 +860,7 @@ func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd ui
 	}
 	if !desc {
 		for _, m := range mem {
-			if !fn(m.rnd, m.val, m.ok) {
+			if !fn(m.rnd, m.val, m.ok, m.prev, m.prevOK) {
 				return nil
 			}
 		}

@@ -854,7 +854,7 @@ func (s *Store) indexPatched(ctx context.Context, progress func(scanned, removed
 			return false
 		}
 		scanned++
-		err := s.patchedVersions(obj, 0, last, false, func(rnd uint64, _ []byte, ok bool) bool {
+		err := s.patchedVersions(obj, 0, last, false, func(rnd uint64, _ []byte, ok bool, _ []byte, _ bool) bool {
 			if ferr = w.b.Set(boxIndexKey(app, rnd, name), boxIndexEntry(!ok), nil); ferr != nil {
 				return false
 			}
@@ -1298,9 +1298,20 @@ func (s *Store) distinct(prefix, after []byte, fn func(obj []byte) bool) error {
 // version of obj with round in [lo, hi]: each round at which its value
 // changed, with the new value (ok false: deleted). Records that repeat the
 // previous value are not versions: no-op writes, and with N > 1 the
-// checkpoint copies of objects that changed earlier in the interval. fn owns
-// val. Versions stops when fn returns false.
+// checkpoint copies of objects that changed earlier in the interval. fn may
+// keep val but must not modify it: Versions compares it with the next record.
+// Versions stops when fn returns false.
 func (s *Store) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+	return s.VersionsPrev(obj, lo, hi, desc, func(rnd uint64, val []byte, ok bool, _ []byte, _ bool) bool {
+		return fn(rnd, val, ok)
+	})
+}
+
+// VersionsPrev is Versions that also passes each version's previous state,
+// the value of obj at rnd-1 (prevOK false: it did not exist), which Versions
+// reads anyway to tell versions from repeats. fn may keep val and prev but
+// must not modify them: they may be shared with adjacent calls.
+func (s *Store) VersionsPrev(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) error {
 	if err := s.acquire(); err != nil {
 		return err
 	}
@@ -1321,7 +1332,7 @@ func sameState(a []byte, aok bool, b []byte, bok bool) bool {
 // fullVersions is Versions for N = 1, where every record is a full value or
 // a tombstone in the checkpoint keyspace: one iterator, plus the record
 // before the range to compare the first one with.
-func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) error {
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxCheckpoint, obj, 0), UpperBound: verKey(pfxCheckpoint, obj, hi+1)})
 	if err != nil {
 		return err
@@ -1349,7 +1360,7 @@ func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 			if err != nil {
 				return err
 			}
-			if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok) {
+			if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok, prev, prevOK) {
 				return nil
 			}
 			prev, prevOK = v, ok
@@ -1367,7 +1378,7 @@ func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 				return err
 			}
 			if have && candOK { // the first record ever is a version unless it is a tombstone
-				fn(candRnd, cand, true)
+				fn(candRnd, cand, true, nil, false)
 			}
 			return nil
 		}
@@ -1375,7 +1386,7 @@ func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 		if err != nil {
 			return err
 		}
-		if have && !sameState(v, ok, cand, candOK) && !fn(candRnd, cand, candOK) {
+		if have && !sameState(v, ok, cand, candOK) && !fn(candRnd, cand, candOK, v, ok) {
 			return nil
 		}
 		if rnd < lo {
@@ -1388,7 +1399,7 @@ func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 // patchedVersions is Versions for N > 1: the rounds that have a record in
 // either keyspace are the candidates, and each one is compared with the
 // value just before it.
-func (s *Store) patchedVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
+func (s *Store) patchedVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) error {
 	var its [2]*pebble.Iterator
 	var valid [2]bool
 	for i, pfx := range []byte{pfxCheckpoint, pfxPatch} {
@@ -1440,7 +1451,7 @@ func (s *Store) patchedVersions(obj []byte, lo, hi uint64, desc bool, fn func(rn
 				}
 			}
 		}
-		if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok) {
+		if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok, prev, prevOK) {
 			return nil
 		}
 		prev, prevOK = v, ok
