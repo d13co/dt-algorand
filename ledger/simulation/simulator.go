@@ -120,9 +120,8 @@ type testHooks struct {
 // MaxSimulateGroups is the ceiling for Request.MaxGroups.
 const MaxSimulateGroups = 256
 
-// MaxSimulateRounds is the ceiling for the MaxAPISimulateRounds and SimulateRoundsParallelism config
-// values: the most entries the "rounds" of a REST simulate request may hold, duplicates included,
-// and the most of its rounds simulated at once. Non-standard fork feature.
+// MaxSimulateRounds is the ceiling for the MaxAPISimulateRounds config value: the most entries the
+// "rounds" of a REST simulate request may hold, duplicates included. Non-standard fork feature.
 const MaxSimulateRounds = 256
 
 // EffectiveMaxExtraOpcodeBudget returns the most extra opcode budget a request may ask for, per

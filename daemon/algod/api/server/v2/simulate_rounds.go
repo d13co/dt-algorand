@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"sync"
 
 	"github.com/labstack/echo/v4"
 
@@ -52,14 +51,8 @@ func effectiveMaxSimulateRounds(m uint64) int {
 	return int(min(m, simulation.MaxSimulateRounds))
 }
 
-// EffectiveSimulateRoundsParallelism returns the most rounds of one "rounds" request simulated at
-// once for the config value SimulateRoundsParallelism: 1 up to simulation.MaxSimulateRounds.
-func EffectiveSimulateRoundsParallelism(p int) int {
-	return min(max(1, p), simulation.MaxSimulateRounds)
-}
-
-// simulateRounds simulates request once per distinct round of request.Rounds, in a pool of
-// workers, and writes one round result per entry of request.Rounds.
+// simulateRounds simulates request once per distinct round of request.Rounds, one round at a time,
+// and writes one round result per entry of request.Rounds.
 func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, contentType string, stat node.StatusReport, request PreEncodedSimulateRequest) error {
 	cfg := v2.Node.Config()
 
@@ -104,14 +97,12 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 		index[i] = j
 	}
 
-	// The workers use only the request's context and values, never the echo.Context.
 	reqCtx, cancel := requestContext(ctx, cfg)
 	defer cancel()
 	limiter := v2.SimulateLimiter
 	if err := admitSimulate(reqCtx, limiter); err != nil {
 		return answerAdmission(ctx, err, v2.Log)
 	}
-	defer releaseSimulate(limiter)
 	// The rounds count their work in one Effort.
 	effort := v2.startEffort(ctx)
 	reqCtx = contextWithEffort(reqCtx, effort)
@@ -119,48 +110,15 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	base = base.WithTraceBudget(budget)
 	responses := make([]*PreEncodedSimulateResponse, len(distinct))
 	errs := make([]error, len(distinct))
-	work := make(chan int)
-	// waiting is canceled once every round has been handed out, so that the workers waiting for a
-	// slot stop: there is nothing left for them.
-	waiting, stopWaiting := context.WithCancel(reqCtx)
-	defer stopWaiting()
-	var wg sync.WaitGroup
-	for w := range min(EffectiveSimulateRoundsParallelism(cfg.SimulateRoundsParallelism), len(distinct)) {
-		wg.Add(1)
-		if w == 0 {
-			// The first worker runs its rounds in the request's admission slot, so the request
-			// always progresses.
-			go func() {
-				defer wg.Done()
-				for j := range work {
-					responses[j], errs[j] = v2.simulateRound(reqCtx, base, distinct[j])
-				}
-			}()
-			continue
+	// The rounds run one after another in the request's admission slot, which is released before
+	// the answer is encoded and written, so a slow client doesn't hold it. A round that starts after
+	// the request ended is skipped.
+	func() {
+		defer releaseSimulate(limiter)
+		for j := range distinct {
+			responses[j], errs[j] = v2.simulateRound(reqCtx, base, distinct[j])
 		}
-		// The others take a slot before each round they take, so that a worker never holds a round
-		// while it waits.
-		go func() {
-			defer wg.Done()
-			for acquireSimulate(waiting, limiter) == nil {
-				j, ok := <-work
-				if ok {
-					responses[j], errs[j] = v2.simulateRound(reqCtx, base, distinct[j])
-				}
-				releaseSimulate(limiter)
-				if !ok {
-					return
-				}
-			}
-		}()
-	}
-	for j := range distinct {
-		work <- j
-	}
-	close(work)
-	stopWaiting()
-	// Every worker has stopped writing to responses and errs once Wait returns.
-	wg.Wait()
+	}()
 	effort.SetTraceBytes(budget.Used())
 
 	if clientGone(ctx) {
@@ -221,7 +179,7 @@ func (v2 *Handlers) simulateRounds(ctx echo.Context, handle codec.Handle, conten
 	return v2.writeSimulateResponse(ctx, handle, contentType, &response)
 }
 
-// simulateRound simulates base at round under ctx, in a slot of the node's limiter its caller holds.
+// simulateRound simulates base at round under ctx, in the slot of the node's limiter its caller holds.
 // An error, a panic included, is that round's error.
 func (v2 *Handlers) simulateRound(ctx context.Context, base simulation.Request, round basics.Round) (response *PreEncodedSimulateResponse, err error) {
 	defer func() {

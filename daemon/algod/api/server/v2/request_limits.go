@@ -137,8 +137,6 @@ func EffectiveSimulateParallelism(p int) int {
 }
 
 // admitSimulate takes a slot of limiter for a new simulate request, waiting at most admissionWait.
-// The limiter is FIFO: a new request queues behind the extra workers of admitted rounds requests
-// waiting for a slot, so under load the node refuses new requests before it slows admitted ones.
 // It returns errBusy when no slot was free by then, and the cause of ctx when ctx ended first. A
 // nil limiter admits every request.
 func admitSimulate(ctx context.Context, limiter *semaphore.Weighted) error {
@@ -155,15 +153,6 @@ func admitSimulate(ctx context.Context, limiter *semaphore.Weighted) error {
 			return context.Cause(ctx)
 		}
 		return errBusy
-	}
-	return nil
-}
-
-// acquireSimulate takes a slot of limiter for more work of an admitted request, waiting as long as
-// ctx allows.
-func acquireSimulate(ctx context.Context, limiter *semaphore.Weighted) error {
-	if limiter != nil && limiter.Acquire(ctx, 1) != nil {
-		return context.Cause(ctx)
 	}
 	return nil
 }

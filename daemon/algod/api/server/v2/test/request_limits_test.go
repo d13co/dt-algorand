@@ -86,15 +86,18 @@ func TestSimulateTimeLimit(t *testing.T) {
 		response := decodeSimulateResponse(t, rec, "json")
 		results := *response.RoundResults
 		require.Len(t, results, 3)
-		// The rounds that finished keep their results.
-		for _, i := range []int{0, 2} {
-			require.Nil(t, results[i].Error, i)
+		// The round that finished keeps its result.
+		require.Nil(t, results[0].Error)
+		require.Equal(t, rounds.Rounds[0], results[0].LastRound)
+		require.Len(t, results[0].TxnGroups, 1)
+		// The rounds run one after another: the slow one stopped at the time limit, and the one after
+		// it never started.
+		for _, i := range []int{1, 2} {
+			require.NotNil(t, results[i].Error, i)
+			require.Equal(t, "not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)", *results[i].Error)
 			require.Equal(t, rounds.Rounds[i], results[i].LastRound)
-			require.Len(t, results[i].TxnGroups, 1)
 		}
-		require.NotNil(t, results[1].Error)
-		require.Equal(t, "not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)", *results[1].Error)
-		require.Equal(t, latest-1, results[1].LastRound)
+		require.Equal(t, int64(2), n.calls.Load())
 	})
 
 	t.Run("counted from arrival", func(t *testing.T) {
