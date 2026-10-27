@@ -226,8 +226,17 @@ func (r Request) Validate(developerAPI bool) error {
 			},
 		}
 	}
+
+	if err := validateProtocol(r.Protocol, developerAPI); err != nil {
+		return err
+	}
+
+	if err := validateSimulateRequest(r, developerAPI); err != nil {
+		return err
+	}
 	// An execution trace grows with the budget it records, so a traced request keeps upstream's
-	// limit whatever the node allows. Non-standard fork feature.
+	// limit whatever the node allows. Checked once traces are known to be allowed. Non-standard
+	// fork feature.
 	if r.TraceConfig.Enable && r.ExtraOpcodeBudget > MaxExtraOpcodeBudget {
 		return InvalidRequestError{
 			SimulatorError{
@@ -237,12 +246,7 @@ func (r Request) Validate(developerAPI bool) error {
 			},
 		}
 	}
-
-	if err := validateProtocol(r.Protocol, developerAPI); err != nil {
-		return err
-	}
-
-	return validateSimulateRequest(r, developerAPI)
+	return nil
 }
 
 // simulatorLedger patches the ledger interface to use a constant latest round.
@@ -637,8 +641,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 			}
 		}
 	}
-	// The last group may have been stopped part way. One that finished keeps its result, even when
-	// the context ended since.
+	// The last group may have been stopped part way without failing: a ClearState program stopped
+	// part way doesn't fail its group. One that finished keeps its result, even when the context
+	// ended since; an earlier group's result is only kept when the request could finish.
 	if err := tracer.stopped(); err != nil {
 		return committed, false, err
 	}

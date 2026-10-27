@@ -633,8 +633,8 @@ type Local struct {
 	// objects read), history (of those, read from the time travel history), scanned (entries read by
 	// scans), response-bytes (the answer's size before compression) and eval-us (time spent). Answers
 	// given before any work (503 when busy, most 400s) don't carry it; a 400 from the simulator's checks
-	// of a request without rounds carries zero counts. Meant for a load balancer that bills on it and
-	// removes it before answering clients. Non-standard fork feature.
+	// of a request without rounds carries what was counted so far. Meant for a load balancer that bills
+	// on it and removes it before answering clients. Non-standard fork feature.
 	EnableEffortHeader bool `version[39]:"false"`
 
 	// DisableLedgerLRUCache disables LRU caches in ledger.

@@ -68,8 +68,8 @@ func writeEncoded(ctx echo.Context, contentType string, data []byte) error {
 	return ctx.Blob(http.StatusOK, contentType, data)
 }
 
-// writeJSON writes v with status 200 as ctx.JSON does, encoded first so that writeEncoded counts its
-// size.
+// writeJSON writes v with status 200 as ctx.JSON does with echo's default JSON serializer, which
+// algod uses, encoded first so that writeEncoded counts its size.
 func writeJSON(ctx echo.Context, v any) error {
 	var body bytes.Buffer
 	enc := json.NewEncoder(&body)
