@@ -38,17 +38,19 @@ import (
 )
 
 // requestTimeLimit returns how long an expensive request may run on a node configured with cfg:
-// RestWriteTimeoutSeconds, less a second to write the answer before the server's write deadline,
-// which starts when the request's header was read. 0 means no limit.
+// RestWriteTimeoutSeconds, the server's write deadline, which starts when the request's header was
+// read, less a margin to encode and write the answer: a tenth of the timeout, at least a second, and
+// at most half the timeout. 0 means no limit.
 func requestTimeLimit(cfg config.Local) time.Duration {
-	limit := time.Duration(cfg.RestWriteTimeoutSeconds) * time.Second
-	if limit <= 0 {
+	timeout := time.Duration(cfg.RestWriteTimeoutSeconds) * time.Second
+	if timeout <= 0 {
 		return 0
 	}
-	if limit >= 2*time.Second {
-		limit -= time.Second
+	margin := max(time.Second, timeout/10)
+	if timeout < 2*margin {
+		return timeout / 2
 	}
-	return limit
+	return timeout - margin
 }
 
 // arrivalKey is the echo.Context key RecordArrival stores the arrival time of a request under.

@@ -37,6 +37,15 @@ func (v2 *Handlers) SimulateLimits(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, simulateLimits(v2.Node.Config()))
 }
 
+// timeLimitSeconds returns limit in whole seconds, at least 1 for a limit under a second, since 0
+// means no limit.
+func timeLimitSeconds(limit time.Duration) uint64 {
+	if limit <= 0 {
+		return 0
+	}
+	return uint64(max(limit/time.Second, 1))
+}
+
 // simulateLimits returns the limits of simulate requests under cfg. It takes them from
 // Request.WithNodeLimits and clamps them with the functions simulate checks them with.
 func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
@@ -46,7 +55,7 @@ func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
 		MaxRounds:               uint64(effectiveMaxSimulateRounds(cfg.MaxAPISimulateRounds)),
 		MaxExtraOpcodeBudget:    uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
 		ResourceLimitMultiplier: uint64(simulation.EffectiveResourceLimitMultiplier(limits.ResourceLimitMultiplier)),
-		TimeLimitSeconds:        uint64(requestTimeLimit(cfg) / time.Second),
+		TimeLimitSeconds:        timeLimitSeconds(requestTimeLimit(cfg)),
 		TimeTravel:              cfg.EnableTimeTravel,
 		DeveloperApi:            cfg.EnableDeveloperAPI,
 	}

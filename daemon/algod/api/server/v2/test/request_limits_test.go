@@ -73,7 +73,8 @@ func TestSimulateTimeLimit(t *testing.T) {
 		start := time.Now()
 		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), single)
 		require.NoError(t, err)
-		require.GreaterOrEqual(t, time.Since(start), time.Second)
+		// the limit is half of a 1 s timeout
+		require.GreaterOrEqual(t, time.Since(start), 500*time.Millisecond)
 		require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), "time limit (RestWriteTimeoutSeconds)")
 	})
@@ -103,7 +104,7 @@ func TestSimulateTimeLimit(t *testing.T) {
 
 	t.Run("counted from arrival", func(t *testing.T) {
 		t.Parallel()
-		// A request that arrived 800 ms ago, e.g. with a slow body, has 200 ms left.
+		// A request that arrived 400 ms ago, e.g. with a slow body, has 100 ms of its 500 ms left.
 		n := newRoundsNode(t, env, oneSecond)
 		n.slowAt = map[basics.Round]bool{0: true}
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&single)))
@@ -111,12 +112,12 @@ func TestSimulateTimeLimit(t *testing.T) {
 		c := echo.New().NewContext(req, rec)
 		start := time.Now()
 		handle := v2.RecordArrival(func(c echo.Context) error {
-			c.Set("dtalgorand.arrival", start.Add(-800*time.Millisecond))
+			c.Set("dtalgorand.arrival", start.Add(-400*time.Millisecond))
 			return newHandler(n).SimulateTransaction(c, model.SimulateTransactionParams{})
 		})
 		require.NoError(t, handle(c))
 		require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
-		require.Less(t, time.Since(start), 700*time.Millisecond)
+		require.Less(t, time.Since(start), 450*time.Millisecond)
 	})
 
 	t.Run("no time limit", func(t *testing.T) {

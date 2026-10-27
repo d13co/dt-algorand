@@ -154,7 +154,7 @@ func TestVersionsParams(t *testing.T) {
 		// every page gets the request's context and the node's time limit
 		r := vl.r
 		require.NotNil(t, r.Ctx)
-		require.WithinDuration(t, time.Now().Add(time.Duration(cfg.RestWriteTimeoutSeconds-1)*time.Second), r.Deadline, 10*time.Second)
+		require.WithinDuration(t, time.Now().Add(time.Duration(cfg.RestWriteTimeoutSeconds)*time.Second*9/10), r.Deadline, 5*time.Second)
 		r.Ctx, r.Deadline = nil, time.Time{}
 		require.Equal(t, tc.want, r)
 		require.Equal(t, tc.ex, vl.ex)

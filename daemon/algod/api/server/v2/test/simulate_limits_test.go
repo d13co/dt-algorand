@@ -69,7 +69,7 @@ func TestSimulateLimits(t *testing.T) {
 	}{
 		{"defaults", func(*config.Local) {}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			TimeLimitSeconds: 119,
+			TimeLimitSeconds: 108,
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
@@ -88,7 +88,7 @@ func TestSimulateLimits(t *testing.T) {
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: simulation.MaxSimulateGroups, MaxRounds: simulation.MaxSimulateRounds,
 			MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling, ResourceLimitMultiplier: simulation.MaxResourceLimitMultiplier,
-			TimeLimitSeconds: 119,
+			TimeLimitSeconds: 108,
 		}},
 		{"set values and features", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 3
@@ -100,7 +100,7 @@ func TestSimulateLimits(t *testing.T) {
 			c.RestWriteTimeoutSeconds = 65
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 3, MaxRounds: 5, MaxExtraOpcodeBudget: 1_000, ResourceLimitMultiplier: 8,
-			TimeLimitSeconds: 64,
+			TimeLimitSeconds: 58,
 			TimeTravel:       true, DeveloperApi: true,
 		}},
 		{"short write timeout", func(c *config.Local) {

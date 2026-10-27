@@ -141,7 +141,7 @@ func TestEffortHeaderSimulate(t *testing.T) {
 				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 				require.Positive(t, effortOf(t, rec)["opcodes"], "the rounds that finished")
 			}
-			require.GreaterOrEqual(t, effortOf(t, rec)["eval-us"], uint64(900_000))
+			require.GreaterOrEqual(t, effortOf(t, rec)["eval-us"], uint64(450_000))
 		}
 	})
 

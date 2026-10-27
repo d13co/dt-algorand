@@ -65,7 +65,7 @@ This is a change for apps that make inner app calls. Upstream 5.0.x and earlier 
 
 The budget is time on the node's CPU. As a rough guide (one core of a desktop CPU), cheap opcodes and hashes take about 60–90 ns per budget unit, so 320,000 is about 20–30 ms; opcodes that build 4 KB byte arrays (`bzero`, `concat`) take about 350 ns per unit, and box writes into 32 KB boxes (`box_replace`, `box_splice`) about 2 µs per unit, so 320,000 of those is over half a second and the 320,000,000 ceiling about ten minutes per group. Multiply by the groups and rounds a request may hold (`MaxAPISimulateGroups`, `MaxAPISimulateRounds`) for the most one request may ask for; the node's time limit and `SimulateParallelism` bound what it spends (see "Overload limits" below).
 
-A group stops when the client goes away or the request reaches the node's time limit (`RestWriteTimeoutSeconds`, default 120, less a second), so raising the limit beyond what runs in that time also needs a longer write timeout.
+A group stops when the client goes away or the request reaches the node's time limit (`RestWriteTimeoutSeconds`, default 120, less a tenth: 108 s), so raising the limit beyond what runs in that time also needs a longer write timeout.
 
 Execution traces (`exec-trace-config`, only with `EnableDeveloperAPI`) record every opcode run, at about 112 bytes each before any stack, scratch or state data, and stack tracing copies every byte value pushed. At 320,000,000 that is tens of GB for one group, and even at 320,000 a stack trace of 4 KB values can reach a GB. A traced request therefore keeps upstream's limits: it may not list `rounds`, and may ask for at most 320,000 `extra-opcode-budget` whatever `MaxAPISimulateExtraOpcodeBudget` allows; either is a 400. It may hold up to `MaxAPISimulateGroups` groups and use one `round`, a past round from the time travel history included. The worst case is the groups times upstream's largest trace of one group: about 16 × 36 MB plus the values recorded, at the default 16 groups. Don't enable `EnableDeveloperAPI` on a node others can reach.
 
@@ -89,9 +89,9 @@ A request runs its rounds one after another, in the one slot of `SimulateParalle
 
 Every simulate request, with or without `rounds`, is bounded in time and stops when nobody waits for it:
 
-- **Time limit.** A request may run for `RestWriteTimeoutSeconds` less one second (the second is left to write the answer; no margin below 2 s; no limit at 0). A request without `rounds` that reaches it gets a 504. With `rounds`, the rounds that finished keep their results and the others get the `error` `not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)`.
+- **Time limit.** A request may run for `RestWriteTimeoutSeconds` less a margin to encode and write the answer before the server's write deadline: a tenth of the timeout and at least a second, so 108 s at the default 120 s, or half the timeout when it is under 2 s; no limit at 0. The deadline counts from the request's arrival, so a slow request body uses up the time too. A request without `rounds` that reaches it gets a 504. With `rounds`, the rounds that finished keep their results and the others get the `error` `not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)`.
 - **Client gone.** When the client disconnects (or a load balancer closes the connection), the simulation stops and no response is written.
-- Both stop the simulation between groups, between rounds, and inside a running program every 16,384 units of budget, so a large extra opcode budget can't keep the node busy after either.
+- Both stop the simulation between groups, between rounds, and inside a running program every 16,384 units of budget, so a large extra opcode budget can't keep the node busy after either. A group that finished keeps its result even when the limit passes right after. Ledger reads between two checks are not stopped: a cold read costs a unit or two of budget, and at a past round it can be a disk read of the history. They are bounded by the consensus limits on the resources a group may touch, times `SimulateResourceLimitMultiplier`, so keep the multiplier at 1 on a node with time travel open to others.
 - **Node-wide concurrency.** `SimulateParallelism` (default 0 = GOMAXPROCS) is the most simulations that run at once across the node: one per request, a `rounds` request included. A request that can't get a slot within 250 ms gets a 503 with `Retry-After: 1`, so a load balancer can send it to another node. A `rounds` request releases its slot once its last round ends, before the answer is written.
 - **Time travel reads.** The versions endpoints stop at the same time limit (504) and when the client goes away. A `/v2/deltas/{round}` older than the in-memory deltas is rebuilt by re-evaluating its block in one of two node-wide slots: it waits at most 250 ms for one, then gets a 503 with `Retry-After: 1`, and it stops at the time limit or when the client goes away.
 
@@ -151,7 +151,7 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 `GET /v2/transactions/simulate/limits` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients what this node's simulate accepts, with each value as the handlers clamp it:
 
 ```json
-{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-limit-seconds": 119, "time-travel": true, "developer-api": false }
+{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-limit-seconds": 108, "time-travel": true, "developer-api": false }
 ```
 
 | field | node config | meaning |
@@ -160,7 +160,7 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 | `max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
 | `max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
 | `resource-limit-multiplier` | `SimulateResourceLimitMultiplier` | factor on the unnamed-resource limits; 1: the consensus limits; a config of 0 counts as 1 |
-| `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest a request may run: the write timeout less a second (none below 2 s); 0: no limit |
+| `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest a request may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
 | `time-travel` | `EnableTimeTravel` | `round` and `rounds` reach back to genesis, not only `MaxAcctLookback` rounds |
 | `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a traced request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
 
