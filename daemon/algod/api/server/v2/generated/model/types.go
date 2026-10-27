@@ -2000,7 +2000,7 @@ type AccountApplicationVersionsParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.
 	Include *[]AccountApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 
@@ -2099,7 +2099,7 @@ type AccountVersionsParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.
 	Include *[]AccountVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 
@@ -2234,7 +2234,7 @@ type ApplicationVersionsParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.
+	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.
 	Include *[]ApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 

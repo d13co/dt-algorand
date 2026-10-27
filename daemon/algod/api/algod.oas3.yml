@@ -213,7 +213,7 @@
         "style": "form"
       },
       "versions-include-state": {
-        "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
+        "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.",
         "explode": false,
         "in": "query",
         "name": "include",
@@ -4402,7 +4402,7 @@
             }
           },
           {
-            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
+            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "include",
@@ -5251,7 +5251,7 @@
             }
           },
           {
-            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
+            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "include",
@@ -6151,7 +6151,7 @@
             }
           },
           {
-            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
+            "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "include",

@@ -17,11 +17,14 @@
 package test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -32,9 +35,12 @@ import (
 	"github.com/algorand/go-algorand/config"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
+	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/timetravel"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
+	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
@@ -483,4 +489,132 @@ func TestVersionsResponses(t *testing.T) {
 	require.NoError(t, h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{}))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.Contains(t, rec.Body.String(), "ttimport -index-boxes")
+}
+
+// globalPutsApp sets global key arg i to arg i+1 for each pair of args. The
+// unreachable constants make each version of its params about 15 KB.
+var globalPutsApp = "#pragma version 10\n" + `
+	txn ApplicationID; bz done
+	int 0; store 0
+loop:
+	load 0; txn NumAppArgs; >=; bnz done
+	load 0; txnas ApplicationArgs
+	load 0; int 1; +; txnas ApplicationArgs
+	app_global_put
+	load 0; int 2; +; store 0
+	b loop
+done:
+	int 1; return
+` + strings.Repeat("pushbytes 0x"+strings.Repeat("ab", 1000)+"\n", 7)
+
+// TestVersionsKeysPaging pages through include=keys on a real ledger by
+// limit, by the 1 MB budget (which counts each version's previous value),
+// and in rounds mode, and checks every version's changed keys.
+func TestVersionsKeysPaging(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	env := simulationtesting.PrepareSimulatorTest(t, func(cfg *config.Local) {
+		cfg.Archival = false
+		cfg.EnableTimeTravel = true
+	})
+	defer env.Close()
+	sender := env.Accounts[0].Addr
+	app := env.CreateApp(sender, simulationtesting.AppParams{
+		ApprovalProgram:   globalPutsApp,
+		ClearStateProgram: "#pragma version 10\nint 1",
+		GlobalStateSchema: basics.StateSchema{NumByteSlice: 64},
+		ExtraProgramPages: 3,
+	})
+	// the changed keys of each version, in round order
+	wantRounds := []basics.Round{env.Ledger.Latest()}
+	wantKeys := [][][]byte{{}}
+	put := func(kv ...[]byte) {
+		env.Txn(env.TxnInfo.NewTxn(txntest.Txn{Type: protocol.ApplicationCallTx, Sender: sender, ApplicationID: app, ApplicationArgs: kv}).SignedTxn())
+		var keys [][]byte
+		for i := 0; i < len(kv); i += 2 {
+			keys = append(keys, kv[i])
+		}
+		slices.SortFunc(keys, bytes.Compare)
+		wantRounds = append(wantRounds, env.Ledger.Latest())
+		wantKeys = append(wantKeys, keys)
+	}
+	key := func(i int) []byte { return fmt.Appendf(nil, "key%029d", i) }   // 32 bytes
+	val := func(i int) []byte { return fmt.Appendf(nil, "value%091d", i) } // 96 bytes
+	for i := 0; i < 64; i += 8 {                                           // fill the global state, 8 keys a call
+		var kv [][]byte
+		for j := i; j < i+8; j++ {
+			kv = append(kv, key(j), val(j))
+		}
+		put(kv...)
+	}
+	for i := range 80 {
+		put(key(i*7%64), val(1000+i))
+	}
+
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	h := &v2.Handlers{Node: makeMockNodeWithConfig(env.Ledger, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
+	e := echo.New()
+	timetravel.RegisterHandlers(e, h)
+	// pages returns every version of the query's pages, and the page sizes
+	pages := func(query string) (vs []model.ApplicationVersion, sizes []int) {
+		t.Helper()
+		next := ""
+		for {
+			target := fmt.Sprintf("/v2/applications/%d/versions?%s%s", app, query, next)
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			var resp model.ApplicationVersionsResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			require.NotEmpty(t, resp.Versions, target)
+			vs = append(vs, resp.Versions...)
+			sizes = append(sizes, len(resp.Versions))
+			if resp.NextToken == nil {
+				return vs, sizes
+			}
+			next = "&next=" + *resp.NextToken
+		}
+	}
+	check := func(name string, vs []model.ApplicationVersion, values, asOf bool) {
+		t.Helper()
+		require.Len(t, vs, len(wantRounds), name)
+		for i, v := range vs {
+			require.Equal(t, wantRounds[i], v.Round, name)
+			require.NotNil(t, v.ChangedKeys, "%s: round %d", name, v.Round)
+			require.Equal(t, wantKeys[i], *v.ChangedKeys, "%s: round %d", name, v.Round)
+			require.Equal(t, values, v.Application != nil, name)
+			if asOf {
+				require.Equal(t, &v.Round, v.ChangedRound, name)
+			}
+		}
+	}
+
+	vs, sizes := pages("include=keys&limit=10")
+	check("limit", vs, false, false)
+	require.Len(t, sizes, (len(wantRounds)+9)/10)
+
+	// a version reads its params and the ones before, about 30 KB: the
+	// budget ends pages long before the limit
+	vs, sizes = pages("include=keys&limit=1000")
+	check("budget", vs, false, false)
+	require.Greater(t, len(sizes), 1, "the 1 MB budget ends pages")
+	require.Less(t, sizes[0], 60)
+	byBudget := sizes
+
+	vs, sizes = pages("include=values,keys&limit=1000")
+	check("values", vs, true, false)
+	require.Equal(t, byBudget, sizes, "values are read with keys anyway")
+
+	// rounds mode: each requested round is a version, so as of it the
+	// version in effect is its own, with the same keys
+	rounds := make([]string, len(wantRounds))
+	for i, r := range wantRounds {
+		rounds[i] = fmt.Sprint(r)
+	}
+	vs, sizes = pages("include=keys&limit=1000&rounds=" + strings.Join(rounds, ","))
+	check("rounds", vs, false, true)
+	require.Equal(t, byBudget, sizes, "rounds mode counts the same values")
+	vs, _ = pages("include=keys&limit=7&rounds=" + strings.Join(rounds, ","))
+	check("rounds limit", vs, false, true)
 }
