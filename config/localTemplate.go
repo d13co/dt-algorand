@@ -651,11 +651,13 @@ type Local struct {
 
 	// TimeTravelHoldersIndex enables GET /v2/assets/{asset-id}/holders, which lists the accounts that held an asset
 	// at any round, from an index of the time travel store (EnableTimeTravel) of every holding by asset: ~3.6 GiB on
-	// mainnet, +6% of the store. A node (or ttimport import) that starts its store from genesis with it on builds the
-	// index at once and keeps it up to date. For an existing store, build the index with ttimport -holders-index while
-	// the node is stopped (~5 minutes on mainnet); until then the endpoint answers 503. It needs a store with
+	// mainnet, +6% of the store. A store created with it on (a node or ttimport import starting from genesis) has the
+	// index from its first round, kept up to date with every round. For an existing store, build the index with
+	// ttimport -holders-index while the node is stopped (~5 minutes on mainnet); until then the endpoint answers 503.
+	// ttimport reads it from config.json too: a full import from genesis with it on maintains the index on every
+	// round, which may be slower than importing with it off and building the index after. It needs a store with
 	// TimeTravelCheckpointInterval 1, as the store was created. Turning it off deletes the index at launch; turning it
-	// on again needs ttimport -holders-index, unless the store still holds only the genesis round.
+	// on again needs ttimport -holders-index.
 	TimeTravelHoldersIndex bool `version[39]:"false"`
 
 	// EnableTxnEvalTracer turns on features in the BlockEvaluator which collect data on transactions, exposing them via algod APIs.

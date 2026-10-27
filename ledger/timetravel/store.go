@@ -126,6 +126,11 @@ type Options struct {
 	// fail with ErrReadOnly. The store is still locked, so another process
 	// cannot open it meanwhile.
 	ReadOnly bool
+	// HoldersIndex has a new store with N = 1 index asset holders from its
+	// first round: that AddRound writes the round and the index in one batch,
+	// and every later one keeps the index up to date. An existing store
+	// ignores it: build its index with IndexHolders.
+	HoldersIndex bool
 }
 
 // Change is the new value of one object in a round.
@@ -153,6 +158,7 @@ type Store struct {
 
 	holders     atomic.Uint32 // HoldersState; changes under writeMu
 	skipHolders bool          // tests: AddRound leaves the holders index alone, as a build without it does
+	newHolders  bool          // Options.HoldersIndex: the first round of an empty store starts the holders index
 
 	truncating atomic.Bool // a TruncateAfter is unfinished; AddRound fails
 	// truncatedAfter is 1 + the round the last TruncateAfter of this
@@ -241,7 +247,7 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, closing: make(chan struct{}), infof: o.Infof}
+	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, newHolders: o.HoldersIndex, closing: make(chan struct{}), infof: o.Infof}
 	if s.infof == nil {
 		s.infof = func(string, ...any) {}
 	}
@@ -499,8 +505,11 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	if err := b.Set(keyBoxIndexMeta, boxIndexMeta(s.boxFrom.Load(), rnd+1), nil); err != nil {
 		return err
 	}
-	// a complete holders index is kept up to date, in the round's batch
-	if s.HoldersIndexState() == HoldersComplete && !s.skipHolders {
+	// a complete holders index is kept up to date, in the round's batch, and
+	// a new store with Options.HoldersIndex starts one with its first round:
+	// an empty store has no holding records, so it has no entries to clear
+	startHolders := !ok && s.newHolders && s.n == 1
+	if (startHolders || s.HoldersIndexState() == HoldersComplete) && !s.skipHolders {
 		if err := s.indexHolders(b, write, rnd); err != nil {
 			return err
 		}
@@ -549,6 +558,9 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	}
 	s.last.Store(int64(rnd))
 	s.truncatedAfter.Store(0)
+	if startHolders && !s.skipHolders {
+		s.holders.Store(uint32(HoldersComplete))
+	}
 	// only now: a round that failed to commit is added again, and must not
 	// find its own changes in the cache
 	s.dedup.update(states)

@@ -649,11 +649,9 @@ func TestTimeTravelAssetHoldersFirstRound(t *testing.T) {
 
 // TestTimeTravelHoldersIndexFromGenesis checks that a ledger starting its
 // store from genesis with TimeTravelHoldersIndex and N = 1, as a node syncing
-// from genesis does, builds the index at once (holdings of the genesis
-// included) and keeps it up to date, with no ttimport -holders-index; that it
-// builds none with the option off or another N; and that a launch finding
-// only round 0 without the index, as one stopped in between leaves it, builds
-// it then.
+// from genesis does, has the index from the genesis round (its holdings
+// included) and keeps it up to date, with no ttimport -holders-index; and that
+// it has none with the option off or another N.
 func TestTimeTravelHoldersIndexFromGenesis(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -702,7 +700,7 @@ func TestTimeTravelHoldersIndexFromGenesis(t *testing.T) {
 		l := dl.validator
 		st, _ := l.HoldersIndexState()
 		require.Equal(t, timetravel.HoldersComplete, st)
-		require.Contains(t, logged.String(), "built the asset holders index of the genesis round (2 holdings)")
+		require.Contains(t, logged.String(), "indexing asset holders from the genesis round")
 		p, err := l.AssetHoldersAt(0, genAsset, nil, 10)
 		require.NoError(t, err)
 		require.Len(t, p.Holders, 2)
@@ -730,33 +728,4 @@ func TestTimeTravelHoldersIndexFromGenesis(t *testing.T) {
 			require.NotContains(t, logged.String(), "the genesis round", "neither built nor tried")
 		})
 	}
-
-	t.Run("stopped before indexing", func(t *testing.T) {
-		t.Parallel()
-		dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, newCfg(false, 1), simpleLedgerOnDisk(), simpleLedgerNotArchival())
-		defer func() { dl.Close() }() // Close has a value receiver: close the ledger opened below
-		l := dl.validator
-		last, ok := l.history.store.Last()
-		require.True(t, ok)
-		require.Zero(t, last)
-		st, _ := l.HoldersIndexState()
-		require.Equal(t, timetravel.HoldersNone, st)
-		dir, genHash := l.dirsAndPrefix.HotGenesisDir, l.GenesisHash()
-		l.Close()
-
-		var logged logBuffer
-		log := logging.NewLogger()
-		log.SetOutput(&logged)
-		genBlock, err := bookkeeping.MakeGenesisBlock(protocol.ConsensusFuture, genBalances, "test", genHash)
-		require.NoError(t, err)
-		l, err = OpenLedger(log, dir, false, ledgercore.InitState{Block: genBlock, Accounts: genBalances.Balances, GenesisHash: genHash}, newCfg(true, 1))
-		require.NoError(t, err)
-		dl.validator = l
-		st, _ = l.HoldersIndexState()
-		require.Equal(t, timetravel.HoldersComplete, st)
-		require.Contains(t, logged.String(), "built the asset holders index of the genesis round")
-		assets, _ := holdersHistory(t, &dl, addrs, 10, 6)
-		commitRoundLookback(0, l)
-		check(l, append(assets, genAsset))
-	})
 }
