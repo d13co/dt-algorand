@@ -116,7 +116,8 @@ func makeAbortState(request Request) abortState {
 	return abortState{ctx: ctx, done: ctx.Done(), traceBudget: request.traceBudget, effort: ledgercore.EffortFromContext(ctx)}
 }
 
-// abortError returns why the simulation must stop, or nil.
+// abortError returns why the simulation must stop, or nil. It polls the context, so it is asked
+// before new work starts.
 func (a *abortState) abortError() error {
 	if a.aborted != nil {
 		return a.aborted
@@ -131,6 +132,16 @@ func (a *abortState) abortError() error {
 	}
 	if err := a.traceBudget.err(); err != nil {
 		a.aborted = err
+	}
+	return a.aborted
+}
+
+// stopped returns why the group that just ran was cut short, or nil: a program stopped part way,
+// or the trace budget exceeded. Unlike abortError it does not poll the context, so a group that
+// finished as the context ended keeps its result.
+func (a *abortState) stopped() error {
+	if a.aborted == nil {
+		a.aborted = a.traceBudget.err()
 	}
 	return a.aborted
 }

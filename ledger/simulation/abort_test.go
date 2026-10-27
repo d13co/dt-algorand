@@ -193,3 +193,48 @@ func TestSimulateTraceBudget(t *testing.T) {
 		require.Zero(t, simulation.NewTraceBudget(0).Used())
 	})
 }
+
+// TestSimulateFinishedAsCanceled checks that a simulation whose context ends after its last group
+// ran keeps its result.
+func TestSimulateFinishedAsCanceled(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	bothModes(t, func(t *testing.T, parallel bool) {
+		env := simulationtesting.PrepareSimulatorTest(t)
+		defer env.Close()
+
+		groups := make([][]transactions.SignedTxn, 2)
+		if parallel {
+			// one group, so that no other group is left to start once it ends
+			groups = groups[:1]
+		}
+		sender := env.Accounts[0]
+		for g := range groups {
+			groups[g] = []transactions.SignedTxn{env.TxnInfo.NewTxn(txntest.Txn{
+				Type:     protocol.PaymentTx,
+				Sender:   sender.Addr,
+				Receiver: env.Accounts[1].Addr,
+				Amount:   1000,
+				Note:     []byte{byte(g)},
+			}).Txn().Sign(sender.Sk)}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		request := simulation.WithAfterGroupHook(loopRequest(groups, parallel), func(g int, _ error) {
+			if g == len(groups)-1 || parallel {
+				cancel()
+			}
+		}).WithContext(ctx)
+		result, err := simulation.MakeSimulator(env.Ledger, false).Simulate(request)
+		require.NoError(t, err)
+		require.Error(t, ctx.Err())
+		require.Len(t, result.TxnGroups, len(groups))
+		for g, group := range result.TxnGroups {
+			require.Empty(t, group.FailureMessage, "group %d", g)
+		}
+		if !parallel {
+			require.NotNil(t, result.Block)
+		}
+	})
+}

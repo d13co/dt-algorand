@@ -573,6 +573,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 
 		// check that the transaction is well-formed and mark whether signatures are missing
 		if err := s.check(hdr, group, tracer, overrides); err != nil {
+			if stopErr := tracer.stopped(); stopErr != nil {
+				return committed, false, stopErr
+			}
 			var verifyError *verify.TxGroupError
 			if errors.As(err, &verifyError) && verifyError.GroupIndex >= 0 {
 				groupResult.FailureMessage = verifyError.Error()
@@ -591,6 +594,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 		}
 
 		if err := evaluator.TransactionGroup(group...); err != nil {
+			if stopErr := tracer.stopped(); stopErr != nil {
+				return committed, false, stopErr
+			}
 			groupResult.FailureMessage = err.Error()
 			if errors.Is(err, ledgercore.ErrNoSpace) {
 				// The group does not fit in what is left of the block. A smaller group after it may.
@@ -599,9 +605,6 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 				groupResult.FailedAt = tracer.failedAt
 			}
 			if evaluatorCorrupted(evaluator, err) {
-				if err := tracer.abortError(); err != nil {
-					return committed, false, err
-				}
 				// The evaluator state may hold part of this group, so no later group can run on it.
 				notSimulated(n, fmt.Sprintf("group index %d left the evaluator state corrupted", g))
 				return committed, true, nil
@@ -614,7 +617,7 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 		// Full PQ placeholders need the final AuthAddr after FixSigners has run through evaluation.
 		if overrides.AllowEmptySignatures && overrides.FixSigners {
 			if failedAt, message := checkFixedPlaceholderPQEnvelopes(hdr, group); message != "" {
-				if err := tracer.abortError(); err != nil {
+				if err := tracer.stopped(); err != nil {
 					return committed, false, err
 				}
 				groupResult.FailureMessage = message
@@ -626,8 +629,9 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 			}
 		}
 	}
-	// The last group may have been stopped part way.
-	if err := tracer.abortError(); err != nil {
+	// The last group may have been stopped part way. One that finished keeps its result, even when
+	// the context ended since.
+	if err := tracer.stopped(); err != nil {
 		return committed, false, err
 	}
 	return committed, false, nil
