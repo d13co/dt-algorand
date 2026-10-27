@@ -116,7 +116,6 @@ var defaultLocal = Local{
 	MaxAPISimulateExtraOpcodeBudget:            320000,
 	MaxAPISimulateGroups:                       16,
 	MaxAPISimulateRounds:                       16,
-	MaxAPISimulateTraceBytes:                   268435456,
 	MaxAcctLookback:                            4,
 	MaxBlockHistoryLookback:                    0,
 	MaxCatchpointDownloadDuration:              43200000000000,

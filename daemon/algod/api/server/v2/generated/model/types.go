@@ -1831,11 +1831,8 @@ type PostTransactionsResponse struct {
 
 // SimulateLimitsResponse The limits of simulate requests on this node, and the simulate features it allows.
 type SimulateLimitsResponse struct {
-	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
-
-	// MaxExecTraceBytes The most bytes of execution trace one request may keep, across all its groups and rounds, as the node estimates them; a request that goes over fails with 400. 0 means no limit (node config MaxAPISimulateTraceBytes).
-	MaxExecTraceBytes uint64 `json:"max-exec-trace-bytes"`
 
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`

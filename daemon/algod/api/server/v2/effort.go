@@ -21,14 +21,12 @@ package v2
 
 import (
 	"context"
-	"math"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
-	"github.com/algorand/go-algorand/ledger/simulation"
 )
 
 // EffortHeader is the response header that reports the work a request did.
@@ -57,15 +55,6 @@ func (v2 *Handlers) startEffort(ctx echo.Context) *ledgercore.Effort {
 }
 
 const effortKey = "dtalgorand.effort"
-
-// effortTraceBudget returns the trace budget of a simulate request: the node's limit, or with an
-// Effort, a budget with no limit when the node sets none, so that the trace size is counted.
-func effortTraceBudget(limit uint64, e *ledgercore.Effort) *simulation.TraceBudget {
-	if limit == 0 && e != nil {
-		limit = math.MaxUint64
-	}
-	return simulation.NewTraceBudget(limit)
-}
 
 // counter is a ledger that can count its lookups in an Effort (ledger.Ledger and data.Ledger).
 type counter interface {

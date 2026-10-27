@@ -610,14 +610,6 @@ type Local struct {
 	// fork feature.
 	MaxAPISimulateExtraOpcodeBudget uint64 `version[39]:"320000"`
 
-	// MaxAPISimulateTraceBytes is the most bytes of execution trace (exec-trace-config, EnableDeveloperAPI
-	// only) one simulate request may keep, across all of its groups and rounds; a request that goes over
-	// fails with 400. A trace takes over 100 bytes per opcode run plus the values it records, so groups ×
-	// rounds × budget can otherwise reach many GB. The count is an estimate of the trace in memory:
-	// converting and encoding the response takes a few times more. 0 means no limit. Non-standard fork
-	// feature.
-	MaxAPISimulateTraceBytes uint64 `version[39]:"268435456"`
-
 	// MaxAPISimulateRounds is the most rounds one simulate request may list in "rounds", which simulates
 	// the request once per distinct listed round; duplicates count against the limit. 0 disables "rounds";
 	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
@@ -639,9 +631,10 @@ type Local struct {
 	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=). It is
 	// an RFC 9651 dictionary of integers: opcodes (app and logicsig budget consumed), lookups (ledger
 	// objects read), history (of those, read from the time travel history), scanned (entries read by
-	// scans), trace-bytes (execution trace size) and eval-us (time spent). Answers given before any work
-	// (503 when busy, 400 for most invalid parameters) don't carry it; a 400 for a trace too large does. Meant for a load balancer that bills on it
-	// and removes it before answering clients. Non-standard fork feature.
+	// scans) and eval-us (time spent). Answers given before any work (503 when busy, most 400s) don't
+	// carry it; a 400 from the simulator's checks of a request without rounds carries zero counts. Meant
+	// for a load balancer that bills on it and removes it before answering clients. Non-standard fork
+	// feature.
 	EnableEffortHeader bool `version[39]:"false"`
 
 	// DisableLedgerLRUCache disables LRU caches in ledger.

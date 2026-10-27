@@ -5966,7 +5966,6 @@
           "max-rounds",
           "max-extra-opcode-budget",
           "resource-limit-multiplier",
-          "max-exec-trace-bytes",
           "time-limit-seconds",
           "time-travel",
           "developer-api"
@@ -5992,11 +5991,6 @@
             "type": "integer",
             "x-go-type": "uint64"
           },
-          "max-exec-trace-bytes": {
-            "description": "The most bytes of execution trace one request may keep, across all its groups and rounds, as the node estimates them; a request that goes over fails with 400. 0 means no limit (node config MaxAPISimulateTraceBytes).",
-            "type": "integer",
-            "x-go-type": "uint64"
-          },
           "time-limit-seconds": {
             "description": "The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a second to write the response).",
             "type": "integer",
@@ -6007,7 +6001,7 @@
             "type": "boolean"
           },
           "developer-api": {
-            "description": "If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+            "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
             "type": "boolean"
           }
         }

@@ -16,18 +16,13 @@
 
 package simulation
 
-// Stopping a simulation early: when its request is canceled (the client left, or the node's time
-// limit passed), or when its execution trace grows too large. Non-standard fork feature, kept in
-// its own file to keep upstream merges of simulator.go and tracer.go clean.
+// Stopping a simulation early, when its request is canceled (the client left, or the node's time
+// limit passed). Non-standard fork feature, kept in its own file to keep upstream merges of
+// simulator.go and tracer.go clean.
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"sync/atomic"
-	"unsafe"
 
-	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 )
@@ -48,59 +43,10 @@ func (r Request) Context() context.Context {
 	return r.ctx
 }
 
-// WithTraceBudget returns r with its execution trace counted against b, which may be shared with
-// the other simulations of one REST request. A nil b sets no limit.
-func (r Request) WithTraceBudget(b *TraceBudget) Request {
-	r.traceBudget = b
-	return r
-}
-
-// ErrTraceTooLarge is the cause of a simulation stopped because its execution trace outgrew its
-// TraceBudget. The error Simulate returns wraps it.
-var ErrTraceTooLarge = errors.New("execution trace too large")
-
-// TraceBudget limits the memory the execution traces of one REST request keep, across all of its
-// groups and rounds. The count is an estimate of the trace kept in memory (see
-// opcodeTraceUnitBytes); encoding the response takes a few times that.
-type TraceBudget struct {
-	limit uint64
-	used  atomic.Uint64
-}
-
-// NewTraceBudget returns a budget of limit bytes, or nil (no limit) when limit is 0.
-func NewTraceBudget(limit uint64) *TraceBudget {
-	if limit == 0 {
-		return nil
-	}
-	return &TraceBudget{limit: limit}
-}
-
-// Used returns the trace bytes counted so far.
-func (b *TraceBudget) Used() uint64 {
-	if b == nil {
-		return 0
-	}
-	return b.used.Load()
-}
-
-// charge counts n more bytes and reports whether the budget is exceeded.
-func (b *TraceBudget) charge(n uint64) bool {
-	return b.used.Add(n) > b.limit
-}
-
-// err returns the error of an exceeded budget, nil otherwise.
-func (b *TraceBudget) err() error {
-	if b == nil || b.used.Load() <= b.limit {
-		return nil
-	}
-	return fmt.Errorf("%w: over %d bytes; simulate fewer groups or rounds, or leave out stack, scratch or state changes", ErrTraceTooLarge, b.limit)
-}
-
 // abortState is the part of an evalTracer that stops the simulation.
 type abortState struct {
-	ctx         context.Context
-	done        <-chan struct{} // ctx.Done(); nil when ctx can't be canceled
-	traceBudget *TraceBudget
+	ctx  context.Context
+	done <-chan struct{} // ctx.Done(); nil when ctx can't be canceled
 	// The opcode budget used since the last check, and the program and cost it was last counted at.
 	sinceCheck int
 	lastCx     *logic.EvalContext
@@ -113,7 +59,7 @@ type abortState struct {
 
 func makeAbortState(request Request) abortState {
 	ctx := request.Context()
-	return abortState{ctx: ctx, done: ctx.Done(), traceBudget: request.traceBudget, effort: ledgercore.EffortFromContext(ctx)}
+	return abortState{ctx: ctx, done: ctx.Done(), effort: ledgercore.EffortFromContext(ctx)}
 }
 
 // abortError returns why the simulation must stop, or nil. It polls the context, so it is asked
@@ -130,33 +76,26 @@ func (a *abortState) abortError() error {
 		default:
 		}
 	}
-	if err := a.traceBudget.err(); err != nil {
-		a.aborted = err
-	}
 	return a.aborted
 }
 
-// stopped returns why the group that just ran was cut short, or nil: a program stopped part way,
-// or the trace budget exceeded. Unlike abortError it does not poll the context, so a group that
-// finished as the context ended keeps its result.
+// stopped returns why the group that just ran was cut short, or nil: a program stopped part way.
+// Unlike abortError it does not poll the context, so a group that finished as the context ended
+// keeps its result.
 func (a *abortState) stopped() error {
-	if a.aborted == nil {
-		a.aborted = a.traceBudget.err()
-	}
 	return a.aborted
 }
 
 // abortCheckCost is how much opcode budget a simulation uses between two checks of its request's
-// context and trace budget. Time per budget unit varies less than time per opcode (one
+// context. Time per budget unit varies less than time per opcode (one
 // ec_pairing_check can take milliseconds): 16,384 units take about a millisecond, cheap opcodes
 // and crypto alike, while checking before every opcode would slow the cheapest ones by a fifth.
 const abortCheckCost = 16384
 
-// checkAbort stops the program cx runs, from BeforeOpcode, once the simulation must stop: when the
-// request's context is done, or the trace budget, which the other simulations of the request
-// share, is exceeded. It looks every abortCheckCost of opcode budget.
+// checkAbort stops the program cx runs, from BeforeOpcode, once the request's context is done. It
+// looks every abortCheckCost of opcode budget.
 func (a *abortState) checkAbort(cx *logic.EvalContext) {
-	if a.aborted == nil && (a.done != nil || a.traceBudget != nil) {
+	if a.aborted == nil && a.done != nil {
 		cost := cx.Cost()
 		if cx != a.lastCx {
 			// another program, or an inner one, or back from one: count from here
@@ -173,36 +112,4 @@ func (a *abortState) checkAbort(cx *logic.EvalContext) {
 	if a.aborted != nil {
 		panic(logic.EvalAborted{Cause: a.aborted})
 	}
-}
-
-// chargeTrace counts n bytes of execution trace. An exceeded budget stops the program at its next
-// opcode: chargeTrace runs in AfterOpcode too, which may run while a panic unwinds.
-func (a *abortState) chargeTrace(n uint64) {
-	if a.traceBudget != nil && a.aborted == nil && a.traceBudget.charge(n) {
-		a.aborted = a.traceBudget.err()
-	}
-}
-
-// The estimated sizes of the parts of an execution trace, for the TraceBudget. Slices grow by
-// doubling, so their spare capacity is counted too, roughly, by doubling the fixed sizes.
-const (
-	opcodeTraceUnitBytes = 2 * uint64(unsafe.Sizeof(OpcodeTraceUnit{}))
-	tealValueBytes       = 2 * uint64(unsafe.Sizeof(basics.TealValue{}))
-	scratchChangeBytes   = 2 * uint64(unsafe.Sizeof(ScratchChange{}))
-	stateOperationBytes  = 2 * uint64(unsafe.Sizeof(StateOperation{}))
-)
-
-// changeBytes returns the estimated size of the stack, scratch and state changes recorded in o.
-func (o *OpcodeTraceUnit) changeBytes() uint64 {
-	var n uint64
-	for _, v := range o.StackAdded {
-		n += tealValueBytes + uint64(len(v.Bytes))
-	}
-	for _, c := range o.ScratchSlotChanges {
-		n += scratchChangeBytes + uint64(len(c.NewValue.Bytes))
-	}
-	for _, c := range o.StateChanges {
-		n += stateOperationBytes + uint64(len(c.Key)) + uint64(len(c.NewValue.Bytes))
-	}
-	return n
 }

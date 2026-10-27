@@ -186,15 +186,10 @@ func (v2 *Handlers) simulateOnce(ctx echo.Context, request simulation.Request) (
 	defer releaseSimulate(v2.SimulateLimiter)
 
 	effort := v2.startEffort(ctx)
-	budget := effortTraceBudget(v2.Node.Config().MaxAPISimulateTraceBytes, effort)
-	result, err = v2.Node.Simulate(request.WithContext(contextWithEffort(reqCtx, effort)).WithTraceBudget(budget))
-	effort.SetTraceBytes(budget.Used())
+	result, err = v2.Node.Simulate(request.WithContext(contextWithEffort(reqCtx, effort)))
 	if err != nil {
 		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
 			return simulation.Result{}, true, answerErr
-		}
-		if errors.Is(err, simulation.ErrTraceTooLarge) {
-			return simulation.Result{}, true, badRequest(ctx, err, err.Error(), v2.Log)
 		}
 	}
 	return result, false, err

@@ -96,10 +96,8 @@ type Request struct {
 	// protocolGaps is set by Simulate when Protocol applies, for the tracers.
 	protocolGaps *protocolGaps
 
-	// ctx and traceBudget stop the simulation early: when ctx is done, or when the execution trace
-	// outgrows traceBudget (abort.go). Non-standard fork feature.
-	ctx         context.Context
-	traceBudget *TraceBudget
+	// ctx stops the simulation early once it is done (abort.go). Non-standard fork feature.
+	ctx context.Context
 
 	hooks *testHooks
 }
@@ -225,6 +223,17 @@ func (r Request) Validate(developerAPI bool) error {
 				fmt.Errorf(
 					"extra budget %d > simulation extra budget limit %d",
 					r.ExtraOpcodeBudget, maxBudget),
+			},
+		}
+	}
+	// An execution trace grows with the budget it records, so a traced request keeps upstream's
+	// limit whatever the node allows. Non-standard fork feature.
+	if r.TraceConfig.Enable && r.ExtraOpcodeBudget > MaxExtraOpcodeBudget {
+		return InvalidRequestError{
+			SimulatorError{
+				fmt.Errorf(
+					"extra budget %d > %d, the limit for a request with an execution trace",
+					r.ExtraOpcodeBudget, MaxExtraOpcodeBudget),
 			},
 		}
 	}

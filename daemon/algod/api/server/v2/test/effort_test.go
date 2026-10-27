@@ -32,7 +32,6 @@ import (
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
-	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -56,7 +55,7 @@ func effortOf(t *testing.T, rec *httptest.ResponseRecorder) map[string]uint64 {
 		require.NoError(t, err)
 		out[m[1]] = n
 	}
-	for _, key := range []string{"opcodes", "lookups", "history", "scanned", "trace-bytes", "eval-us"} {
+	for _, key := range []string{"opcodes", "lookups", "history", "scanned", "eval-us"} {
 		require.Contains(t, out, key, values[0])
 	}
 	return out
@@ -124,7 +123,6 @@ func TestEffortHeaderSimulate(t *testing.T) {
 			require.Equal(t, consumed, effort["opcodes"])
 			require.Positive(t, effort["lookups"])
 			require.Zero(t, effort["history"])
-			require.Zero(t, effort["trace-bytes"])
 		}
 	})
 
@@ -142,28 +140,6 @@ func TestEffortHeaderSimulate(t *testing.T) {
 				require.Positive(t, effortOf(t, rec)["opcodes"], "the rounds that finished")
 			}
 			require.GreaterOrEqual(t, effortOf(t, rec)["eval-us"], uint64(900_000))
-		}
-	})
-
-	t.Run("trace too large", func(t *testing.T) {
-		t.Parallel()
-		request := single
-		request.ExecTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true}
-		for _, limit := range []uint64{1_000, 0} {
-			n := newRoundsNode(t, env, effortOn, func(c *config.Local) {
-				c.EnableDeveloperAPI = true
-				c.MaxAPISimulateTraceBytes = limit
-			})
-			rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), request)
-			require.NoError(t, err)
-			if limit == 0 {
-				// no limit: the trace is still measured
-				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-				require.Positive(t, effortOf(t, rec)["trace-bytes"])
-				continue
-			}
-			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
-			require.Greater(t, effortOf(t, rec)["trace-bytes"], limit)
 		}
 	})
 

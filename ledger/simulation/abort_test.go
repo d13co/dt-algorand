@@ -154,46 +154,6 @@ func testSimulateCanceledMidProgram(t *testing.T, deadline bool) {
 	})
 }
 
-// TestSimulateTraceBudget checks that a request stops once its execution trace outgrows its
-// TraceBudget, and that one under the budget is not affected.
-func TestSimulateTraceBudget(t *testing.T) {
-	partitiontest.PartitionTest(t)
-	t.Parallel()
-
-	bothModes(t, func(t *testing.T, parallel bool) {
-		env := simulationtesting.PrepareSimulatorTest(t)
-		defer env.Close()
-
-		groups := loopGroups(t, env, 2)
-		request := func(budget *simulation.TraceBudget) simulation.Request {
-			r := loopRequest(groups, parallel)
-			r.ExtraOpcodeBudget = 20_000
-			r.TraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true}
-			return r.WithTraceBudget(budget)
-		}
-
-		const limit = 64 << 10
-		budget := simulation.NewTraceBudget(limit)
-		_, err := simulation.MakeSimulator(env.Ledger, true).Simulate(request(budget))
-		require.ErrorIs(t, err, simulation.ErrTraceTooLarge)
-		require.ErrorContains(t, err, "over 65536 bytes")
-		// It stopped soon after the limit: a few opcodes, per group running at once.
-		require.Greater(t, budget.Used(), uint64(limit))
-		require.Less(t, budget.Used(), uint64(2*limit))
-
-		budget = simulation.NewTraceBudget(1 << 30)
-		result, err := simulation.MakeSimulator(env.Ledger, true).Simulate(request(budget))
-		require.NoError(t, err)
-		require.Contains(t, result.TxnGroups[0].FailureMessage, "dynamic cost budget exceeded")
-		require.NotEmpty(t, result.TxnGroups[0].Txns[0].Trace.ApprovalProgramTrace)
-		require.Greater(t, budget.Used(), uint64(limit))
-
-		// No budget, no limit.
-		require.Nil(t, simulation.NewTraceBudget(0))
-		require.Zero(t, simulation.NewTraceBudget(0).Used())
-	})
-}
-
 // TestSimulateFinishedAsCanceled checks that a simulation whose context ends after its last group
 // ran keeps its result.
 func TestSimulateFinishedAsCanceled(t *testing.T) {

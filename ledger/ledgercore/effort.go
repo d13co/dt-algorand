@@ -26,16 +26,14 @@ import (
 )
 
 // Effort counts the work one request does: opcodes run, ledger objects read, how many of those
-// reads the time travel history answered, entries scanned, and the size of the execution trace.
-// The counters are safe for concurrent use, and every method is a no-op on a nil *Effort, so code
+// reads the time travel history answered, and entries scanned. The counters are safe for concurrent use, and every method is a no-op on a nil *Effort, so code
 // that counts needs no check for whether anyone is counting.
 type Effort struct {
-	opcodes    atomic.Uint64
-	lookups    atomic.Uint64
-	history    atomic.Uint64
-	scanned    atomic.Uint64
-	traceBytes atomic.Uint64
-	start      time.Time
+	opcodes atomic.Uint64
+	lookups atomic.Uint64
+	history atomic.Uint64
+	scanned atomic.Uint64
+	start   time.Time
 }
 
 // NewEffort returns an Effort whose eval time starts now.
@@ -75,17 +73,10 @@ func (e *Effort) AddScanned(n uint64) {
 	}
 }
 
-// SetTraceBytes records the size of the request's execution trace.
-func (e *Effort) SetTraceBytes(n uint64) {
-	if e != nil {
-		e.traceBytes.Store(n)
-	}
-}
-
 // EffortCounts is a snapshot of an Effort.
 type EffortCounts struct {
-	Opcodes, Lookups, History, Scanned, TraceBytes uint64
-	Eval                                           time.Duration
+	Opcodes, Lookups, History, Scanned uint64
+	Eval                               time.Duration
 }
 
 // Counts returns the counters so far, and the time since the Effort was made. Zero for nil.
@@ -97,12 +88,11 @@ func (e *Effort) Counts() EffortCounts {
 	// counting still has History <= Lookups.
 	history := e.history.Load()
 	return EffortCounts{
-		Opcodes:    e.opcodes.Load(),
-		Lookups:    e.lookups.Load(),
-		History:    history,
-		Scanned:    e.scanned.Load(),
-		TraceBytes: e.traceBytes.Load(),
-		Eval:       time.Since(e.start),
+		Opcodes: e.opcodes.Load(),
+		Lookups: e.lookups.Load(),
+		History: history,
+		Scanned: e.scanned.Load(),
+		Eval:    time.Since(e.start),
 	}
 }
 
@@ -110,8 +100,8 @@ func (e *Effort) Counts() EffortCounts {
 // X-Algod-Effort response header.
 func (e *Effort) Header() string {
 	c := e.Counts()
-	return fmt.Sprintf("opcodes=%d, lookups=%d, history=%d, scanned=%d, trace-bytes=%d, eval-us=%d",
-		c.Opcodes, c.Lookups, c.History, c.Scanned, c.TraceBytes, c.Eval.Microseconds())
+	return fmt.Sprintf("opcodes=%d, lookups=%d, history=%d, scanned=%d, eval-us=%d",
+		c.Opcodes, c.Lookups, c.History, c.Scanned, c.Eval.Microseconds())
 }
 
 type effortKey struct{}

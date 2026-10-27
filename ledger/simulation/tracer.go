@@ -123,8 +123,7 @@ type evalTracer struct {
 	protocolGaps *protocolGaps
 	pendingGap   string
 
-	// abortState stops the simulation when the request is canceled or the trace grows too large
-	// (abort.go).
+	// abortState stops the simulation when the request is canceled (abort.go).
 	abortState
 
 	hooks *testHooks
@@ -415,7 +414,6 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 			txnTrace = tracer.execTraceStack[len(tracer.execTraceStack)-1]
 		}
 		*txnTrace.programTraceRef = append(*txnTrace.programTraceRef, tracer.makeOpcodeTraceUnit(cx))
-		tracer.chargeTrace(opcodeTraceUnitBytes)
 
 		latestOpcodeTraceUnit := &(*txnTrace.programTraceRef)[len(*txnTrace.programTraceRef)-1]
 		if tracer.result.ReturnStackChange() {
@@ -536,7 +534,6 @@ func (tracer *evalTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 		if tracer.result.ReturnStateChange() {
 			latestOpcodeTraceUnit.updateNewStateValues(cx)
 		}
-		tracer.chargeTrace(latestOpcodeTraceUnit.changeBytes())
 	}
 
 	if cx.RunMode() == logic.ModeApp {

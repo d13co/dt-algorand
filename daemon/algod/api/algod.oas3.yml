@@ -1115,13 +1115,8 @@
               "description": "The limits of simulate requests on this node, and the simulate features it allows.",
               "properties": {
                 "developer-api": {
-                  "description": "If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+                  "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
                   "type": "boolean"
-                },
-                "max-exec-trace-bytes": {
-                  "description": "The most bytes of execution trace one request may keep, across all its groups and rounds, as the node estimates them; a request that goes over fails with 400. 0 means no limit (node config MaxAPISimulateTraceBytes).",
-                  "type": "integer",
-                  "x-go-type": "uint64"
                 },
                 "max-extra-opcode-budget": {
                   "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
@@ -1155,7 +1150,6 @@
               },
               "required": [
                 "developer-api",
-                "max-exec-trace-bytes",
                 "max-extra-opcode-budget",
                 "max-rounds",
                 "max-txn-groups",
@@ -10250,13 +10244,8 @@
                   "description": "The limits of simulate requests on this node, and the simulate features it allows.",
                   "properties": {
                     "developer-api": {
-                      "description": "If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+                      "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
                       "type": "boolean"
-                    },
-                    "max-exec-trace-bytes": {
-                      "description": "The most bytes of execution trace one request may keep, across all its groups and rounds, as the node estimates them; a request that goes over fails with 400. 0 means no limit (node config MaxAPISimulateTraceBytes).",
-                      "type": "integer",
-                      "x-go-type": "uint64"
                     },
                     "max-extra-opcode-budget": {
                       "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
@@ -10290,7 +10279,6 @@
                   },
                   "required": [
                     "developer-api",
-                    "max-exec-trace-bytes",
                     "max-extra-opcode-budget",
                     "max-rounds",
                     "max-txn-groups",

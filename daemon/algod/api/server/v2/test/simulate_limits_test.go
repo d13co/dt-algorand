@@ -69,14 +69,13 @@ func TestSimulateLimits(t *testing.T) {
 	}{
 		{"defaults", func(*config.Local) {}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			MaxExecTraceBytes: 256 << 20, TimeLimitSeconds: 119,
+			TimeLimitSeconds: 119,
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
 			c.MaxAPISimulateRounds = 0
 			c.MaxAPISimulateExtraOpcodeBudget = 0
 			c.SimulateResourceLimitMultiplier = 0
-			c.MaxAPISimulateTraceBytes = 0
 			c.RestWriteTimeoutSeconds = 0
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 1, MaxRounds: 0, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
@@ -89,7 +88,7 @@ func TestSimulateLimits(t *testing.T) {
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: simulation.MaxSimulateGroups, MaxRounds: simulation.MaxSimulateRounds,
 			MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling, ResourceLimitMultiplier: simulation.MaxResourceLimitMultiplier,
-			MaxExecTraceBytes: 256 << 20, TimeLimitSeconds: 119,
+			TimeLimitSeconds: 119,
 		}},
 		{"set values and features", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 3
@@ -98,18 +97,17 @@ func TestSimulateLimits(t *testing.T) {
 			c.SimulateResourceLimitMultiplier = 8
 			c.EnableTimeTravel = true
 			c.EnableDeveloperAPI = true
-			c.MaxAPISimulateTraceBytes = 1 << 30
 			c.RestWriteTimeoutSeconds = 65
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 3, MaxRounds: 5, MaxExtraOpcodeBudget: 1_000, ResourceLimitMultiplier: 8,
-			MaxExecTraceBytes: 1 << 30, TimeLimitSeconds: 64,
-			TimeTravel: true, DeveloperApi: true,
+			TimeLimitSeconds: 64,
+			TimeTravel:       true, DeveloperApi: true,
 		}},
 		{"short write timeout", func(c *config.Local) {
 			c.RestWriteTimeoutSeconds = 1
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			MaxExecTraceBytes: 256 << 20, TimeLimitSeconds: 1,
+			TimeLimitSeconds: 1,
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

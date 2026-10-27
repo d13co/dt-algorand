@@ -36,7 +36,6 @@ func TestEffort(t *testing.T) {
 	none.Lookup(true)
 	none.History()
 	none.AddScanned(3)
-	none.SetTraceBytes(7)
 	require.Equal(t, EffortCounts{}, none.Counts())
 	require.Nil(t, EffortFromContext(context.Background()))
 
@@ -48,12 +47,10 @@ func TestEffort(t *testing.T) {
 	e.Lookup(false)
 	e.History()
 	e.AddScanned(9)
-	e.SetTraceBytes(100)
-	e.SetTraceBytes(4096)
 	c := e.Counts()
 	c.Eval = 0
-	require.Equal(t, EffortCounts{Opcodes: 720, Lookups: 3, History: 2, Scanned: 9, TraceBytes: 4096}, c)
-	require.Regexp(t, regexp.MustCompile(`^opcodes=720, lookups=3, history=2, scanned=9, trace-bytes=4096, eval-us=\d+$`), e.Header())
+	require.Equal(t, EffortCounts{Opcodes: 720, Lookups: 3, History: 2, Scanned: 9}, c)
+	require.Regexp(t, regexp.MustCompile(`^opcodes=720, lookups=3, history=2, scanned=9, eval-us=\d+$`), e.Header())
 
 	require.Same(t, e, EffortFromContext(ContextWithEffort(context.Background(), e)))
 }

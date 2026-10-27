@@ -67,7 +67,7 @@ The budget is time on the node's CPU. As a rough guide (one core of a desktop CP
 
 A group stops when the client goes away or the request reaches the node's time limit (`RestWriteTimeoutSeconds`, default 120, less a second), so raising the limit beyond what runs in that time also needs a longer write timeout.
 
-Execution traces (`exec-trace-config`, only with `EnableDeveloperAPI`) record every opcode run, at about 112 bytes each before any stack, scratch or state data, and stack tracing copies every byte value pushed. At 320,000,000 that is tens of GB for one group, and even at 320,000 a stack trace of 4 KB values can reach a GB. `MaxAPISimulateTraceBytes` (node config, default 256 MiB, 0 for no limit) caps the trace one request keeps, across all of its groups and rounds: the node counts an estimate of each recorded opcode and its values, and stops the request with a 400 `execution trace too large` once it goes over. Converting and encoding the response takes a few times the counted bytes, so size it to the memory you can give each of `SimulateParallelism` requests at once.
+Execution traces (`exec-trace-config`, only with `EnableDeveloperAPI`) record every opcode run, at about 112 bytes each before any stack, scratch or state data, and stack tracing copies every byte value pushed. At 320,000,000 that is tens of GB for one group, and even at 320,000 a stack trace of 4 KB values can reach a GB. A traced request therefore keeps upstream's limits: it may not list `rounds`, and may ask for at most 320,000 `extra-opcode-budget` whatever `MaxAPISimulateExtraOpcodeBudget` allows; either is a 400. It may hold up to `MaxAPISimulateGroups` groups and use one `round`, a past round from the time travel history included. The worst case is the groups times upstream's largest trace of one group: about 16 × 36 MB plus the values recorded, at the default 16 groups. Don't enable `EnableDeveloperAPI` on a node others can reach.
 
 ### Several transaction groups in one simulation
 
@@ -81,7 +81,7 @@ With `parallel-groups: true`, every group is simulated alone against the state a
 
 `rounds` lists the rounds to simulate the same request at, each meaning what `round` means. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a later single-round request uses. The response then has `round-results`, one entry per listed round in request order, each with its `last-round` and either the `txn-groups` and `initial-states` of that round's simulation or an `error`. The top-level `last-round` is 0 and `txn-groups` is empty; `version`, `eval-overrides` and `exec-trace-config` come from the first entry that was simulated, or from the request when none was. A round listed several times is simulated once, but still counts against the limit below. Within each round, the groups run as described above, sequentially or with `parallel-groups`. With time travel any round since genesis can be listed; otherwise only the last `MaxAcctLookback` rounds are available, and older ones get an `error` entry.
 
-Problems with the request as a whole are a 400 before anything runs: a non-zero `round` with `rounds` (`round: 0` is the same as no `round`), more entries than `MaxAPISimulateRounds`, duplicates included (node config, default 16; 0 disables `rounds`; values above 256 count as 256, with a startup warning), a `format` other than json or msgpack, and everything a single-round request rejects whatever its round (`fix-signers` without `allow-empty-signatures`, too many groups, too much extra budget, exec traces without `EnableDeveloperAPI`, a StateProof transaction, both validity window modes, `rewrite-validity-window` without `allow-empty-signatures`). `skip-validity-window` or `rewrite-validity-window` without `rounds` is a 400 too. What depends on the round is reported in that round's entry instead, including the cases where a single-round request answers 400 or 500: a round the node doesn't have, or a group that is invalid under that round's protocol.
+Problems with the request as a whole are a 400 before anything runs: a non-zero `round` with `rounds` (`round: 0` is the same as no `round`), more entries than `MaxAPISimulateRounds`, duplicates included (node config, default 16; 0 disables `rounds`; values above 256 count as 256, with a startup warning), a `format` other than json or msgpack, an enabled `exec-trace-config`, and everything a single-round request rejects whatever its round (`fix-signers` without `allow-empty-signatures`, too many groups, too much extra budget, exec traces without `EnableDeveloperAPI`, a StateProof transaction, both validity window modes, `rewrite-validity-window` without `allow-empty-signatures`). `skip-validity-window` or `rewrite-validity-window` without `rounds` is a 400 too. What depends on the round is reported in that round's entry instead, including the cases where a single-round request answers 400 or 500: a round the node doesn't have, or a group that is invalid under that round's protocol.
 
 A request runs its rounds one after another, in the one slot of `SimulateParallelism` it was admitted with (see "Overload limits" below); `SimulateRoundsParallelism` has no effect. Parallel groups inside a round also take the node's per-CPU group slots. A request can do up to rounds × groups simulations, each group with up to `MaxAPISimulateExtraOpcodeBudget` of extra opcode budget, all within the node's time limit. `goal clerk simulate` has no flag for `rounds` yet.
 
@@ -97,7 +97,7 @@ Every simulate request, with or without `rounds`, is bounded in time and stops w
 
 #### Effort header
 
-With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, trace-bytes=0, eval-us=5310`. Readers should ignore keys they don't know.
+With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, eval-us=5310`. Readers should ignore keys they don't know.
 
 | Key | Counts |
 |---|---|
@@ -105,10 +105,9 @@ With `EnableEffortHeader` (default off), simulate requests, the versions endpoin
 | `lookups` | Ledger objects read: accounts, holdings, apps, boxes, headers, totals, creators. An evaluator reads an object once per simulated block; with `parallel-groups` each group has its own evaluator, so an object shared by groups counts once per group. A delta counts one, plus the reads of a rebuild. |
 | `history` | The lookups the time travel history answered: a point read (an account, a holding, a box) or a box listing when the trackers no longer hold its round, and every read of an account's full state or its asset or app listings at a past round, which only the history serves. At most `lookups`. |
 | `scanned` | Entries read by scans: versions read by the versions endpoints, and history entries iterated by listings the history answered (assets, apps, boxes). |
-| `trace-bytes` | The execution trace's estimated size, as `MaxAPISimulateTraceBytes` counts it; over the limit on a 400 for a trace too large. |
 | `eval-us` | Microseconds from the start of the work (after admission) to the answer. For diagnostics. |
 
-Every answer written after the work started carries it: 200 (also a `rounds` answer at the time limit), 504 at the time limit, 400 for a trace too large, and the errors found during the work (a simulate request the simulator rejects, a delta that isn't stored, a past-round read that fails), with what was counted so far. 503s never carry it (the node was too busy to start), nor do requests refused before the work started (most invalid parameters), nor reads at the latest round. A request whose client went away writes nothing. Enable it only behind a proxy that removes it before answering clients.
+Every answer written after the work started carries it: 200 (also a `rounds` answer at the time limit), 504 at the time limit, and the errors found during the work (a simulate request the simulator rejects, a delta that isn't stored, a past-round read that fails), with what was counted so far. 503s never carry it (the node was too busy to start), nor do requests refused before the work started (most invalid parameters), nor reads at the latest round. A request whose client went away writes nothing. Enable it only behind a proxy that removes it before answering clients.
 
 #### Validity window modes
 
@@ -151,7 +150,7 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 `GET /v2/transactions/simulate/limits` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients what this node's simulate accepts, with each value as the handlers clamp it:
 
 ```json
-{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "max-exec-trace-bytes": 268435456, "time-limit-seconds": 119, "time-travel": true, "developer-api": false }
+{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-limit-seconds": 119, "time-travel": true, "developer-api": false }
 ```
 
 | field | node config | meaning |
@@ -160,12 +159,11 @@ Notes are about the real protocol, not version numbers (FNet's fnet1 already had
 | `max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
 | `max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
 | `resource-limit-multiplier` | `SimulateResourceLimitMultiplier` | factor on the unnamed-resource limits; 1: the consensus limits; a config of 0 counts as 1 |
-| `max-exec-trace-bytes` | `MaxAPISimulateTraceBytes` | most bytes of execution trace one request may keep, across its groups and rounds, as the node estimates them; over it the request fails with 400; 0: no limit |
 | `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest a request may run: the write timeout less a second (none below 2 s); 0: no limit |
 | `time-travel` | `EnableTimeTravel` | `round` and `rounds` reach back to genesis, not only `MaxAcctLookback` rounds |
-| `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a disabled `exec-trace-config` is accepted either way |
+| `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a traced request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
 
-The response holds the values after these rules, so `max-rounds`, `max-exec-trace-bytes` and `time-limit-seconds` are the only fields that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
+The response holds the values after these rules, so `max-rounds` and `time-limit-seconds` are the only fields that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 
 Two limits are not in the response, because they don't come from the node's config:
 

@@ -33,6 +33,7 @@ import (
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/simulation"
@@ -192,42 +193,76 @@ func TestSimulateBusy(t *testing.T) {
 	}
 }
 
-// TestSimulateTraceTooLarge checks that a request whose execution trace outgrows
-// MaxAPISimulateTraceBytes fails with 400, with or without rounds.
-func TestSimulateTraceTooLarge(t *testing.T) {
+// TestSimulateTracedLimits checks the limits of a request with an execution trace: no rounds, and at
+// most upstream's extra opcode budget whatever the node allows. Several groups and a past round,
+// read from the time travel history, stay allowed.
+func TestSimulateTracedLimits(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	env := simulationtesting.PrepareSimulatorTest(t)
-	// the subtests run in parallel, after this function returns
-	t.Cleanup(env.Close)
+	env := simulationtesting.PrepareSimulatorTest(t, func(c *config.Local) {
+		c.Archival = false
+		c.EnableTimeTravel = true
+	})
+	defer env.Close()
 	sender := env.Accounts[0]
-	env.TransferAlgos(sender.Addr, sender.Addr, 0)
-	latest := env.Ledger.Latest()
-	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
-	single.ExecTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true}
-	rounds := single
-	rounds.Rounds = []basics.Round{latest - 1, latest}
-
-	for name, request := range map[string]v2.PreEncodedSimulateRequest{"single round": single, "rounds": rounds} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			for _, limit := range []uint64{1_000, 0} {
-				n := newRoundsNode(t, env, func(c *config.Local) {
-					c.EnableDeveloperAPI = true
-					c.MaxAPISimulateTraceBytes = limit
-				})
-				rec := postSimulate(t, newRoundsRouter(t, n), encodeSimulateRequest(t, request, "json"), "json")
-				if limit == 0 {
-					// no limit
-					require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-					continue
-				}
-				require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
-				require.Contains(t, rec.Body.String(), "execution trace too large: over 1000 bytes")
-			}
-		})
+	for range 10 {
+		env.TransferAlgos(sender.Addr, sender.Addr, 0)
 	}
+	latest := env.Ledger.Latest()
+	// older than the MaxAcctLookback rounds a node without time travel keeps
+	past := latest - 8
+
+	n := newRoundsNode(t, env, func(c *config.Local) {
+		c.EnableDeveloperAPI = true
+		c.EnableTimeTravel = true
+		c.MaxAPISimulateExtraOpcodeBudget = 1_000_000
+	})
+	router := newRoundsRouter(t, n)
+	traced := v2.PreEncodedSimulateRequest{
+		TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
+			{Txns: []transactions.SignedTxn{roundLoggerCall(env, sender, 1)}},
+			{Txns: []transactions.SignedTxn{roundLoggerCall(env, sender, 2)}},
+			{Txns: []transactions.SignedTxn{roundLoggerCall(env, sender, 3)}},
+		},
+		ExecTraceConfig:   simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true},
+		ExtraOpcodeBudget: simulation.MaxExtraOpcodeBudget,
+		Round:             past,
+	}
+	post := func(request v2.PreEncodedSimulateRequest) *httptest.ResponseRecorder {
+		return postSimulate(t, router, encodeSimulateRequest(t, request, "json"), "json")
+	}
+
+	// allowed: several groups, upstream's extra budget, a past round
+	rec := post(traced)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	response := decodeSimulateResponse(t, rec, "json")
+	require.Equal(t, past, response.LastRound)
+	require.Len(t, response.TxnGroups, 3)
+	for g, group := range response.TxnGroups {
+		requireRoundLogged(t, group, past)
+		require.NotNil(t, group.Txns[0].TransactionTrace, "group %d", g)
+	}
+
+	// over upstream's extra budget: refused when traced, though the node allows it otherwise
+	over := traced
+	over.ExtraOpcodeBudget = simulation.MaxExtraOpcodeBudget + 1
+	rec = post(over)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "320000, the limit for a request with an execution trace")
+	over.ExecTraceConfig = simulation.ExecTraceConfig{}
+	rec = post(over)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// rounds
+	rounds := traced
+	rounds.Round = 0
+	rounds.Rounds = []basics.Round{past, latest}
+	calls := n.calls.Load()
+	rec = post(rounds)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "exec-trace-config cannot be used with rounds")
+	require.Equal(t, calls, n.calls.Load(), "refused before any round is simulated")
 }
 
 // deltaLedger serves state deltas the way a time travel ledger rebuilding an old round does:
