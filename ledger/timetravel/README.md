@@ -97,7 +97,7 @@ Every simulate request, with or without `rounds`, is bounded in time and stops w
 
 #### Effort header
 
-With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, eval-us=5310`. Readers should ignore keys they don't know.
+With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, response-bytes=48213, eval-us=5310`. Readers should ignore keys they don't know.
 
 | Key | Counts |
 |---|---|
@@ -105,6 +105,7 @@ With `EnableEffortHeader` (default off), simulate requests, the versions endpoin
 | `lookups` | Ledger objects read: accounts, holdings, apps, boxes, headers, totals, creators. An evaluator reads an object once per simulated block; with `parallel-groups` each group has its own evaluator, so an object shared by groups counts once per group. A delta counts one, plus the reads of a rebuild. |
 | `history` | The lookups the time travel history answered: a point read (an account, a holding, a box) or a box listing when the trackers no longer hold its round, and every read of an account's full state or its asset or app listings at a past round, which only the history serves. At most `lookups`. |
 | `scanned` | Entries read by scans: versions read by the versions endpoints, and history entries iterated by listings the history answered (assets, apps, boxes). |
+| `response-bytes` | The answer's encoded size before compression (algod gzips for clients that accept it, so `Content-Length` doesn't tell): traces, logs and inner transactions make it grow. Simulate, `/v2/deltas/{round}` and the versions endpoints report it. Reads at a past round report 0, since they return single objects billed on `lookups`; error answers (400, 504) report 0 too, since they aren't the work's output. |
 | `eval-us` | Microseconds from the start of the work (after admission) to the answer. For diagnostics. |
 
 Every answer written after the work started carries it: 200 (also a `rounds` answer at the time limit), 504 at the time limit, and the errors found during the work (a simulate request the simulator rejects, a delta that isn't stored, a past-round read that fails), with what was counted so far. 503s never carry it (the node was too busy to start), nor do requests refused before the work started (most invalid parameters), nor reads at the latest round. A request whose client went away writes nothing. Enable it only behind a proxy that removes it before answering clients.

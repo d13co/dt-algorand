@@ -32,6 +32,8 @@ import (
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -55,7 +57,7 @@ func effortOf(t *testing.T, rec *httptest.ResponseRecorder) map[string]uint64 {
 		require.NoError(t, err)
 		out[m[1]] = n
 	}
-	for _, key := range []string{"opcodes", "lookups", "history", "scanned", "eval-us"} {
+	for _, key := range []string{"opcodes", "lookups", "history", "scanned", "response-bytes", "eval-us"} {
 		require.Contains(t, out, key, values[0])
 	}
 	return out
@@ -190,7 +192,7 @@ func TestEffortHeaderReads(t *testing.T) {
 		return handler(deltaLedger{LedgerForAPI: env.Ledger}, effortOn).GetLedgerStateDelta(c, round, model.GetLedgerStateDeltaParams{})
 	})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	require.NotNil(t, effortOf(t, rec))
+	require.Equal(t, uint64(rec.Body.Len()), effortOf(t, rec)["response-bytes"])
 	rec = serve(func(c echo.Context) error {
 		return handler(deltaLedger{LedgerForAPI: env.Ledger, busy: true}, effortOn).GetLedgerStateDelta(c, round, model.GetLedgerStateDeltaParams{})
 	})
@@ -211,6 +213,7 @@ func TestEffortHeaderReads(t *testing.T) {
 	effort := effortOf(t, rec)
 	require.Equal(t, uint64(1), effort["lookups"])
 	require.Zero(t, effort["history"], "the trackers still hold the round")
+	require.Zero(t, effort["response-bytes"], "single objects are billed on lookups")
 	rec = serve(func(c echo.Context) error {
 		return handler(env.Ledger, effortOn).AccountInformation(c, addr, model.AccountInformationParams{Exclude: &exclude})
 	})
@@ -229,4 +232,61 @@ func TestEffortHeaderReads(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Nil(t, effortOf(t, rec), "latest round")
+}
+
+// TestEffortHeaderResponseBytes checks that response-bytes is the size of the answer as written,
+// before compression: for simulate in both formats, with an execution trace and without, and for a
+// versions endpoint. A 504 reports 0.
+func TestEffortHeaderResponseBytes(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t)
+	defer env.Close()
+	sender := env.Accounts[0]
+	env.TransferAlgos(sender.Addr, sender.Addr, 0)
+
+	request := oneGroupRequest(roundLoggerCall(env, sender, 1))
+	traced := request
+	traced.ExecTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true}
+	router := newRoundsRouter(t, newRoundsNode(t, env, effortOn, func(c *config.Local) { c.EnableDeveloperAPI = true }))
+	for _, format := range []string{"json", "msgpack"} {
+		var plainBytes uint64
+		for _, r := range []v2.PreEncodedSimulateRequest{request, traced} {
+			rec := postSimulate(t, router, encodeSimulateRequest(t, r, format), format)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Empty(t, rec.Header().Get("Content-Encoding"))
+			got := effortOf(t, rec)["response-bytes"]
+			require.Equal(t, uint64(rec.Body.Len()), got, format)
+			if !r.ExecTraceConfig.Enable {
+				plainBytes = got
+				continue
+			}
+			require.Greater(t, got, plainBytes, "%s: the trace is part of the answer", format)
+		}
+	}
+
+	// a versions endpoint
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	cfg.EnableEffortHeader = true
+	vl := &versionsLedger{mockLedger: &mockLedger{latest: 1000}}
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{{Round: 10, Timestamp: 1, Account: &ledger.AccountVersion{Deleted: true}}}}
+	h := v2.Handlers{Node: makeMockNodeWithConfig(vl, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.TestingLog(t), Shutdown: make(chan struct{})}
+	for _, target := range []string{"/", "/?pretty"} {
+		rec := httptest.NewRecorder()
+		ctx := echo.New().NewContext(httptest.NewRequest(http.MethodGet, target, nil), rec)
+		require.NoError(t, h.AccountVersions(ctx, sender.Addr, model.AccountVersionsParams{}))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Equal(t, uint64(rec.Body.Len()), effortOf(t, rec)["response-bytes"], target)
+	}
+
+	// 504: the error isn't the work's output
+	n := newRoundsNode(t, env, effortOn, func(c *config.Local) { c.RestWriteTimeoutSeconds = 1 })
+	n.slowAt = map[basics.Round]bool{0: true}
+	handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: semaphore.NewWeighted(1)}
+	rec, err := simulateRoundsDirect(context.Background(), t, handler, request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
+	require.Zero(t, effortOf(t, rec)["response-bytes"])
 }

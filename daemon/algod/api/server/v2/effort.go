@@ -20,7 +20,9 @@ package v2
 // own file to keep upstream merges of handlers.go clean.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -55,6 +57,30 @@ func (v2 *Handlers) startEffort(ctx echo.Context) *ledgercore.Effort {
 }
 
 const effortKey = "dtalgorand.effort"
+
+// writeEncoded writes data, an encoded answer of type contentType, with status 200. Its size counts
+// as the request's response-bytes, if it has an Effort: the header is set when the status is
+// written, after this.
+func writeEncoded(ctx echo.Context, contentType string, data []byte) error {
+	if e, ok := ctx.Get(effortKey).(*ledgercore.Effort); ok {
+		e.SetResponseBytes(uint64(len(data)))
+	}
+	return ctx.Blob(http.StatusOK, contentType, data)
+}
+
+// writeJSON writes v with status 200 as ctx.JSON does, encoded first so that writeEncoded counts its
+// size.
+func writeJSON(ctx echo.Context, v any) error {
+	var body bytes.Buffer
+	enc := json.NewEncoder(&body)
+	if _, pretty := ctx.QueryParams()["pretty"]; ctx.Echo().Debug || pretty {
+		enc.SetIndent("", "  ")
+	}
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	return writeEncoded(ctx, echo.MIMEApplicationJSON, body.Bytes())
+}
 
 // counter is a ledger that can count its lookups in an Effort (ledger.Ledger and data.Ledger).
 type counter interface {

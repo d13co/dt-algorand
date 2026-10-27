@@ -631,10 +631,10 @@ type Local struct {
 	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=). It is
 	// an RFC 9651 dictionary of integers: opcodes (app and logicsig budget consumed), lookups (ledger
 	// objects read), history (of those, read from the time travel history), scanned (entries read by
-	// scans) and eval-us (time spent). Answers given before any work (503 when busy, most 400s) don't
-	// carry it; a 400 from the simulator's checks of a request without rounds carries zero counts. Meant
-	// for a load balancer that bills on it and removes it before answering clients. Non-standard fork
-	// feature.
+	// scans), response-bytes (the answer's size before compression) and eval-us (time spent). Answers
+	// given before any work (503 when busy, most 400s) don't carry it; a 400 from the simulator's checks
+	// of a request without rounds carries zero counts. Meant for a load balancer that bills on it and
+	// removes it before answering clients. Non-standard fork feature.
 	EnableEffortHeader bool `version[39]:"false"`
 
 	// DisableLedgerLRUCache disables LRU caches in ledger.

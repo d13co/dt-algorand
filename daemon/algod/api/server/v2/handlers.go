@@ -1665,7 +1665,7 @@ func (v2 *Handlers) writeSimulateResponse(ctx echo.Context, handle codec.Handle,
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}
 
-	return ctx.Blob(http.StatusOK, contentType, responseData)
+	return writeEncoded(ctx, contentType, responseData)
 }
 
 // UnsetSyncRound removes the sync round restriction from the ledger.
@@ -1727,7 +1727,7 @@ func (v2 *Handlers) GetLedgerStateDelta(ctx echo.Context, round basics.Round, pa
 	if err != nil {
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}
-	return ctx.Blob(http.StatusOK, contentType, data)
+	return writeEncoded(ctx, contentType, data)
 }
 
 // TransactionParams returns the suggested parameters for constructing a new transaction.

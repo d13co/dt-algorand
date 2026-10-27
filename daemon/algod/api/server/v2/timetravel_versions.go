@@ -19,7 +19,6 @@ package v2
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -295,7 +294,7 @@ func (v2 *Handlers) accountVersionsResponse(ctx echo.Context, addr basics.Addres
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.AccountVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.AccountVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // AccountVersionToModel is the REST form of a version of an account's
@@ -439,7 +438,7 @@ func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, p
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.AssetVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.AssetVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // ApplicationVersions lists the versions of an application's params.
@@ -461,7 +460,7 @@ func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.A
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.ApplicationVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.ApplicationVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // ApplicationBoxVersions lists the versions of an application's box.
@@ -491,7 +490,7 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.BoxVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.BoxVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // BoxesVersionToModel is the REST form of a version from the ledger's
@@ -533,5 +532,5 @@ func (v2 *Handlers) ApplicationBoxesVersions(ctx echo.Context, applicationID bas
 	for _, v := range page.Versions {
 		out = append(out, BoxesVersionToModel(v, r.Values))
 	}
-	return ctx.JSON(http.StatusOK, model.BoxesVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.BoxesVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
