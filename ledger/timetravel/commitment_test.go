@@ -166,7 +166,7 @@ func TestCommitmentLayoutIndependent(t *testing.T) {
 		func() {
 			defer func(m uint64) { minSplitBytes = m }(minSplitBytes)
 			minSplitBytes = 0 // split as finely as it can
-			parts, err := st.keySplits(st.db.NewSnapshot(), []byte{pfxCheckpoint}, []byte{pfxCheckpoint + 1}, 40)
+			parts, err := st.keySplits(st.db.NewSnapshot(), []byte{pfxRecord}, []byte{pfxRecord + 1}, 40)
 			require.NoError(t, err)
 			require.Len(t, parts, 39, name)
 			require.Equal(t, want, commitOf(t, st, upTo, 5, st.keySplits), name)
@@ -178,7 +178,7 @@ func TestCommitmentLayoutIndependent(t *testing.T) {
 	removed, err := noDedup.RemoveNoops(context.Background(), nil)
 	require.NoError(t, err)
 	require.Positive(t, removed)
-	require.NoError(t, noDedup.CompactCheckpoints(context.Background()))
+	require.NoError(t, noDedup.CompactRecords(context.Background()))
 	require.Equal(t, want, commitOf(t, noDedup, upTo, 4, randomSplits(noDedup, 9, 20)))
 
 	// nor does the box index or the meta records
@@ -201,15 +201,15 @@ func TestCommitmentDetectsChanges(t *testing.T) {
 
 	obj := KvKey("k007")
 	for name, edit := range map[string]func(*pebble.Batch){
-		"value":        func(b *pebble.Batch) { b.Set(verKey(pfxCheckpoint, obj, 50), []byte{recFull, 99}, nil) },
-		"extra object": func(b *pebble.Batch) { b.Set(verKey(pfxCheckpoint, KvKey("planted"), 50), []byte{recFull, 1}, nil) },
+		"value":        func(b *pebble.Batch) { b.Set(verKey(pfxRecord, obj, 50), []byte{recFull, 99}, nil) },
+		"extra object": func(b *pebble.Batch) { b.Set(verKey(pfxRecord, KvKey("planted"), 50), []byte{recFull, 1}, nil) },
 		"header": func(b *pebble.Batch) {
 			b.Set(binary.BigEndian.AppendUint64([]byte{pfxHeader}, 40), []byte("forged"), nil)
 		},
 		"expired stake":  func(b *pebble.Batch) { b.Set(binary.BigEndian.AppendUint64([]byte{pfxExpired}, 40), []byte{1}, nil) },
 		"missing header": func(b *pebble.Batch) { b.Delete(binary.BigEndian.AppendUint64([]byte{pfxHeader}, 40), nil) },
 		"missing version": func(b *pebble.Batch) {
-			b.DeleteRange(append([]byte{pfxCheckpoint}, obj...), prefixEnd(append([]byte{pfxCheckpoint}, obj...)), nil)
+			b.DeleteRange(append([]byte{pfxRecord}, obj...), prefixEnd(append([]byte{pfxRecord}, obj...)), nil)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -252,10 +252,6 @@ func TestCommitmentRefuses(t *testing.T) {
 	st := buildCommitStore(t, rs, 20, Options{}, 0)
 	_, err := st.Commitment(context.Background(), 21, CommitmentOptions{Workers: 1})
 	require.ErrorContains(t, err, "last round is 20")
-
-	patched := buildCommitStore(t, rs, 20, Options{CheckpointInterval: 4}, 0)
-	_, err = patched.Commitment(context.Background(), 20, CommitmentOptions{Workers: 1})
-	require.ErrorContains(t, err, "N = 1")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -311,7 +307,7 @@ func TestCommitmentStrict(t *testing.T) {
 
 	obj := KvKey("k007")
 	var lastVer uint64
-	vit, err := clean.db.NewIter(&pebble.IterOptions{LowerBound: append([]byte{pfxCheckpoint}, obj...), UpperBound: prefixEnd(append([]byte{pfxCheckpoint}, obj...))})
+	vit, err := clean.db.NewIter(&pebble.IterOptions{LowerBound: append([]byte{pfxRecord}, obj...), UpperBound: prefixEnd(append([]byte{pfxRecord}, obj...))})
 	require.NoError(t, err)
 	for valid := vit.Last(); valid; valid = false {
 		k := vit.Key()
@@ -330,14 +326,14 @@ func TestCommitmentStrict(t *testing.T) {
 		// version: Get(obj) would find it and read obj as deleted
 		"phantom tombstone": {edit: func(b *pebble.Batch) {
 			phantom := append(binary.BigEndian.AppendUint64(slices.Clone(obj), lastVer), 'z')
-			b.Set(verKey(pfxCheckpoint, phantom, 1), []byte{recDeleted}, nil)
+			b.Set(verKey(pfxRecord, phantom, 1), []byte{recDeleted}, nil)
 		}, upTo: 100, plain: "follows", strict: "not an object key"},
 		"record after the round": {edit: func(b *pebble.Batch) {
-			b.Set(verKey(pfxCheckpoint, obj, 105), []byte{recFull, 0xee}, nil)
+			b.Set(verKey(pfxRecord, obj, 105), []byte{recFull, 0xee}, nil)
 		}, upTo: 100, strict: "after round 100"},
 		"header after the round": {edit: func(b *pebble.Batch) {}, upTo: 90, strict: "not of its history up to round 90"},
-		"patch record": {edit: func(b *pebble.Batch) {
-			b.Set(verKey(pfxPatch, KvKey("phantom"), 5), []byte{recFull, 1}, nil)
+		"patch record": {edit: func(b *pebble.Batch) { // of the removed layouts with a checkpoint interval
+			b.Set(verKey('p', KvKey("phantom"), 5), []byte{recFull, 1}, nil)
 		}, upTo: 100, strict: "not of its history"},
 		"foreign key": {edit: func(b *pebble.Batch) { b.Set([]byte("zzz"), nil, nil) }, upTo: 100, strict: "not of its history"},
 		"meta record": {edit: func(b *pebble.Batch) { b.Set([]byte("mq"), nil, nil) }, upTo: 100, strict: "unknown meta record"},

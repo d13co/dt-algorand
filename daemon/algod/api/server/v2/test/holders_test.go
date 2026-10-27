@@ -44,10 +44,8 @@ import (
 // holdersLedger records the last holders lookup and answers with page.
 type holdersLedger struct {
 	*mockLedger
-	state timetravel.HoldersState
-	n     uint64
-	page  ledger.AssetHoldersPage
-	err   error
+	page ledger.AssetHoldersPage
+	err  error
 
 	calls int
 	rnd   basics.Round
@@ -55,8 +53,6 @@ type holdersLedger struct {
 	after *basics.Address
 	limit uint64
 }
-
-func (l *holdersLedger) HoldersIndexState() (timetravel.HoldersState, uint64) { return l.state, l.n }
 
 func (l *holdersLedger) AssetHoldersAt(rnd basics.Round, aidx basics.AssetIndex, after *basics.Address, limit uint64) (ledger.AssetHoldersPage, error) {
 	l.calls++
@@ -70,7 +66,7 @@ func TestGetAssetHolders(t *testing.T) {
 	a, b := ledgertesting.RandomAddress(), ledgertesting.RandomAddress()
 	cfg := config.GetDefaultLocal()
 	cfg.EnableTimeTravel, cfg.TimeTravelHoldersIndex = true, true
-	hl := &holdersLedger{mockLedger: &mockLedger{latest: 1000}, state: timetravel.HoldersComplete, n: 1}
+	hl := &holdersLedger{mockLedger: &mockLedger{latest: 1000}}
 	get := func(lgr v2.LedgerForAPI, cfg config.Local, params model.GetAssetHoldersParams) (int, string, model.AssetHoldersResponse) {
 		h := v2.Handlers{Node: makeMockNodeWithConfig(lgr, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
 		rec := httptest.NewRecorder()
@@ -124,14 +120,12 @@ func TestGetAssetHolders(t *testing.T) {
 		params model.GetAssetHoldersParams
 		cfg    func(*config.Local)
 		lgr    v2.LedgerForAPI
-		n      uint64
 		code   int
 		msg    string
 	}{
 		"option off":           {cfg: func(c *config.Local) { c.TimeTravelHoldersIndex = false }, code: http.StatusBadRequest, msg: "require EnableTimeTravel and TimeTravelHoldersIndex"},
 		"time travel off":      {cfg: func(c *config.Local) { c.EnableTimeTravel = false }, code: http.StatusBadRequest, msg: "TimeTravelHoldersIndex"},
 		"ledger without index": {lgr: hl.mockLedger, code: http.StatusBadRequest, msg: "TimeTravelHoldersIndex"},
-		"N=3":                  {n: 3, code: http.StatusBadRequest, msg: "N = 1"},
 		"limit 0":              {params: model.GetAssetHoldersParams{Limit: u64(0)}, code: http.StatusBadRequest, msg: "limit"},
 		"limit too big":        {params: model.GetAssetHoldersParams{Limit: u64(v2.MaxHolders + 1)}, code: http.StatusBadRequest, msg: "limit"},
 		"bad next":             {params: model.GetAssetHoldersParams{Next: str("nope")}, code: http.StatusBadRequest, msg: "next"},
@@ -145,17 +139,12 @@ func TestGetAssetHolders(t *testing.T) {
 		if lgr == nil {
 			lgr = hl
 		}
-		hl.n = 1
-		if tc.n != 0 {
-			hl.n = tc.n
-		}
 		calls := hl.calls
 		code, body, _ := get(lgr, c, tc.params)
 		require.Equal(t, tc.code, code, name)
 		require.Contains(t, body, tc.msg, name)
 		require.Equal(t, calls, hl.calls, "%s: rejected before the lookup", name)
 	}
-	hl.n = 1
 
 	for _, st := range []timetravel.HoldersState{timetravel.HoldersNone, timetravel.HoldersStale} {
 		// as the store's AssetHolders fails, wrapped by the ledger or not

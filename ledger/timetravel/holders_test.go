@@ -371,12 +371,12 @@ func TestStoreHoldersIndex(t *testing.T) {
 	}
 }
 
-// TestStoreHoldersIndexOption checks that a new N = 1 store opened with
+// TestStoreHoldersIndexOption checks that a new store opened with
 // Options.HoldersIndex has the index from its first round, which AddRound
 // writes in that round's batch, whatever that round, with and without the
 // dedup cache, and keeps it after a reopen without the option; that a first
 // round that fails to commit leaves no index and its retry starts it; and that
-// the option starts nothing on a store with another N or an existing store.
+// the option starts nothing on an existing store.
 func TestStoreHoldersIndexOption(t *testing.T) {
 	partitiontest.PartitionTest(t)
 
@@ -449,16 +449,6 @@ func TestStoreHoldersIndexOption(t *testing.T) {
 		require.Equal(t, HoldersComplete, s.HoldersIndexState(), "the retry starts the index")
 		checkHolders(t, s, history)
 		requireRebuildEqual(t, s, "started by the retry")
-	})
-
-	t.Run("N=3", func(t *testing.T) {
-		s, err := Open(t.TempDir(), Options{HoldersIndex: true, CheckpointInterval: 3})
-		require.NoError(t, err)
-		defer s.Close()
-		add(s, 0, 10)
-		require.Equal(t, HoldersNone, s.HoldersIndexState())
-		require.Empty(t, holdersRange(t, s))
-		require.Nil(t, holdersMetaRecord(t, s))
 	})
 
 	t.Run("existing store", func(t *testing.T) {
@@ -697,35 +687,6 @@ func TestStoreHoldersState(t *testing.T) {
 		require.Equal(t, entries, holdersRange(t, ro))
 	})
 
-	t.Run("N=3", func(t *testing.T) {
-		s, err := Open(t.TempDir(), Options{CheckpointInterval: 3})
-		require.NoError(t, err)
-		defer s.Close()
-		add(s, 0, 10)
-		_, err = s.IndexHolders(context.Background(), nil)
-		require.ErrorContains(t, err, "N = 1")
-		require.Equal(t, HoldersNone, s.HoldersIndexState())
-		require.Nil(t, holdersMetaRecord(t, s))
-
-		// an index built on an empty store, which then gets another N
-		dir := t.TempDir()
-		e, err := Open(dir, Options{})
-		require.NoError(t, err)
-		_, err = e.IndexHolders(context.Background(), nil)
-		require.NoError(t, err)
-		require.NoError(t, e.Close())
-		e, err = Open(dir, Options{CheckpointInterval: 3})
-		require.NoError(t, err)
-		defer e.Close()
-		require.EqualValues(t, 3, e.CheckpointInterval())
-		require.Equal(t, HoldersStale, e.HoldersIndexState(), "not maintained")
-		add(e, 0, 5)
-		require.Empty(t, holdersRange(t, e))
-		dropped, err := e.DropHoldersIndex()
-		require.NoError(t, err)
-		require.True(t, dropped)
-	})
-
 	t.Run("RemoveNoops", func(t *testing.T) {
 		s, err := Open(t.TempDir(), Options{DedupEntries: -1}) // every no-op is a record
 		require.NoError(t, err)
@@ -740,7 +701,7 @@ func TestStoreHoldersState(t *testing.T) {
 		require.Equal(t, HoldersComplete, s.HoldersIndexState())
 		require.Equal(t, entries, holdersRange(t, s), "RemoveNoops does not touch the index")
 		requireRebuildEqual(t, s, "the records left give the same index")
-		require.NoError(t, s.CompactCheckpoints(context.Background()))
+		require.NoError(t, s.CompactRecords(context.Background()))
 		checkHolders(t, s, history)
 	})
 }
@@ -777,7 +738,7 @@ func TestStoreAssetHoldersPages(t *testing.T) {
 }
 
 // TestStoreCompactHoldersIndexInSteps checks that CompactHoldersIndex
-// compacts the index in consecutive steps, as CompactCheckpoints does, and
+// compacts the index in consecutive steps, as CompactRecords does, and
 // drops the entries a rebuild replaced.
 func TestStoreCompactHoldersIndexInSteps(t *testing.T) {
 	partitiontest.PartitionTest(t)
@@ -1086,7 +1047,7 @@ func TestStoreHoldersTruncateAbandoned(t *testing.T) {
 	}
 	_, err = s.IndexHolders(context.Background(), nil)
 	require.NoError(t, err)
-	require.NoError(t, s.db.Set(verKey(pfxCheckpoint, []byte("z"), 1), []byte("F"), pebble.Sync)) // no object kind
+	require.NoError(t, s.db.Set(verKey(pfxRecord, []byte("z"), 1), []byte("F"), pebble.Sync)) // no object kind
 	_, err = s.TruncateAfter(context.Background(), 10, TruncateOptions{})
 	require.ErrorIs(t, err, ErrCorrupt)
 	_, diverged, err := s.Diverged()

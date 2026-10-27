@@ -87,7 +87,7 @@ func removeNoops(dataDir string) error {
 	}
 	fmt.Printf("removed %d records in %v; compacting\n", removed, time.Since(start).Round(time.Second))
 	start = time.Now()
-	if err = s.CompactCheckpoints(context.Background()); err != nil {
+	if err = s.CompactRecords(context.Background()); err != nil {
 		return err
 	}
 	if err = s.Close(); err != nil {

@@ -37,7 +37,7 @@ A time travel node's history comes from every round's state delta since genesis:
    EOF
    ```
 
-   Set anything that decides where the ledger's files go **now**: `TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`. `ttimport` writes to the directories they resolve to, and algod later looks for its files there. None of them may resolve to the archive's directory. `TimeTravelCheckpointInterval` is also fixed once the history exists; keep the default of 1.
+   Set anything that decides where the ledger's files go **now**: `TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`. `ttimport` writes to the directories they resolve to, and algod later looks for its files there. None of them may resolve to the archive's directory.
 
 2. Run the import:
 

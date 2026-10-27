@@ -50,8 +50,7 @@ import (
 // counts as one) hashes to a digest. A section's digests are cut into chunks
 // after each digest whose first two bytes are zero, so that chunks depend on
 // the content alone and workers can hash any split of the key space; the
-// section digest hashes its chunks' digests. Only stores with N = 1 are
-// supported.
+// section digest hashes its chunks' digests.
 const commitmentDomain = "dtalgorand-ttsnap-commitment/1"
 
 // Section tags of the commitment.
@@ -97,9 +96,9 @@ type CommitmentOptions struct {
 	// the content the commitment covers, so that the store answers like any
 	// other with that commitment once its box index is rebuilt and the
 	// records NonCanonical names are deleted: records after the round, keys
-	// outside the store's keyspaces, unknown meta records, round index or
-	// patch records (N = 1 writes none). For a store from another node,
-	// which the commitment is checked against.
+	// outside the store's keyspaces, which no build of this store writes, and
+	// unknown meta records.
+	// For a store from another node, which the commitment is checked against.
 	Strict bool
 	// NonCanonical, if not nil, is called with the key of every object
 	// record at or before the round that the commitment leaves out (those
@@ -126,9 +125,6 @@ func (s *Store) commitment(ctx context.Context, upTo uint64, o CommitmentOptions
 		return Commitment{}, err
 	}
 	defer s.closeMu.RUnlock()
-	if s.n != 1 {
-		return Commitment{}, fmt.Errorf("timetravel: a commitment needs a store with N = 1, not %d", s.n)
-	}
 	last, ok := s.Last()
 	if !ok {
 		return Commitment{}, errors.New("timetravel: the store is empty")
@@ -175,7 +171,7 @@ func (s *Store) commitment(ctx context.Context, upTo uint64, o CommitmentOptions
 		single bool
 		count  *uint64
 	}{
-		{commitObjects, pfxCheckpoint, false, &c.Objects},
+		{commitObjects, pfxRecord, false, &c.Objects},
 		{commitHeaders, pfxHeader, true, &c.Headers},
 		{commitExpired, pfxExpired, true, &c.Expired},
 	} {
@@ -218,7 +214,7 @@ func strictLayout(snap *pebble.Snapshot, upTo uint64) error {
 		{nil, {pfxExpired}},
 		{after(pfxExpired), {pfxHeader}},
 		{after(pfxHeader), {pfxBoxIndex}},
-		{{pfxCheckpoint + 1}, {'m'}},
+		{{pfxRecord + 1}, {'m'}},
 		{{'m' + 1}, nil},
 	} {
 		it, err := snap.NewIter(&pebble.IterOptions{LowerBound: r[0], UpperBound: r[1]})

@@ -84,10 +84,6 @@ func (l *Ledger) InitHoldersIndex(on bool) error {
 		}
 		return nil
 	}
-	if n := s.CheckpointInterval(); n != 1 {
-		l.log.Warnf("TimeTravelHoldersIndex needs a time travel store with N = 1, not %d: GET /v2/assets/{asset-id}/holders answers 400", n)
-		return nil
-	}
 	if st := s.HoldersIndexState(); st != timetravel.HoldersComplete {
 		l.log.Warnf("the asset holders index is %s: GET /v2/assets/{asset-id}/holders answers 503 until it is built: stop the node and run ttimport -holders-index -d on its data directory", st)
 	}
@@ -95,12 +91,12 @@ func (l *Ledger) InitHoldersIndex(on bool) error {
 }
 
 // HoldersIndexState returns the state of the time travel store's asset holders
-// index and the store's checkpoint interval N, which the index needs to be 1.
-func (l *Ledger) HoldersIndexState() (timetravel.HoldersState, uint64) {
+// index.
+func (l *Ledger) HoldersIndexState() timetravel.HoldersState {
 	if l.history == nil {
-		return timetravel.HoldersNone, 0
+		return timetravel.HoldersNone
 	}
-	return l.history.store.HoldersIndexState(), l.history.store.CheckpointInterval()
+	return l.history.store.HoldersIndexState()
 }
 
 // AssetHoldersAt lists the accounts that hold asset aidx at round rnd, zero

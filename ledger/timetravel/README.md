@@ -7,7 +7,7 @@ This is a non-compliant fork feature: it changes no consensus rule, but the node
 ## Using it
 
 ```json
-{ "EnableTimeTravel": true, "Archival": false, "TimeTravelCheckpointInterval": 1 }
+{ "EnableTimeTravel": true, "Archival": false }
 ```
 
 - The history is built from every block's state delta, so it comes from a sync from genesis: over the network, from an archive with `ttimport` (below), or from another node's history installed with `tools/ttsnap`, after which the node catches up from a catchpoint (see [Catching up from a catchpoint](#catching-up-from-a-catchpoint)). Without an installed history, fast catchup (`goal node catchup`) is refused, and a ledger whose tracker DB is past genesis with an empty history fails to open. So does one whose tracker DB is ahead of its block DB, which a stock node resets, resyncing from genesis; delete the tracker DB to do that on purpose.
@@ -15,7 +15,6 @@ This is a non-compliant fork feature: it changes no consensus rule, but the node
 - `tools/ttimport` builds a non-archival node's ledger and history from an existing archival node's block database instead of the network: `ttimport -blocks <archival data dir>/<genesis id>/ledger.block.sqlite -d <new data dir>`. The ledger replays the archive in place like algod after a restart (no certificate or signature checks, nothing written to the archive), then the data directory gets the last ~1,000 blocks, and algod started on it continues from the network. On fnet's first 40k rounds it replayed at ~8,700 rounds/s (~35× a network sync) and produced a byte-identical history (identical reads in any case: after a restart, the raw records can differ by the [no-op writes](#no-op-writes) a fresh cache lets through). See [tools/ttimport/README.md](../../tools/ttimport/README.md) for the how-to.
 - `tools/ttsnap` publishes snapshots of a running node's history and installs them on new nodes, which then catch up from a catchpoint: a ~65 GB download instead of a sync from genesis. See [tools/ttsnap/README.md](../../tools/ttsnap/README.md).
 - `tools/ttdump` explores the store of a stopped node: any object at any round, its versions with the changes between them, listings at past rounds, headers, and the raw records and their statistics. See [tools/ttdump/README.md](../../tools/ttdump/README.md).
-- `TimeTravelCheckpointInterval` (N) is fixed when the store is created. 1 (the default) is the recommended setting; see [Patches and N](#patches-and-n).
 - `TimeTravelHoldersIndex` (off by default) serves `GET /v2/assets/{id}/holders` from an index of every holding by asset (~3.6 GiB on mainnet), kept from the genesis round by a store created with it on, or built with `ttimport -holders-index` while the node is stopped. Turning it off deletes the index at the next launch. See [Holders index](#holders-index).
 
 ### REST
@@ -33,7 +32,7 @@ Read endpoints take `?round=R` (the `at-round` parameter in the API spec) and an
 
 ¹ `/boxes` takes stock algod's own `round` parameter, not `at-round`: a node without time travel serves it for the rounds it still holds in memory (`MaxAcctLookback`) instead of rejecting it, and a time travel node for every round.
 
-`GET /v2/assets/{id}/holders?round=R` lists the accounts that hold an asset at R, in address order, with amount and frozen flag (zero balances included), from the [holders index](#holders-index). It needs `TimeTravelHoldersIndex` (off by default) and a store with N = 1, 400 otherwise, and answers 503 until the index is built: from the start for a store created with the option on, otherwise by `ttimport -holders-index`. Pages hold `limit` holders (default 1,000, at most 10,000), or fewer once they have examined 100,000 accounts that ever held the asset, so a page can be short or empty while more remain: follow `next-token`, the last address examined, with the first page's `round`. A full page looks ahead for one more holder, so the last page has no `next-token` even when it is full.
+`GET /v2/assets/{id}/holders?round=R` lists the accounts that hold an asset at R, in address order, with amount and frozen flag (zero balances included), from the [holders index](#holders-index). It needs `TimeTravelHoldersIndex` (off by default), 400 otherwise, and answers 503 until the index is built: from the start for a store created with the option on, otherwise by `ttimport -holders-index`. Pages hold `limit` holders (default 1,000, at most 10,000), or fewer once they have examined 100,000 accounts that ever held the asset, so a page can be short or empty while more remain: follow `next-token`, the last address examined, with the first page's `round`. A full page looks ahead for one more holder, so the last page has no `next-token` even when it is full.
 
 Not served for pruned rounds (the price of `Archival: false`): full blocks (`/v2/blocks/{R}` without `header-only`), `/v2/blocks/{R}/hash`, `/txids`, `/logs`, `/transactions/{txid}/proof`, `/lightheader/proof`, and `/v2/stateproofs/{R}`, which read the full blocks after R. `goal clerk simulate --round R` works unchanged.
 
@@ -174,14 +173,7 @@ Deletions are tombstones. Kv keys are escaped (`00`→`00 ff`) and terminated (`
 
 History is stored **object-major**: record key = keyspace byte + object key + big-endian round. All versions of an object are adjacent, so "the value of X at R" is one bounded reverse seek (latest record ≤ R), no matter how long ago X last changed. Listing an account's assets/apps or an app's boxes at R is a prefix scan.
 
-Two record kinds, governed by `TimeTravelCheckpointInterval` (N):
-
-- **checkpoint records** (`c` keyspace): every N rounds, the value of every object that changed since the previous checkpoint round. Unchanged objects are not repeated; genesis is the first checkpoint.
-- **patches** (`p` keyspace), for the rounds in between: per changed object, a patch against the object's value at the last checkpoint round (or against its previous version, `Incremental`, used only by the evaluation tools). Patches are git-style copy/insert byte deltas over the msgpack encoding, so the same codec handles boxes. A patch that isn't smaller than the value is stored as the value.
-- reading X@R: the latest `c` record ≤ c(R), however old, plus the latest `p` record in (c(R), R], applied in memory. Two seeks.
-- a per-round index (`r`) of changed keys lets a checkpoint round be materialized after a restart; it is deleted once the checkpoint is written.
-
-With N = 1 (the default) every version is a checkpoint record: no patches, no index, one seek per read, and **writes are blind appends** (patching needs a read of the base for every change; skipping [no-op writes](#no-op-writes) reads only memory).
+Every version is stored in full (`c` keyspace): each round writes the new value, or a tombstone, of every object that changed in it, and nothing for the others. A read is one seek, and **writes are blind appends** (skipping [no-op writes](#no-op-writes) reads only memory). Block compression removes the redundancy between an object's adjacent versions, which share a compression block; storing patches against earlier versions instead was measured and [removed](#patches).
 
 Since a read is one seek whatever the age of the version, the store never re-writes the whole state: there are no periodic snapshots of unchanged objects.
 
@@ -198,8 +190,8 @@ Deltas rewrite objects that did not change: every block writes the totals and th
 
 So the store keeps a secondary index that is round-major per app: `b` app (8 bytes) round (8 bytes) name → `F` (written) or `D` (deleted). The name is the last component and needs no escaping. A range of an app's rounds is one bounded iterator, either direction.
 
-- `AddRound` writes one entry per box change it stores (blind, like the records). An entry can be a no-op its cache missed, or the tombstone of a box created and deleted within the round, so `BoxChanges` checks each one against the box's record and the one before it (N = 1: a seek and a step back on a shared iterator), skipping those that change nothing; that read also yields the value. A page costs a seek per entry in it.
-- `IndexBoxes` (`ttimport -index-boxes -d <data dir>`, node stopped) rebuilds the index from the box records in one pass, writing entries for versions only; `RemoveNoops` does the same in its pass. Both are idempotent, and `CompactBoxIndex` / `CompactCheckpoints` reclaim what they replace.
+- `AddRound` writes one entry per box change it stores (blind, like the records). An entry can be a no-op its cache missed, or the tombstone of a box created and deleted within the round, so `BoxChanges` checks each one against the box's record and the one before it (a seek and a step back on a shared iterator), skipping those that change nothing; that read also yields the value. A page costs a seek per entry in it.
+- `IndexBoxes` (`ttimport -index-boxes -d <data dir>`, node stopped) rebuilds the index from the box records in one pass, writing entries for versions only; `RemoveNoops` does the same in its pass. Both are idempotent, and `CompactBoxIndex` / `CompactRecords` reclaim what they replace.
 - Readers check that no rebuild started or finished while they opened their iterators (a generation counter), and fail with `ErrNoBoxIndex` otherwise.
 - Completeness: the meta record `mb` holds the round the index is complete from and the next round `AddRound` indexes. A store created by a build with the index, or holding no box when such a build first opens it, is complete from round 0 (boxes arrived with v36, around mainnet round 25 M, so an import that has not reached it yet needs nothing). Otherwise the index starts at the store's next round, and until `-index-boxes` runs `BoxChanges` fails with `ErrNoBoxIndex` (REST 503) when it needs an earlier round: at once ascending, and once it reaches that round descending, so "the latest changes" still work. If a build without the index adds rounds, the next open moves the start past them.
 - Size: one entry per box write, mostly 17 bytes of key prefix plus the name (24 bytes on average on mainnet) and 1 byte of value, before prefix compression. A sample of 1,637 mainnet rounds (`/v2/deltas`) suggests ~117 M box writes since boxes arrived, so an estimated 1–3 GB on disk, 2–5% of the store. The rebuild scans the box records once (~117 M before dedup); writes arrive name-major, so it compacts the index afterwards.
@@ -208,9 +200,9 @@ So the store keeps a secondary index that is round-major per app: `b` app (8 byt
 
 "Which accounts held asset X at round R" has no cheap answer in the object-major layout: holdings are `h` addr asset, account-major, so the only way is to read every holding record (~2 minutes on mainnet, 9.6 GiB and 813 M records, the same for every asset). `TimeTravelHoldersIndex` adds an asset-major index of every holding ever:
 
-- Layout: `a` asset (8 bytes) addr (32 bytes) → the rounds at which the holding was created and deleted, alternating, as uvarint deltas (the first from round 0); an odd count means live. A holding is held at R if its latest record at or before R is not a tombstone, exactly what `?round=R` lookups answer; one closed and reopened within a round has no boundary, and one whose records are tombstones only has no entry. The `a` keyspace prefix and the `a` account kind inside object keys never meet: one is a DB prefix, the other follows `c` or `p`.
+- Layout: `a` asset (8 bytes) addr (32 bytes) → the rounds at which the holding was created and deleted, alternating, as uvarint deltas (the first from round 0); an odd count means live. A holding is held at R if its latest record at or before R is not a tombstone, exactly what `?round=R` lookups answer; one closed and reopened within a round has no boundary, and one whose records are tombstones only has no entry. The `a` keyspace prefix and the `a` account kind inside object keys never meet: one is a DB prefix, the other follows `c`.
 - Size, measured with `tools/ttholders` on a copy of a mainnet store (61.7 GiB at round 66.23 M; 115.3 M holdings ever, 43.0 M live): 3.59 GiB, +5.8%, with values of 5.8 bytes on average. A page of holders costs a seek and a step per account examined, plus one read per holder for its amount and frozen flag: the boundaries say whether an account holds the asset at R without reading its record. An index without the rounds (asset addr → ∅, 2.84 GiB) needs 1 to 20 reads per result, and at sparse rounds pages come back half empty.
-- Started at genesis: a store created with `TimeTravelHoldersIndex` set and N = 1 (`Options.HoldersIndex`: a node syncing from genesis, or a `ttimport` import) writes the index entries of its first round and `mh` in that round's batch, so no round is ever stored without the index, and `AddRound` maintains it from there: it never needs a build. `ttimport` takes the option from the data directory's `config.json` like algod, and has no flag to override it: for a full import from a block DB, leaving the option off until the import is done and then running `-holders-index` may finish sooner (see [tools/ttimport](../../tools/ttimport/README.md#building-the-asset-holders-index)). An existing store ignores the option until a build.
+- Started at genesis: a store created with `TimeTravelHoldersIndex` set (`Options.HoldersIndex`: a node syncing from genesis, or a `ttimport` import) writes the index entries of its first round and `mh` in that round's batch, so no round is ever stored without the index, and `AddRound` maintains it from there: it never needs a build. `ttimport` takes the option from the data directory's `config.json` like algod, and has no flag to override it: for a full import from a block DB, leaving the option off until the import is done and then running `-holders-index` may finish sooner (see [tools/ttimport](../../tools/ttimport/README.md#building-the-asset-holders-index)). An existing store ignores the option until a build.
 - Built offline, for an existing store: `ttimport -holders-index -d <data dir>` with the node stopped (`IndexHolders`, one pass over the holding records, then `CompactHoldersIndex`; about 5 minutes on mainnet), and only with `TimeTravelHoldersIndex` set, since the node deletes the index at launch otherwise. The meta record `mh` holds the round after the last one the index covers, and exists only once `IndexHolders` has finished, or once a store created with the option has stored its first round (whose batch writes it): a build cancelled or crashed leaves no index, and a rerun starts over.
 - Maintained: once complete, every `AddRound` of a build with the index updates it in the round's batch, whatever the options (dtalgod, a `ttimport` import, `ttlab`): for each holding the round creates or deletes it appends the round and moves `mh`. Plain amount updates write nothing; the dedup cache knows whether hot holdings (DEX pools) exist, so only creations, deletions and holdings it has forgotten read the index. `Open` writes the index only to finish an interrupted truncation.
 - Truncated: `TruncateAfter(b)` (catchpoint catchup, replay repair) trims a complete index: every entry keeps its boundaries up to b, and the entries of holdings created after b go, which leaves what a rebuild from the rounds up to b writes; `mh` becomes b+1, so the index stays complete and `AddRound` maintains it over the rounds the node then writes. The index reads as stale while the truncation runs (the endpoint answers 503), since it no longer covers the store's last round; `TruncateAfter(last)` trims nothing and leaves the index as it is. A stale index is dropped instead, as is the index of a truncation that finds the store corrupt, and one with a bad entry: rebuild with `-holders-index`. A half-built index is left alone. A build that truncates without this (fast catchup builds before the holders index) leaves entries of the deleted rounds, which the index can later pass for complete once the store reaches `mh` again: after running one on a store with the index, rebuild it.
@@ -264,7 +256,7 @@ Over mainnet's history there were 2.6 B object changes; storing every version in
 
 ### Engine
 
-The same 1.59 M versions (2026 run, N = 1) loaded in round order like a syncing node, 100 rounds per write transaction, and the same 5,000 point-in-time lookups (latest version ≤ R):
+The same 1.59 M versions (2026 run) loaded in round order like a syncing node, 100 rounds per write transaction, and the same 5,000 point-in-time lookups (latest version ≤ R):
 
 | engine | disk | ingest | lookup p50 | p99 |
 |---|---|---|---|---|
@@ -277,9 +269,9 @@ The same 1.59 M versions (2026 run, N = 1) loaded in round order like a syncing 
 
 DuckDB is a columnar analytics engine: its blob compression is weak, and a point lookup costs a query plan and a row-group scan, ART index or not. It would suit scans ("balance of X over time"), not the thousands of point lookups per second that API and simulation traffic need. SQLite has no compression. **Pebble** (an LSM, already a go-algorand dependency in its v1 form; the store uses `pebble/v2`, whose zstd works with the `DataDog/zstd` go-algorand pins) gives ordered keys for one-seek reads, append-friendly writes and per-block compression, and wins on every axis.
 
-### Patches and N
+### Patches
 
-Steady-state disk bytes per round (zstd unless noted), write cost per round, and checkpoint stalls:
+Earlier builds had a layout with sparse checkpoints (`TimeTravelCheckpointInterval`, N): every N rounds a checkpoint stored the value of every object changed since the previous one, and the rounds in between stored, per changed object, a git-style copy/insert patch against its value at the last checkpoint (or against its previous version, incremental). It was removed: with the block compression the store uses, it saves no space and costs several times the write work. The measurements that decided it, steady-state disk bytes per round (zstd unless noted), write cost per round, and checkpoint stalls (N = 1 is the layout the store has now):
 
 | setting | 2022 B/round | 2024 | 2026 | write µs/round (2026) | checkpoint stall | read p50 / p99 µs (2026) |
 |---|---|---|---|---|---|---|
@@ -300,7 +292,7 @@ Steady-state disk bytes per round (zstd unless noted), write cost per round, and
 - **With block compression they don't.** In object-major order an object's consecutive versions are neighbours in the same compression block, so zstd removes the same redundancy that patches do, and patches (high-entropy offsets and literals) compress poorly, while checkpoints re-store values. At 32 KB blocks patches still save 18–46%; at 128 KB blocks full versions win in 2024 (−12%) and 2026 (−7%) and lose by 4% in 2022. Over all of mainnet, with per-era ratios: 53 GB of state for full versions vs 57 GB for the best patch setting (see [Mainnet estimates](#mainnet-estimates) for the full-history figure).
 - Patches cost 4–14× the write CPU with a warm cache and **8.3 ms/round with a cold one** (every change reads its base; N = 1 writes stay at ~0.15 ms), stall commits for 0.15–0.5 s per checkpoint warm (2.9 s cold), and double read latency. Incremental patches are smaller but chain: hot objects average 82 patches per read at N = 1024 and 320 at N = 4096.
 
-**Default: N = 1 (full versions) with zstd and 128 KB blocks.** Patches stay available through `TimeTravelCheckpointInterval`, but cost more than they save.
+**Full versions with zstd and 128 KB blocks.** The patch layouts cost more than they save, so they were removed; a store created with N above 1 no longer opens.
 
 ### Block size and read latency
 
@@ -330,9 +322,9 @@ Comparing settings: each run's disk/logical ratio, applied to the sampled histor
 | N=1024, 32 KB | 65 GB | 16.4 h |
 | N=1024 incremental, 32 KB | 63 GB | 44.7 h |
 | N=1024, 128 KB | 57 GB | 16.6 h (≈6 days with a cold cache) |
-| **N=1, 128 KB (default)** | **53 GB** | **3.5 h** |
+| **N=1, 128 KB (the store's layout)** | **53 GB** | **3.5 h** |
 
-These figures rank the settings but are not absolute sizes. One ratio per era misweights the record classes. Fnet's time-travel store, the one full history built so far (25.3 M rounds by `ttimport`, 3.44 GB), also shows that a full history compresses better than separate runs. Fnet's own size says little about mainnet's: 74% of it is headers, since fnet is nearly idle. The full-history estimate for the default setting corrects two errors that roughly cancel:
+These figures rank the settings but are not absolute sizes. One ratio per era misweights the record classes. Fnet's time-travel store, the one full history built so far (25.3 M rounds by `ttimport`, 3.44 GB), also shows that a full history compresses better than separate runs. Fnet's own size says little about mainnet's: 74% of it is headers, since fnet is nearly idle. The full-history estimate for the store's layout corrects two errors that roughly cancel:
 
 - **Class mix (+12 GB).** App params compress ~26×, accounts and holdings ~4×. The 2022 run is 83% app params by logical bytes, but rounds below 35 M are only 62%, so the run's blended ratio is too low for its era. Applying each run's per-class ratios to the sampled history gives 65.5 GB of state instead of 53. The reweighting shrinks the share of app params, where patches save the most, so it should not reverse the ranking above. The patch settings were not re-measured per class.
 - **Full-history adjacency (−14 GB).** Disk is close to a·records + b·runs, where a run is one object's versions within a window: the first version of a run compresses against unrelated neighbours, later ones against the previous version. In a full history an object has one run, so each extra run that the per-era windows imply costs b too much. Fitted on fnet windows of 50 k rounds or less, the model predicts fnet's full 25.3 M-round store within 0.1%. On mainnet, the number of objects ever is bounded by the catchpoint's live counts at 65.8 M (22.6 M accounts, 130 M holdings) plus the sampled deletions. Merging runs saves ~14 GB, mostly on accounts and holdings.
@@ -371,7 +363,7 @@ Expected live store size while a node syncs from genesis (or `ttimport` replays)
 
 Archival comparison, from the sampled blocks: an archival block DB holds **~3.48 TB** raw (block bodies ~1.26 TB, **certificates 2.16 TB**, now ~65 KB per round, and headers stored twice). A time-travel node with `Archival: false` keeps headers only: 33 GB raw, **~12 GB** compressed with their digests. Total: **~65 GB** (57–73) vs ~3.5 TB of blocks that cannot answer a single historical state query.
 
-Sync from genesis: the history adds ~0.15–0.27 ms per round of write work in the commit goroutine (~3 hours over 65.8 M rounds, against days of block evaluation). Patch settings add 10–26 hours with a warm cache and ~6 days with a realistic cold one.
+Sync from genesis: the history adds ~0.15–0.27 ms per round of write work in the commit goroutine (~3 hours over 65.8 M rounds, against days of block evaluation). The removed patch settings added 10–26 hours with a warm cache and ~6 days with a realistic cold one.
 
 ## Reproducing
 
@@ -381,8 +373,8 @@ Sync from genesis: the history adds ~0.15–0.27 ms per round of write work in t
 cd tools/ttlab   # separate module: DuckDB stays out of algod's go.mod
 # deltas: GET /v2/deltas/{round}?format=msgpack -> <dir>/<round>.msgp, blocks likewise
 go run . stats -deltas sample-deltas -blocks sample-blocks > stats.csv
-go run . ingest -data run-2026 -from 65700000 -to 65749999 -warm 10000 -db /tmp/s -n 1 -comp zstd -block 131072 >> m2026.jsonl
-go run . engines -store <N=1 store kept with -keep> -out /tmp/eng
+go run . ingest -data run-2026 -from 65700000 -to 65749999 -warm 10000 -db /tmp/s -comp zstd -block 131072 >> m2026.jsonl
+go run . engines -store <store kept with -keep> -out /tmp/eng
 go run . catchpoint -file <catchpoint tar prefix from a relay> -db /tmp/cp
 python3 estimate.py stats.csv 2022=m2022.jsonl 2024=m2024.jsonl 2026=m2026.jsonl
 go run . demo -net <dev-mode network created with goal network create -K>   # REST end to end

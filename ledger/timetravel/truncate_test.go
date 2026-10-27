@@ -87,7 +87,7 @@ func TestStoreTruncateAfter(t *testing.T) {
 
 			// what a producer could add: an object no round changed, a record
 			// of an object at a round that did not change it, a box index
-			// entry, patch and round index records, which N = 1 never writes
+			// entry
 			forged := KvKey("forged")
 			box := boxObject(modelApps[0], []byte("a"))
 			untouched := -1
@@ -101,11 +101,9 @@ func TestStoreTruncateAfter(t *testing.T) {
 			}
 			require.Positive(t, untouched, "a round after b leaves the box alone")
 			forgedKeys := [][]byte{
-				verKey(pfxCheckpoint, forged, b+5),
-				verKey(pfxCheckpoint, box, uint64(untouched)),
+				verKey(pfxRecord, forged, b+5),
+				verKey(pfxRecord, box, uint64(untouched)),
 				boxIndexKey(modelApps[0], uint64(untouched), []byte("a")),
-				verKey(pfxPatch, box, b-3),
-				binary.BigEndian.AppendUint64([]byte{pfxRoundIndex}, b-3),
 			}
 			for _, k := range forgedKeys {
 				setRaw(t, s, k, []byte("Fforged"))
@@ -270,19 +268,13 @@ func TestStoreTruncateRefuses(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	t.Run("N", func(t *testing.T) {
-		s := build(t, Options{CheckpointInterval: 4})
-		_, err := s.TruncateAfter(ctx, 5, TruncateOptions{})
-		require.ErrorContains(t, err, "N = 1")
-	})
-
 	t.Run("short", func(t *testing.T) {
 		s := build(t, Options{})
 		_, err := s.TruncateAfter(ctx, 10, TruncateOptions{})
 		require.ErrorContains(t, err, "ends at round 9")
 	})
 
-	prefix := [][]byte{verKey(pfxCheckpoint, []byte("ka"), 3), verKey(pfxCheckpoint, []byte("kab"), 3)}
+	prefix := [][]byte{verKey(pfxRecord, []byte("ka"), 3), verKey(pfxRecord, []byte("kab"), 3)}
 	for name, tc := range map[string]struct {
 		keys  [][]byte
 		split [][]byte // nil: one range
@@ -291,12 +283,12 @@ func TestStoreTruncateRefuses(t *testing.T) {
 		// the workers' ranges hold one key each, and only the check across
 		// ranges sees them together
 		"prefix across ranges": {keys: prefix, split: prefix[1:]},
-		"key":                  {keys: [][]byte{{pfxCheckpoint, 1, 2}}},
+		"key":                  {keys: [][]byte{{pfxRecord, 1, 2}}},
 		// an object key and more, then a round up to b: no prefix check
 		// sees it, but a read of the object takes it for a record of the
 		// round in its middle bytes
-		"shadow": {keys: [][]byte{verKey(pfxCheckpoint, binary.BigEndian.AppendUint64(KvKey("x"), 7), 1)}},
-		"kind":   {keys: [][]byte{verKey(pfxCheckpoint, []byte("z"), 1)}},
+		"shadow": {keys: [][]byte{verKey(pfxRecord, binary.BigEndian.AppendUint64(KvKey("x"), 7), 1)}},
+		"kind":   {keys: [][]byte{verKey(pfxRecord, []byte("z"), 1)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -359,7 +351,7 @@ func TestStoreTruncateResumes(t *testing.T) {
 	last, _ := s.Last()
 	require.EqualValues(t, 10, last)
 	require.False(t, hasRaw(t, s, keyTruncateMeta))
-	require.False(t, hasRaw(t, s, verKey(pfxCheckpoint, obj, 11)))
+	require.False(t, hasRaw(t, s, verKey(pfxRecord, obj, 11)))
 	require.NoError(t, s.AddRound(11, []Change{{Key: obj, Value: []byte{11}}}, hdrOf(11), nil))
 
 	// an earlier round than an unfinished truncation's finishes it there
@@ -412,7 +404,7 @@ func TestStoreTruncateFails(t *testing.T) {
 	last, _ = s.Last()
 	require.EqualValues(t, 10, last)
 	require.False(t, hasRaw(t, s, keyTruncateMeta))
-	require.False(t, hasRaw(t, s, verKey(pfxCheckpoint, obj, 11)))
+	require.False(t, hasRaw(t, s, verKey(pfxRecord, obj, 11)))
 	require.NoError(t, s.AddRound(11, []Change{{Key: obj, Value: []byte{11}}}, hdrOf(11), nil))
 }
 
