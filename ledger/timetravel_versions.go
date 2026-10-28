@@ -324,7 +324,10 @@ var ErrNoBoxIndex = timetravel.ErrNoBoxIndex
 
 // AppBoxVersions lists the rounds at which any box of an app changed, with
 // the boxes that did. Pages cost what they hold, however many boxes the app
-// ever had: the store indexes box changes by app and round.
+// ever had: the store indexes box changes by app and round. With r.Prefix,
+// only the boxes whose names start with it count: a page then steps through
+// every index entry of the app in its rounds, up to r.MaxScanned, so it can
+// be short or empty and still have More.
 func (l *Ledger) AppBoxVersions(app basics.AppIndex, r VersionRange) (VersionPage, error) {
 	h := l.historyNow(r.Max)
 	if h == nil {
@@ -334,6 +337,9 @@ func (l *Ledger) AppBoxVersions(app basics.AppIndex, r VersionRange) (VersionPag
 }
 
 func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, error) {
+	if r.Key != nil {
+		return VersionPage{}, errors.New("a state key applies to app params or a local state")
+	}
 	if r.Rounds != nil {
 		return appBoxesAt(h, app, r)
 	}
@@ -353,7 +359,8 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 	}
 	// the callback must not read the store: it runs inside the store's read
 	// lock, which Close waits for while blocking new readers
-	err := h.BoxChanges(uint64(app), uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, name, val []byte, ok bool) bool {
+	o := timetravel.BoxChangesOpts{Prefix: r.Prefix, MaxScanned: r.MaxScanned}
+	end, err := h.BoxChanges(uint64(app), uint64(r.Min), uint64(r.Max), r.Desc, o, func(rnd uint64, name, val []byte, ok bool) bool {
 		if R := basics.Round(rnd); len(cur.Boxes) == 0 || R != cur.Round {
 			if len(cur.Boxes) > 0 && !add() {
 				return false
@@ -379,7 +386,10 @@ func histAppBoxVersions(h *histView, app basics.AppIndex, r VersionRange) (Versi
 		return VersionPage{}, err
 	}
 	if len(cur.Boxes) > 0 && !page.More {
-		add()
+		add() // complete: the scan stops between rounds
+	}
+	if end.More && !page.More { // the scan budget ran out: the page can be empty
+		page.More, page.Next = true, basics.Round(end.Next)
 	}
 	if partial && !page.More {
 		page.More, page.Next = true, page.Versions[len(page.Versions)-1].Round-1
@@ -880,12 +890,17 @@ func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (Version
 }
 
 // appBoxesAt builds a Rounds page of an app's boxes: per round, every box
-// that exists at it, in name order. It merges every box the app ever had, at
-// most r.MaxObjects of them.
+// that exists at it, in name order. It merges every box the app ever had
+// (with r.Prefix, every one whose name starts with it), at most r.MaxObjects
+// of them.
 func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, error) {
 	type box struct{ obj, name []byte }
 	var boxes []box
-	err := h.Objects(timetravel.BoxKvPrefix(uint64(app)), func(obj []byte) bool {
+	pfx := timetravel.BoxKvPrefix(uint64(app))
+	if r.Prefix != nil {
+		pfx = timetravel.BoxKvNamePrefix(uint64(app), r.Prefix)
+	}
+	err := h.Objects(pfx, func(obj []byte) bool {
 		if _, name, ok := timetravel.BoxOf(obj); ok {
 			boxes = append(boxes, box{obj, name})
 		}
@@ -895,7 +910,11 @@ func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, 
 		return VersionPage{}, err
 	}
 	if r.MaxObjects > 0 && uint64(len(boxes)) > r.MaxObjects {
-		return VersionPage{}, fmt.Errorf("%w: app %d has had more than %d boxes", ErrTooManyVersionObjects, app, r.MaxObjects)
+		under := ""
+		if r.Prefix != nil {
+			under = fmt.Sprintf(" under prefix %x", r.Prefix)
+		}
+		return VersionPage{}, fmt.Errorf("%w: app %d has had more than %d boxes%s", ErrTooManyVersionObjects, app, r.MaxObjects, under)
 	}
 	var page VersionPage
 	var size, entries, read, seeks uint64
@@ -1123,22 +1142,29 @@ func (v *histView) Objects(prefix []byte, fn func(obj []byte) bool) error {
 }
 
 // BoxChanges is timetravel.Store.BoxChanges with the in-memory rounds merged
-// in. fn must not modify name or val.
-func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, name, val []byte, ok bool) bool) error {
+// in, under the same options: each box an in-memory round writes counts as
+// an index entry toward o.MaxScanned. fn must not modify name or val.
+func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxChangesOpts, fn func(rnd uint64, name, val []byte, ok bool) bool) (timetravel.BoxChangesEnd, error) {
+	var end timetravel.BoxChangesEnd
 	type change struct {
-		rnd       uint64
 		name, val []byte
 		ok        bool
 	}
-	// the in-memory rounds' changes, oldest first, by name within a round
-	var mem []change
+	// memRound is an in-memory round that writes boxes of app: how many, and
+	// the changes of those under the prefix, by name
+	type memRound struct {
+		rnd     uint64
+		scanned uint64
+		changes []change
+	}
+	var mem []memRound // oldest first
 	prefix := timetravel.BoxKvPrefix(app)
 	for i := range v.pending {
 		p := &v.pending[i]
 		if p.rnd <= v.last || uint64(p.rnd) < lo || uint64(p.rnd) > hi {
 			continue
 		}
-		n := len(mem)
+		m := memRound{rnd: uint64(p.rnd)}
 		for j, ch := range p.changes {
 			if !bytes.HasPrefix(ch.Key, prefix) || p.idx[string(ch.Key)] != j { // a key's last change counts
 				continue
@@ -1147,39 +1173,79 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64,
 			if !isBox {
 				continue
 			}
+			m.scanned++
+			if !bytes.HasPrefix(name, o.Prefix) {
+				continue
+			}
 			prev, prevOK, err := v.Get(ch.Key, uint64(p.rnd)-1)
 			if err != nil {
-				return err
+				return end, err
 			}
 			if prevOK != !ch.Deleted || (prevOK && !bytes.Equal(prev, ch.Value)) {
-				mem = append(mem, change{uint64(p.rnd), name, ch.Value, !ch.Deleted})
+				m.changes = append(m.changes, change{name, ch.Value, !ch.Deleted})
 			}
 		}
-		slices.SortFunc(mem[n:], func(a, b change) int { return bytes.Compare(a.name, b.name) })
+		if m.scanned > 0 {
+			slices.SortFunc(m.changes, func(a, b change) int { return bytes.Compare(a.name, b.name) })
+			mem = append(mem, m)
+		}
+	}
+	spent := func() bool { return o.MaxScanned > 0 && end.Scanned >= o.MaxScanned }
+	// readMem reads an in-memory round; false: stop, at the budget (More) or
+	// as fn says
+	readMem := func(m *memRound) bool {
+		if spent() {
+			end.More, end.Next = true, m.rnd
+			return false
+		}
+		end.Scanned += m.scanned
+		for i := range m.changes {
+			c := &m.changes[i]
+			if desc {
+				c = &m.changes[len(m.changes)-1-i]
+			}
+			if !fn(m.rnd, c.name, c.val, c.ok) {
+				return false
+			}
+		}
+		return true
 	}
 	if desc {
 		for i := len(mem) - 1; i >= 0; i-- {
-			if !fn(mem[i].rnd, mem[i].name, mem[i].val, mem[i].ok) {
-				return nil
+			if !readMem(&mem[i]) {
+				return end, nil
 			}
 		}
 	}
 	if storeHi := min(hi, uint64(v.last)); lo <= storeHi {
+		if spent() {
+			end.More, end.Next = true, storeHi
+			return end, nil
+		}
+		so := o
+		if o.MaxScanned > 0 {
+			so.MaxScanned = o.MaxScanned - end.Scanned
+		}
 		stopped := false
-		err := v.store.BoxChanges(app, lo, storeHi, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		se, err := v.store.BoxChanges(app, lo, storeHi, desc, so, func(rnd uint64, name, val []byte, ok bool) bool {
 			stopped = !fn(rnd, name, val, ok)
 			return !stopped
 		})
+		end.Scanned += se.Scanned
 		if err != nil || stopped {
-			return err
+			return end, err
+		}
+		if se.More {
+			end.More, end.Next = true, se.Next
+			return end, nil
 		}
 	}
 	if !desc {
-		for _, m := range mem {
-			if !fn(m.rnd, m.name, m.val, m.ok) {
-				return nil
+		for i := range mem {
+			if !readMem(&mem[i]) {
+				return end, nil
 			}
 		}
 	}
-	return nil
+	return end, nil
 }

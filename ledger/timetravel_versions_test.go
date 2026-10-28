@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1106,6 +1107,9 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 				if i == 9 { // "s" deleted, recreated next round
 					txs = append(txs, put(i, "x", 9, "s"))
 				}
+				if i%3 == 1 { // maps that share a first byte, 0x00 in names, a name that prefixes others
+					txs = append(txs, put(i, []string{"a", "a\x00", "a\x00b", "ab", "b"}[(i/3)%5], uint64(i), ""))
+				}
 				if i%4 == 0 {
 					txs = append(txs, &txntest.Txn{Type: "appl", Sender: addrs[3], ApplicationID: other,
 						ApplicationArgs: [][]byte{binary.BigEndian.AppendUint64(nil, uint64(i))}, Boxes: []transactions.BoxRef{{Name: []byte("b")}}})
@@ -1122,13 +1126,18 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 			}
 			sorted := slices.Sorted(maps.Keys(names))
 
-			// the oracle: the rounds at which any of the app's boxes differs from the round before
-			oracle := func(values bool) []Version {
+			// the oracle: the rounds at which any of the app's boxes (those has
+			// keeps) differs from the round before
+			everyBox := func(string) bool { return true }
+			oracle := func(values bool, has func(string) bool) []Version {
 				var out []Version
 				prev := map[string][]byte{}
 				for r := basics.Round(0); r <= l.Latest(); r++ {
 					var v *Version
 					for _, name := range sorted {
+						if !has(name) {
+							continue
+						}
 						b, err := l.LookupKv(r, apps.MakeBoxKey(uint64(app), name))
 						require.NoError(t, err)
 						p, had := prev[name]
@@ -1160,7 +1169,7 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 			check := func() {
 				latest := l.Latest()
 				for _, values := range []bool{false, true} {
-					want := oracle(values)
+					want := oracle(values, everyBox)
 					require.Greater(t, len(want), 15)
 					var multi bool
 					for _, v := range want {
@@ -1217,7 +1226,9 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 				for R := basics.Round(0); R <= latest; R++ {
 					every = append(every, R)
 				}
-				for _, values := range []bool{false, true} {
+				// asOf is the oracle of a Rounds page of every round: the boxes
+				// has keeps that exist then, and the most at one round
+				asOf := func(values bool, has func(string) bool) ([]Version, int) {
 					var want []Version
 					var most int
 					for _, R := range every {
@@ -1225,6 +1236,9 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 						require.NoError(t, err)
 						v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
 						for _, name := range sorted {
+							if !has(name) {
+								continue
+							}
 							b, err := l.LookupKv(R, apps.MakeBoxKey(uint64(app), name))
 							require.NoError(t, err)
 							if b == nil {
@@ -1241,6 +1255,10 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 						most = max(most, len(v.Boxes))
 						want = append(want, v)
 					}
+					return want, most
+				}
+				for _, values := range []bool{false, true} {
+					want, most := asOf(values, everyBox)
 					require.Greater(t, most, 2, "some rounds have several boxes")
 					r := VersionRange{Max: latest, Limit: 1000, Values: values, Rounds: every}
 					p, err := lookup(r)
@@ -1354,6 +1372,10 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 					require.NoError(t, err)
 				}
 
+				if n == 1 {
+					checkBoxPrefixVersions(t, l, app, every, oracle, asOf)
+				}
+
 				p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
 				require.NoError(t, err)
 				require.Empty(t, p.Versions, "an app without boxes")
@@ -1374,6 +1396,87 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 			check()
 		})
 	}
+}
+
+// checkBoxPrefixVersions checks AppBoxVersions with name prefixes against
+// TestTimeTravelAppBoxVersions's oracles, range and Rounds pages, paged by
+// every budget.
+func checkBoxPrefixVersions(t *testing.T, l *Ledger, app basics.AppIndex, every []basics.Round,
+	oracle func(values bool, has func(string) bool) []Version, asOf func(values bool, has func(string) bool) ([]Version, int)) {
+	latest := l.Latest()
+	lookup := func(r VersionRange) (VersionPage, error) { return l.AppBoxVersions(app, r) }
+	var emptyPages int
+	// maps that share a first byte, 0x00 in names, prefixes that are whole
+	// names (a\x00b is one only), one that matches nothing
+	for _, pfx := range []string{"a", "a\x00", "a\x00b", "ab", "c", "c1", "s", "t", "zz"} {
+		has := func(name string) bool { return strings.HasPrefix(name, pfx) }
+		for _, values := range []bool{false, true} {
+			want := oracle(values, has)
+			if pfx == "zz" || pfx == "t" { // t boxes are created and deleted within a round
+				require.Empty(t, want)
+			} else {
+				require.NotEmpty(t, want, "prefix %q", pfx)
+			}
+			all := VersionRange{Max: latest, Limit: 1000, Values: values, Prefix: []byte(pfx)}
+			p, err := lookup(all)
+			require.NoError(t, err)
+			require.False(t, p.More)
+			require.Equal(t, want, p.Versions, "prefix %q values %v", pfx, values)
+			desc := slices.Clone(want)
+			slices.Reverse(desc)
+			for _, limit := range []uint64{1, 2, 3} {
+				r := all
+				r.Limit = limit
+				got, _ := ttKeyPages(t, lookup, r)
+				require.Equal(t, want, got, "prefix %q limit %d", pfx, limit)
+				r.Desc = true
+				got, _ = ttKeyPages(t, lookup, r)
+				require.Equal(t, desc, got, "prefix %q limit %d desc", pfx, limit)
+			}
+			budgets := []VersionRange{{MaxScanned: 1}, {MaxScanned: 2}}
+			if values {
+				budgets = append(budgets, VersionRange{MaxBytes: 1})
+			}
+			for _, b := range budgets {
+				for _, d := range []bool{false, true} {
+					r := all
+					r.Desc, r.MaxScanned, r.MaxBytes = d, b.MaxScanned, b.MaxBytes
+					got, empty := ttKeyPages(t, lookup, r)
+					w := want
+					if d {
+						w = desc
+					}
+					require.Equal(t, w, got, "prefix %q budget %+v desc %v", pfx, b, d)
+					emptyPages += empty
+				}
+			}
+
+			// as of rounds: the boxes under the prefix
+			wantAt, _ := asOf(values, has)
+			r := VersionRange{Min: every[0], Max: latest, Limit: 1000, Values: values, Rounds: every, Prefix: []byte(pfx)}
+			p, err = lookup(r)
+			require.NoError(t, err)
+			require.False(t, p.More)
+			require.Equal(t, wantAt, p.Versions, "prefix %q values %v rounds", pfx, values)
+			r.Limit = 3
+			require.Equal(t, wantAt, ttRoundPages(t, lookup, r), "prefix %q rounds limit 3", pfx)
+		}
+	}
+	require.Positive(t, emptyPages, "scan budgets leave pages empty")
+
+	// as of rounds, MaxObjects counts the boxes under the prefix only
+	var under uint64
+	require.NoError(t, l.historyNow(latest).Objects(timetravel.BoxKvNamePrefix(uint64(app), []byte("a")), func([]byte) bool { under++; return true }))
+	require.EqualValues(t, 4, under, "a, a\x00, a\x00b, ab")
+	r := VersionRange{Min: every[0], Max: latest, Limit: 1000, Rounds: every, MaxObjects: under}
+	_, err := lookup(r)
+	require.ErrorIs(t, err, ErrTooManyVersionObjects)
+	r.Prefix = []byte("a")
+	_, err = lookup(r)
+	require.NoError(t, err)
+	r.Prefix, r.Key = nil, []byte("a")
+	_, err = lookup(r)
+	require.Error(t, err, "a state key does not apply to boxes")
 }
 
 // TestTimeTravelAppBoxVersionsClose checks that closing the store while box
