@@ -39,6 +39,15 @@ type VersionsParams struct {
 	// Rounds asks for the objects as of each of these rounds instead of
 	// their versions; it excludes MinRound and MaxRound
 	Rounds []basics.Round
+	// Key keeps the versions that change this global or local state key,
+	// in goal's app call argument form ("str:...", "b64:..."); only the app
+	// and account app endpoints take it. Pages can then be empty and still
+	// have a next token.
+	Key string
+	// Prefix keeps the changes of the boxes whose names start with it, in
+	// the same form; only ApplicationBoxesVersions takes it. Pages can be
+	// empty as with Key.
+	Prefix string
 }
 
 type versionsQuery struct {
@@ -51,10 +60,12 @@ type versionsQuery struct {
 	Exclude  string        `url:"exclude,omitempty"`
 	Name     string        `url:"name,omitempty"`
 	Rounds   string        `url:"rounds,omitempty"`
+	Key      string        `url:"key,omitempty"`
+	Prefix   string        `url:"prefix,omitempty"`
 }
 
 func (p VersionsParams) query() versionsQuery {
-	q := versionsQuery{MinRound: p.MinRound, MaxRound: p.MaxRound, Limit: p.Limit, Next: p.Next}
+	q := versionsQuery{MinRound: p.MinRound, MaxRound: p.MaxRound, Limit: p.Limit, Next: p.Next, Key: p.Key, Prefix: p.Prefix}
 	if p.Desc {
 		q.Order = "desc"
 	}
