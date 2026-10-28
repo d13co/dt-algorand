@@ -270,13 +270,20 @@ func (s *Store) truncateHolders(ctx context.Context, b uint64, scanned, deleted 
 	if err != nil {
 		return err
 	}
-	complete := len(v) == 8 && binary.BigEndian.Uint64(v) == s.next()
+	// truncateAfter ends the store at b from the start, but the meta record
+	// keeps the round it ended at until endTruncate, also when Open resumes
+	next, err := s.storedNext()
+	if err != nil {
+		closer.Close()
+		return err
+	}
+	complete := len(v) == 8 && binary.BigEndian.Uint64(v) == next
 	closer.Close()
 	if !complete {
 		s.infof("timetravel: dropping the asset holders index, which does not cover the store's last round, for the truncation: rebuild it with ttimport -holders-index")
 		return s.clearHolders()
 	}
-	if s.next() <= b+1 {
+	if next <= b+1 {
 		return nil // TruncateAfter(last): no boundary is after b
 	}
 	s.holders.Store(uint32(HoldersStale))
@@ -367,6 +374,20 @@ func (s *Store) truncateHoldersMeta(batch *pebble.Batch, b uint64) error {
 		return batch.Set(keyHoldersMeta, holdersMeta(b+1), nil)
 	}
 	return nil
+}
+
+// storedNext is the round after the one the store's meta record ends it at,
+// which a truncation changes only when it ends.
+func (s *Store) storedNext() (uint64, error) {
+	v, closer, err := s.db.Get(keyMeta)
+	if err != nil {
+		return 0, err
+	}
+	defer closer.Close()
+	if len(v) < 8 {
+		return 0, errors.New("timetravel: bad meta record")
+	}
+	return binary.BigEndian.Uint64(v) + 1, nil
 }
 
 // dropHoldersInBatch adds to batch the deletion of the holders index and its
