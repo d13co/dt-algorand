@@ -780,7 +780,11 @@ func TestTimeTravelVersions(t *testing.T) {
 							if inc.values || inc.keys {
 								r.Limit, r.MaxBytes = 1000, 1
 								require.Equal(t, want, ttRoundPages(t, c.lookup, r), "%s %+v rounds byte budget", c.name, inc)
+								r.MaxBytes = 0
 							}
+							r.MaxReadBytes = 1
+							require.Equal(t, want, ttRoundPages(t, c.lookup, r), "%s %+v rounds read budget", c.name, inc)
+							r.MaxReadBytes = 0
 						}
 					}
 				}
@@ -798,6 +802,29 @@ func TestTimeTravelVersions(t *testing.T) {
 					require.Equal(t, w.deleted, a.Deleted, "entry %d", i)
 					require.Equal(t, w.changed, a.Changed, "entry %d", i)
 				}
+				// the read budget counts the values read, returned or not: the
+				// params as of a round and, at their destruction, the params
+				// before it. A page always holds its first round.
+				hv := l.historyNow(latest)
+				params, ok, err := hv.Get(timetravel.AssetParamsKey(asa2), uint64(created))
+				require.NoError(t, err)
+				require.True(t, ok)
+				final, ok, err := hv.Get(timetravel.AssetParamsKey(asa2), uint64(destroyed)-1)
+				require.NoError(t, err)
+				require.True(t, ok)
+				rs := []basics.Round{0, created, destroyed}
+				for _, w := range []struct {
+					budget uint64
+					n      int
+				}{{1, 1}, {uint64(len(params)), 2}, {uint64(len(params) + len(final) - 1), 2}, {uint64(len(params) + len(final)), 3}} {
+					p, err = l.AssetVersions(asa2, VersionRange{Max: latest, Limit: 10, Rounds: rs, MaxReadBytes: w.budget})
+					require.NoError(t, err)
+					require.Len(t, p.Versions, w.n, "budget %d", w.budget)
+					require.Equal(t, w.n < len(rs), p.More)
+				}
+				p, err = l.AssetVersions(asa2, VersionRange{Max: latest, Limit: 10, Rounds: rs[2:], MaxReadBytes: 1})
+				require.NoError(t, err)
+				require.Len(t, p.Versions, 1, "the first round of a page is held whatever it reads")
 
 				// two holdings and two created assets, one destroyed: they all count
 				_, err = l.AccountVersions(addrs[0], AccountVersionsExclude{}, VersionRange{Max: latest, Limit: 10, MaxObjects: 3})
@@ -1064,6 +1091,49 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 						require.ErrorIs(t, err, ErrRoundTooLarge)
 						r.MaxBytes, r.Rounds = 0, every
 					}
+					// the read budget counts the values the lookups read,
+					// returned or not: each box's value as of the round, and
+					// the one before it
+					boxAt := func(name string, R basics.Round) []byte {
+						b, err := l.LookupKv(R, apps.MakeBoxKey(uint64(app), name))
+						require.NoError(t, err)
+						return b
+					}
+					reads := make([]uint64, len(every))
+					var mostRead uint64
+					var readiest int
+					for i, R := range every {
+						for _, name := range sorted {
+							chg := boxChanges[name]
+							k := sort.Search(len(chg), func(i int) bool { return chg[i] > R })
+							if k == 0 {
+								continue
+							}
+							at := chg[k-1]
+							reads[i] += uint64(len(boxAt(name, at)) + len(boxAt(name, at-1)))
+						}
+						if reads[i] > mostRead {
+							mostRead, readiest = reads[i], i
+						}
+					}
+					require.Greater(t, mostRead, uint64(0))
+					r.MaxReadBytes = mostRead
+					require.Equal(t, want, ttRoundPages(t, lookup, r), "rounds read budget")
+					// the first page ends before the round that takes it past
+					// the budget
+					var held int
+					for sum := uint64(0); held < len(reads) && sum+reads[held] <= mostRead; held++ {
+						sum += reads[held]
+					}
+					require.Less(t, held, len(reads))
+					p, err = lookup(r)
+					require.NoError(t, err)
+					require.True(t, p.More)
+					require.Len(t, p.Versions, held)
+					r.MaxReadBytes, r.Rounds = mostRead-1, every[readiest:]
+					_, err = lookup(r)
+					require.ErrorIs(t, err, ErrRoundTooLarge, "values=%v", values)
+					r.MaxReadBytes, r.Rounds = 0, every
 					// the seek budget counts every box, existing or not
 					r.MaxSeeks = 1
 					require.Equal(t, want, ttRoundPages(t, lookup, r), "rounds seek budget")

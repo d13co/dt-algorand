@@ -55,6 +55,10 @@ const (
 	// MaxVersionsSeeks bounds the lookups of a page with rounds: one per
 	// object per requested round. A page always has one round.
 	MaxVersionsSeeks = 100_000
+	// MaxVersionsReadBytes bounds the values the lookups of a page with
+	// rounds read, returned or not: each counts the value of the version in
+	// effect and the one before it.
+	MaxVersionsReadBytes = 64_000_000
 )
 
 // versionsQuery is the paging every versions endpoint takes.
@@ -140,7 +144,7 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 		if r.Desc {
 			slices.Reverse(rs)
 		}
-		r.Rounds, r.MaxSeeks = rs, MaxVersionsSeeks
+		r.Rounds, r.MaxSeeks, r.MaxReadBytes = rs, MaxVersionsSeeks, MaxVersionsReadBytes
 	}
 	maxLimit := uint64(MaxVersions)
 	if r.Values || r.Keys {

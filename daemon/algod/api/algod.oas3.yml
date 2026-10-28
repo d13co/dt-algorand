@@ -242,7 +242,7 @@
         }
       },
       "versions-rounds": {
-        "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+        "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
         "explode": false,
         "in": "query",
         "name": "rounds",
@@ -4356,7 +4356,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -4841,7 +4841,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -5205,7 +5205,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -5587,7 +5587,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -5878,7 +5878,7 @@
     },
     "/v2/applications/{application-id}/boxes/versions": {
       "get": {
-        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. A page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values; a single round with more fails with 400. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
+        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. A page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values, or have read 64 MB of values, deleted boxes included; a single round with more fails with 400. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
         "operationId": "ApplicationBoxesVersions",
         "parameters": [
           {
@@ -5918,7 +5918,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -6105,7 +6105,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -6376,7 +6376,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",

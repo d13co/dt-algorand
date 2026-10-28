@@ -66,6 +66,14 @@ type VersionRange struct {
 	// lookups (one per object per round) past it (0: no limit). A page always
 	// has at least one round.
 	MaxSeeks uint64
+	// MaxReadBytes ends a Rounds page early, before a round whose lookups
+	// would take the values they read past it, whether or not the page
+	// returns them (0: no limit). A lookup counts the value of the object's
+	// version and the value before it (for a deletion, the value deleted):
+	// at least what it reads. A page always has at least one round,
+	// except that a round of an app's boxes that reads more fails with
+	// ErrRoundTooLarge.
+	MaxReadBytes uint64
 }
 
 // VersionPage is a page of versions, in page order.
@@ -174,9 +182,9 @@ type AccountVersionsExclude struct {
 var ErrTooManyVersionObjects = errors.New("too many objects to merge")
 
 // ErrRoundTooLarge is returned when a Rounds page of an app's boxes would
-// hold a round with more boxes than VersionRange.MaxEntries or more values
-// than MaxBytes.
-var ErrRoundTooLarge = errors.New("too many boxes at one round")
+// hold a round with more boxes than VersionRange.MaxEntries, more values
+// than MaxBytes, or whose lookups read more values than MaxReadBytes.
+var ErrRoundTooLarge = errors.New("one round of boxes is too large")
 
 // AccountVersions lists the versions of everything GET /v2/accounts/{addr}
 // returns: its base record, holdings, local states, and the params of the
@@ -636,7 +644,7 @@ func latestVersion(h *histView, obj []byte, rnd basics.Round) (at basics.Round, 
 // left out, except srcs[0] if first is set, which is then reported deleted.
 func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPage, error) {
 	var page VersionPage
-	var size, seeks uint64
+	var size, read, seeks uint64
 	for i, R := range r.Rounds {
 		if uint64(i) == r.Limit || (i > 0 && r.MaxSeeks > 0 && seeks+uint64(len(srcs)) > r.MaxSeeks) {
 			page.More, page.Next = true, R
@@ -648,31 +656,40 @@ func versionsAt(h *histView, srcs [][]byte, r VersionRange, first bool) (Version
 			return VersionPage{}, err
 		}
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
-		var n uint64
+		var n, rn uint64 // the round's values: returned, and read
+		// over reports that the page cannot hold the round; it always
+		// holds its first
+		over := func() bool {
+			return len(page.Versions) > 0 && ((r.MaxBytes > 0 && size+n > r.MaxBytes) ||
+				(r.MaxReadBytes > 0 && read+rn > r.MaxReadBytes))
+		}
 		for j, obj := range srcs {
 			at, val, prev, ok, found, err := latestVersion(h, obj, R)
 			if err != nil {
 				return VersionPage{}, err
 			}
-			always := j == 0 && first
-			if !always && (!found || !ok) {
-				continue
+			rn += uint64(len(val) + len(prev))
+			if (j == 0 && first) || (found && ok) {
+				o := objRead{obj: obj, round: at, ok: found && ok, asOf: true, absent: !found, prev: prev, havePrev: true}
+				if o.needsValue(r.Values, r.Keys) {
+					o.val = val
+				}
+				m, err := addObject(h, &v, &hdr, o, r.Values, r.Keys)
+				if err != nil {
+					return VersionPage{}, err
+				}
+				n += m
 			}
-			o := objRead{obj: obj, round: at, ok: found && ok, asOf: true, absent: !found, prev: prev, havePrev: true}
-			if o.needsValue(r.Values, r.Keys) {
-				o.val = val
+			if over() {
+				break // the page ends before this round
 			}
-			m, err := addObject(h, &v, &hdr, o, r.Values, r.Keys)
-			if err != nil {
-				return VersionPage{}, err
-			}
-			n += m
 		}
-		if r.MaxBytes > 0 && len(page.Versions) > 0 && size+n > r.MaxBytes {
+		if over() {
 			page.More, page.Next = true, R
 			break
 		}
 		size += n
+		read += rn
 		page.Versions = append(page.Versions, v)
 	}
 	return page, nil
@@ -697,7 +714,7 @@ func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, 
 		return VersionPage{}, fmt.Errorf("%w: app %d has had more than %d boxes", ErrTooManyVersionObjects, app, r.MaxObjects)
 	}
 	var page VersionPage
-	var size, entries, seeks uint64
+	var size, entries, read, seeks uint64
 	for i, R := range r.Rounds {
 		if uint64(i) == r.Limit || (i > 0 && r.MaxSeeks > 0 && seeks+uint64(len(boxes)) > r.MaxSeeks) {
 			page.More, page.Next = true, R
@@ -709,36 +726,51 @@ func appBoxesAt(h *histView, app basics.AppIndex, r VersionRange) (VersionPage, 
 			return VersionPage{}, err
 		}
 		v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
-		var n uint64
+		var n, rn uint64 // the round's values: returned, and read
+		// over reports that the page cannot hold the round
+		over := func() bool {
+			return (r.MaxEntries > 0 && entries+uint64(len(v.Boxes)) > r.MaxEntries) ||
+				(r.MaxBytes > 0 && size+n > r.MaxBytes) ||
+				(r.MaxReadBytes > 0 && read+rn > r.MaxReadBytes)
+		}
 		for _, b := range boxes {
-			at, val, _, ok, found, err := latestVersion(h, b.obj, R)
+			at, val, prev, ok, found, err := latestVersion(h, b.obj, R)
 			if err != nil {
 				return VersionPage{}, err
 			}
-			if !found || !ok {
-				continue
+			rn += uint64(len(val) + len(prev))
+			if found && ok {
+				bc := BoxChange{Name: b.name, Changed: &at}
+				if r.Values {
+					bc.Value = val
+					n += uint64(len(val))
+				}
+				v.Boxes = append(v.Boxes, bc)
 			}
-			bc := BoxChange{Name: b.name, Changed: &at}
-			if r.Values {
-				bc.Value = val
-				n += uint64(len(val))
-			}
-			v.Boxes = append(v.Boxes, bc)
-			// a round is never split, so one too large for a page fails
-			if (r.MaxEntries > 0 && uint64(len(v.Boxes)) > r.MaxEntries) || (r.MaxBytes > 0 && n > r.MaxBytes) {
+			if over() {
+				// a round is never split, so one too large for a page fails
 				if len(page.Versions) == 0 {
-					return VersionPage{}, fmt.Errorf("%w: app %d has more than %d boxes or %d bytes of values at round %d", ErrRoundTooLarge, app, r.MaxEntries, r.MaxBytes, R)
+					var why string
+					switch {
+					case r.MaxEntries > 0 && uint64(len(v.Boxes)) > r.MaxEntries:
+						why = fmt.Sprintf("has more than %d boxes", r.MaxEntries)
+					case r.MaxBytes > 0 && n > r.MaxBytes:
+						why = fmt.Sprintf("has more than %d bytes of values", r.MaxBytes)
+					default:
+						why = fmt.Sprintf("reads more than %d bytes of values, counting deleted boxes", r.MaxReadBytes)
+					}
+					return VersionPage{}, fmt.Errorf("%w: app %d %s at round %d", ErrRoundTooLarge, app, why, R)
 				}
 				break // the page ends before this round
 			}
 		}
-		if len(page.Versions) > 0 && ((r.MaxBytes > 0 && size+n > r.MaxBytes) ||
-			(r.MaxEntries > 0 && entries+uint64(len(v.Boxes)) > r.MaxEntries)) {
+		if over() {
 			page.More, page.Next = true, R
 			break
 		}
 		size += n
 		entries += uint64(len(v.Boxes))
+		read += rn
 		page.Versions = append(page.Versions, v)
 	}
 	return page, nil

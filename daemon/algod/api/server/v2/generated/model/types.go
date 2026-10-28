@@ -1988,7 +1988,7 @@ type AccountApplicationVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
@@ -2042,7 +2042,7 @@ type AccountAssetVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
@@ -2087,7 +2087,7 @@ type AccountVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
@@ -2138,7 +2138,7 @@ type ApplicationBoxVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
@@ -2192,7 +2192,7 @@ type ApplicationBoxesVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
@@ -2222,7 +2222,7 @@ type ApplicationVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).
@@ -2258,7 +2258,7 @@ type AssetVersionsParams struct {
 	// MaxRound Include versions at this round or earlier. Defaults to the latest round.
 	MaxRound *basics.Round `form:"max-round,omitempty" json:"max-round,omitempty"`
 
-	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.
+	// Rounds Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.
 	Rounds *[]basics.Round `form:"rounds,omitempty" json:"rounds,omitempty"`
 
 	// Order List versions oldest first (`asc`, the default) or newest first (`desc`).

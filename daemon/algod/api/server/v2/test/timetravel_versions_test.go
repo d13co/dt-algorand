@@ -136,18 +136,18 @@ func TestVersionsParams(t *testing.T) {
 		// rounds: sorted and deduplicated in page order, bounded by Min and
 		// Max, which the response reports
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{30, 5, 30, 7, 1000}},
-			ledger.VersionRange{Min: 5, Max: 1000, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{5, 7, 30, 1000}}, ledger.AccountVersionsExclude{}, 1000},
+			ledger.VersionRange{Min: 5, Max: 1000, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5, 7, 30, 1000}}, ledger.AccountVersionsExclude{}, 1000},
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{30, 5, 7}, Order: order(model.AccountVersionsParamsOrderDesc), Include: values},
-			ledger.VersionRange{Min: 5, Max: 30, Desc: true, Limit: 100, Values: true, MaxBytes: 1_000_000, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{30, 7, 5}}, ledger.AccountVersionsExclude{}, 30},
+			ledger.VersionRange{Min: 5, Max: 30, Desc: true, Limit: 100, Values: true, MaxBytes: 1_000_000, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{30, 7, 5}}, ledger.AccountVersionsExclude{}, 30},
 		{model.AccountVersionsParams{Rounds: func() *[]basics.Round { rs := make([]basics.Round, 10_001); return &rs }()},
-			ledger.VersionRange{Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{0}}, ledger.AccountVersionsExclude{}, 0},
+			ledger.VersionRange{Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{0}}, ledger.AccountVersionsExclude{}, 0},
 		// next drops the rounds before the token, in page order
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Next: str("7")},
-			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
+			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Next: str("6")},
-			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
+			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Order: order(model.AccountVersionsParamsOrderDesc), Next: str("7")},
-			ledger.VersionRange{Min: 5, Max: 7, Desc: true, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 5}}, ledger.AccountVersionsExclude{}, 7},
+			ledger.VersionRange{Min: 5, Max: 7, Desc: true, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{7, 5}}, ledger.AccountVersionsExclude{}, 7},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeAll}},
 			ledger.VersionRange{Max: 1000, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{All: true}, 1000},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeCreatedAppsParams, model.AccountVersionsParamsExcludeCreatedAssetsParams}},
@@ -249,7 +249,7 @@ func TestVersionsParams(t *testing.T) {
 		return rec
 	}
 	require.Equal(t, http.StatusOK, boxesAt(nil).Code)
-	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, vl.r)
+	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, vl.r)
 	require.Equal(t, http.StatusOK, boxesAt(&[]model.ApplicationBoxesVersionsParamsInclude{model.ApplicationBoxesVersionsParamsIncludeValues}).Code)
 	require.EqualValues(t, 1_000, vl.r.MaxEntries)
 	for _, err := range []error{ledger.ErrTooManyVersionObjects, ledger.ErrRoundTooLarge} {
