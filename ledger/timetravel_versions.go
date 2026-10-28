@@ -47,8 +47,26 @@ type VersionRange struct {
 	Keys bool
 	// MaxBytes ends a page early once its values exceed it (0: no limit).
 	// With Keys, the previous values the keys are found from count too. A
-	// page always has at least one version.
+	// page always has at least one version, except with Key or Prefix: their
+	// pages can have none and still have More.
 	MaxBytes uint64
+	// Key, if not nil, keeps only the versions of an app's params or local
+	// state at which this global or local state key's value changed (added,
+	// removed, or a new value or type), and reports its new value (KeyValue).
+	// AppVersions and AccountAppVersions take it; AccountAppVersions then
+	// lists the local state only. It excludes Rounds. A page examines at most
+	// MaxScanned versions and reads at most MaxReadBytes of values (each
+	// version's and the one before it), so it can hold fewer than Limit
+	// versions, or none, and still have More; Next is then the round to
+	// resume from, which need not be a version.
+	Key []byte
+	// Prefix, if not nil, narrows AppBoxVersions to the boxes whose names
+	// start with it. Range pages are bounded by MaxScanned as for Key; with
+	// Rounds, MaxObjects counts only the boxes under the prefix.
+	Prefix []byte
+	// MaxScanned bounds the work of a Key or Prefix range page (0: no limit):
+	// versions examined (Key), or box index entries stepped through (Prefix).
+	MaxScanned uint64
 	// MaxObjects bounds the resources (holdings, local states, created assets
 	// and apps) an account lookup merges, counting every one the account ever
 	// had (0: no limit). With Rounds, it bounds an app's boxes likewise.
@@ -72,7 +90,7 @@ type VersionRange struct {
 	// version and the value before it (for a deletion, the value deleted):
 	// at least what it reads. A page always has at least one round,
 	// except that a round of an app's boxes that reads more fails with
-	// ErrRoundTooLarge.
+	// ErrRoundTooLarge. A Key page counts each version it examines likewise.
 	MaxReadBytes uint64
 }
 
@@ -121,13 +139,16 @@ type HoldingVersion struct {
 
 // LocalStateVersion is a version of an app local state. ChangedKeys, set
 // only with VersionRange.Keys and not on deletions, are the keys added,
-// removed or changed in the round, sorted.
+// removed or changed in the round, sorted. KeyValue, only with
+// VersionRange.Key, is the key's new value: nil when the version removed it
+// or deleted the state.
 type LocalStateVersion struct {
 	App         basics.AppIndex
 	Deleted     bool
 	Changed     *basics.Round // with Rounds, as for AccountVersion
 	State       *basics.AppLocalState
 	ChangedKeys [][]byte
+	KeyValue    *basics.TealValue
 }
 
 // AssetVersion is a version of an asset's params. Params is nil when
@@ -144,7 +165,8 @@ type AssetVersion struct {
 
 // AppVersion is a version of an app's params, like AssetVersion.
 // ChangedKeys are the global state keys the version changed, as for
-// LocalStateVersion; versions from the creator index have none.
+// LocalStateVersion; versions from the creator index have none. KeyValue is
+// as for LocalStateVersion.
 type AppVersion struct {
 	App         basics.AppIndex
 	Deleted     bool
@@ -152,6 +174,7 @@ type AppVersion struct {
 	Creator     basics.Address
 	Params      *basics.AppParams
 	ChangedKeys [][]byte
+	KeyValue    *basics.TealValue
 }
 
 // BoxVersion is a version of a box.
@@ -266,6 +289,9 @@ func histAccountAppVersions(h *histView, addr basics.Address, aidx basics.AppInd
 
 func histAccountResourceVersions(h *histView, addr basics.Address, cidx basics.CreatableIndex, ctype basics.CreatableType, resKey, paramsKey []byte, r VersionRange) (VersionPage, error) {
 	srcs := [][]byte{resKey}
+	if r.Key != nil { // a local state key: the params are not looked at
+		return versions(h, srcs, r, false)
+	}
 	// creators never change: the params are the account's if it ever created the creatable
 	created := false
 	if err := h.Objects(timetravel.CreatedKey(addr, ctype, cidx), func([]byte) bool { created = true; return false }); err != nil {
@@ -395,6 +421,18 @@ type srcChange struct {
 // With r.Rounds it builds a page of the objects as of those rounds instead
 // (versionsAt); first then reports srcs[0] at every round.
 func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPage, error) {
+	if r.Prefix != nil {
+		return VersionPage{}, errors.New("a name prefix applies to an app's boxes")
+	}
+	if r.Key != nil {
+		if r.Rounds != nil {
+			return VersionPage{}, errors.New("a state key cannot be combined with rounds")
+		}
+		if len(srcs) != 1 || (srcs[0][0] != timetravel.KindAppParams && srcs[0][0] != timetravel.KindLocal) {
+			return VersionPage{}, errors.New("a state key applies to app params or a local state")
+		}
+		return keyVersions(h, srcs[0], r)
+	}
 	if r.Rounds != nil {
 		return versionsAt(h, srcs, r, first)
 	}
@@ -444,6 +482,152 @@ func versions(h *histView, srcs [][]byte, r VersionRange, first bool) (VersionPa
 		page.Versions = append(page.Versions, v)
 	}
 	return page, nil
+}
+
+// keyVersions builds a page of the versions of obj, an app's params or a
+// local state, at which r.Key's value changed, from one scan of obj's
+// versions, each with the state before it. The scan stops at Limit matches
+// and one more, or once it has examined MaxScanned versions or read
+// MaxReadBytes of values; it always examines one.
+func keyVersions(h *histView, obj []byte, r VersionRange) (VersionPage, error) {
+	type match struct {
+		rnd        basics.Round
+		val, prev  []byte
+		ok, prevOK bool
+		kv         *basics.TealValue
+	}
+	var page VersionPage
+	var matches []match
+	var scanned, read uint64
+	var dec keyDecoder
+	var derr error
+	// the callback must not read the store, as for BoxChanges
+	err := h.VersionsPrev(obj, uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
+		R := basics.Round(rnd)
+		n := uint64(len(val) + len(prev))
+		if scanned > 0 && ((r.MaxScanned > 0 && scanned >= r.MaxScanned) || (r.MaxReadBytes > 0 && read+n > r.MaxReadBytes)) {
+			page.More, page.Next = true, R
+			return false
+		}
+		scanned++
+		read += n
+		var cur, before *basics.TealValue
+		if cur, derr = dec.value(obj, val, ok, r.Key); derr != nil {
+			return false
+		}
+		if before, derr = dec.value(obj, prev, prevOK, r.Key); derr != nil {
+			return false
+		}
+		dec.keep(val, ok, cur, prev, prevOK, before)
+		if sameTealValue(before, cur) {
+			return true
+		}
+		if uint64(len(matches)) == r.Limit {
+			page.More, page.Next = true, R
+			return false
+		}
+		matches = append(matches, match{R, val, prev, ok, prevOK, cur})
+		return true
+	})
+	if err == nil {
+		err = derr
+	}
+	if err != nil {
+		return VersionPage{}, err
+	}
+	var size uint64
+	for _, m := range matches {
+		hdr, err := histHeader(h, m.rnd)
+		if err != nil {
+			return VersionPage{}, err
+		}
+		v := Version{Round: m.rnd, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
+		o := objRead{obj: obj, round: m.rnd, ok: m.ok, havePrev: true}
+		if m.prevOK {
+			o.prev = m.prev
+		}
+		if o.needsValue(r.Values, r.Keys) {
+			o.val = m.val
+		}
+		n, err := addObject(h, &v, &hdr, o, r.Values, r.Keys)
+		if err != nil {
+			return VersionPage{}, err
+		}
+		if r.MaxBytes > 0 && len(page.Versions) > 0 && size+n > r.MaxBytes {
+			page.More, page.Next = true, m.rnd
+			break
+		}
+		size += n
+		if obj[0] == timetravel.KindAppParams {
+			v.Apps[0].KeyValue = m.kv
+		} else {
+			v.LocalStates[0].KeyValue = m.kv
+		}
+		page.Versions = append(page.Versions, v)
+	}
+	return page, nil
+}
+
+// keyDecoder finds a state key's value in app params or local state records,
+// reusing the last two it decoded: a scan's next version shares its previous
+// state with the version before (ascending) or its new state (descending).
+type keyDecoder struct {
+	last [2]struct {
+		val []byte
+		ok  bool
+		kv  *basics.TealValue
+	}
+}
+
+// value returns key's value in obj's record val (ok false: no state), nil
+// if it has none.
+func (d *keyDecoder) value(obj, val []byte, ok bool, key []byte) (*basics.TealValue, error) {
+	if !ok {
+		return nil, nil
+	}
+	for _, l := range d.last {
+		if l.ok && bytes.Equal(l.val, val) {
+			return l.kv, nil
+		}
+	}
+	return stateKeyValue(obj, val, key)
+}
+
+// keep remembers a version's two decoded states.
+func (d *keyDecoder) keep(val []byte, ok bool, kv *basics.TealValue, prev []byte, prevOK bool, prevKV *basics.TealValue) {
+	d.last[0].val, d.last[0].ok, d.last[0].kv = val, ok, kv
+	d.last[1].val, d.last[1].ok, d.last[1].kv = prev, prevOK, prevKV
+}
+
+// stateKeyValue decodes an app params or local state record and returns
+// key's value in its state, nil if it has none.
+func stateKeyValue(obj, val, key []byte) (*basics.TealValue, error) {
+	var kv basics.TealKeyValue
+	switch obj[0] {
+	case timetravel.KindAppParams:
+		var p basics.AppParams
+		if _, err := decodeParams(obj, val, &p); err != nil {
+			return nil, err
+		}
+		kv = p.GlobalState
+	case timetravel.KindLocal:
+		var ls basics.AppLocalState
+		if err := protocol.Decode(val, &ls); err != nil {
+			return nil, err
+		}
+		kv = ls.KeyValue
+	default:
+		return nil, fmt.Errorf("history object %x has no state keys", obj)
+	}
+	if tv, ok := kv[string(key)]; ok {
+		return &tv, nil
+	}
+	return nil, nil
+}
+
+// sameTealValue reports whether two optional values are equal.
+func sameTealValue(a, b *basics.TealValue) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
 // readVersion builds the version of round rnd from the sources that changed
