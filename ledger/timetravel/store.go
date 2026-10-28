@@ -1004,8 +1004,9 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn f
 	// N = 1: the records of the app's boxes (under the prefix), to read each
 	// entry's record and the one before it
 	var recs *pebble.Iterator
+	recPrefix := BoxKvNamePrefix(app, o.Prefix)
 	if s.n == 1 {
-		lo := append([]byte{pfxCheckpoint}, BoxKvNamePrefix(app, o.Prefix)...)
+		lo := append([]byte{pfxCheckpoint}, recPrefix...)
 		if recs, err = s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)}); err != nil {
 			return end, err
 		}
@@ -1052,6 +1053,11 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn f
 		var val, prev []byte
 		var ok, prevOK bool
 		if recs != nil {
+			// the records iterator holds only the prefix's boxes: a box
+			// outside it would read as a no-op and be dropped
+			if !bytes.HasPrefix(obj, recPrefix) {
+				return end, fmt.Errorf("timetravel: box %x is outside the records of prefix %x", obj, o.Prefix)
+			}
 			var found bool
 			if val, ok, prev, prevOK, found, err = fullChange(recs, obj, rnd); err != nil {
 				return end, err
