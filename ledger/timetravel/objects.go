@@ -118,6 +118,13 @@ func BoxKvPrefix(app uint64) []byte {
 	return KvPrefix(string(binary.BigEndian.AppendUint64([]byte(boxKeyPrefix), app)))
 }
 
+// BoxKvNamePrefix is the object key prefix of the boxes of app whose names
+// start with prefix. Escaping is per byte, so it is a prefix of the object
+// key of every such name.
+func BoxKvNamePrefix(app uint64, prefix []byte) []byte {
+	return KvPrefix(string(append(binary.BigEndian.AppendUint64([]byte(boxKeyPrefix), app), prefix...)))
+}
+
 // BoxOf returns the app and name of a box's object key; ok is false if obj
 // is not a box's.
 func BoxOf(obj []byte) (app uint64, name []byte, ok bool) {
