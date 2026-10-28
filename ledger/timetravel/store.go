@@ -1341,7 +1341,8 @@ func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 	record := func() (rnd uint64, v []byte, ok bool, err error) {
 		k := it.Key()
 		v, ok, err = applyRecord(nil, false, it.Value())
-		return binary.BigEndian.Uint64(k[len(k)-8:]), append([]byte(nil), v...), ok, err
+		// Clone keeps an empty value non-nil, as Get returns it
+		return binary.BigEndian.Uint64(k[len(k)-8:]), bytes.Clone(v), ok, err
 	}
 	if !desc {
 		var prev []byte

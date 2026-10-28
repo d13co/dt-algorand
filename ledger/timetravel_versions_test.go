@@ -1212,3 +1212,62 @@ func TestTimeTravelAppBoxVersionsPartialIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, p.Versions, 10)
 }
+
+// TestTimeTravelEmptyBoxValue checks that a zero-length box has an empty,
+// not nil, value in range and rounds pages, whether its version is in the
+// store or still in memory: the REST API would show nil as null.
+func TestTimeTravelEmptyBoxValue(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	key := apps.MakeBoxKey(1, "e")
+	for _, n := range []uint64{1, 3} {
+		for _, inMem := range []bool{false, true} {
+			t.Run(fmt.Sprintf("N=%d/inMem=%v", n, inMem), func(t *testing.T) {
+				s, err := timetravel.Open(t.TempDir(), timetravel.Options{CheckpointInterval: n})
+				require.NoError(t, err)
+				defer s.Close()
+				h := &histView{store: s}
+				const rounds = 6
+				for r := uint64(0); r < rounds; r++ {
+					hdr := protocol.Encode(&bookkeeping.BlockHeader{Round: basics.Round(r), TimeStamp: int64(r)})
+					var chs []timetravel.Change
+					switch r {
+					case 2:
+						chs = []timetravel.Change{{Key: timetravel.KvKey(key), Value: []byte{}}}
+					case 4:
+						chs = []timetravel.Change{{Key: timetravel.KvKey(key), Value: []byte("y")}}
+					}
+					if inMem && r >= 2 {
+						hr := historyRound{rnd: basics.Round(r), changes: chs, idx: map[string]int{}, hdr: hdr}
+						for i, ch := range chs {
+							hr.idx[string(ch.Key)] = i
+						}
+						h.pending = append(h.pending, hr)
+						continue
+					}
+					require.NoError(t, s.AddRound(r, chs, hdr, nil))
+					h.last = basics.Round(r)
+				}
+
+				box := func(r VersionRange) []byte {
+					t.Helper()
+					p, err := versions(h, [][]byte{timetravel.KvKey(key)}, r, true)
+					require.NoError(t, err)
+					require.NotEmpty(t, p.Versions)
+					require.NotNil(t, p.Versions[0].Box)
+					return p.Versions[0].Box.Value
+				}
+				require.Equal(t, []byte{}, box(VersionRange{Max: rounds - 1, Limit: 10, Values: true}), "range")
+				require.Equal(t, []byte{}, box(VersionRange{Min: 3, Max: 3, Limit: 10, Values: true, Rounds: []basics.Round{3}}), "rounds")
+
+				p, err := histAppBoxVersions(h, 1, VersionRange{Max: rounds - 1, Limit: 10, Values: true})
+				require.NoError(t, err)
+				require.Equal(t, []byte{}, p.Versions[0].Boxes[0].Value, "boxes range")
+				p, err = histAppBoxVersions(h, 1, VersionRange{Min: 3, Max: 3, Limit: 10, Values: true, Rounds: []basics.Round{3}, MaxObjects: 10, MaxEntries: 10})
+				require.NoError(t, err)
+				require.Equal(t, []byte{}, p.Versions[0].Boxes[0].Value, "boxes rounds")
+			})
+		}
+	}
+}
