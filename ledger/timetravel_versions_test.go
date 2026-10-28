@@ -1052,6 +1052,64 @@ func checkKeyVersions(t *testing.T, l *Ledger, addrs []basics.Address, kv basics
 	require.Error(t, err)
 }
 
+// TestStateKeyValue checks the partial decoder of state keys against a full
+// decode of app params and local states: keys present and absent, empty,
+// prefixes of others, uint and bytes values, no state, and records that are
+// not maps.
+func TestStateKeyValue(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	keys := []string{"", "a", "ab", "b", "\x00", "counter", "nope", string(make([]byte, 64))}
+	states := []basics.TealKeyValue{nil, {}, {"a": {Type: basics.TealUintType, Uint: 7}}}
+	big := basics.TealKeyValue{}
+	for i, k := range keys[:6] {
+		if i%2 == 0 {
+			big[k] = basics.TealValue{Type: basics.TealBytesType, Bytes: k + "!"}
+		} else {
+			big[k] = basics.TealValue{Type: basics.TealUintType, Uint: uint64(i)}
+		}
+	}
+	big[keys[7]] = basics.TealValue{Type: basics.TealBytesType} // empty bytes
+	states = append(states, big)
+	var creator basics.Address
+	creator[0] = 1
+	for _, st := range states {
+		recs := map[byte][]byte{
+			timetravel.KindAppParams: append(creator[:], protocol.Encode(&basics.AppParams{ApprovalProgram: []byte{1, 2}, GlobalState: st,
+				StateSchemas: basics.StateSchemas{GlobalStateSchema: basics.StateSchema{NumUint: 3}}, ExtraProgramPages: 1})...),
+			timetravel.KindLocal: protocol.Encode(&basics.AppLocalState{Schema: basics.StateSchema{NumByteSlice: 2}, KeyValue: st}),
+		}
+		for kind, rec := range recs {
+			obj := []byte{kind, 0, 0, 0, 0, 0, 0, 0, 1}
+			for _, k := range keys {
+				want, err := fullStateKeyValue(obj, rec, []byte(k))
+				require.NoError(t, err)
+				body := rec
+				if kind == timetravel.KindAppParams {
+					body = rec[len(creator):]
+				}
+				field := map[byte]string{timetravel.KindAppParams: "gs", timetravel.KindLocal: "tkv"}[kind]
+				got, ok := findStateKey(body, field, []byte(k))
+				require.True(t, ok, "the encoding is walked")
+				require.Equal(t, want, got, "kind %c key %q state %v", kind, k, st)
+				got, err = stateKeyValue(obj, rec, []byte(k))
+				require.NoError(t, err)
+				require.Equal(t, want, got)
+				_, has := st[k]
+				require.Equal(t, has, got != nil, "key %q", k)
+			}
+		}
+	}
+	// a record that is not a map: the full decode answers
+	_, ok := findStateKey([]byte{0x91, 0x01}, "gs", []byte("a"))
+	require.False(t, ok)
+	_, err := stateKeyValue([]byte{timetravel.KindLocal}, []byte{0xc1}, []byte("a"))
+	require.Error(t, err, "a bad record is an error, as for a full decode")
+	_, err = stateKeyValue(timetravel.AppParamsKey(1), []byte{1, 2}, []byte("a"))
+	require.Error(t, err, "short params record")
+}
+
 // boxChurnApp puts arg 1 in box arg 0 and, given arg 2, deletes that box.
 var boxChurnApp = main(`
 	txna ApplicationArgs 0; txna ApplicationArgs 1; box_put

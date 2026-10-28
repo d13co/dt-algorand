@@ -609,9 +609,71 @@ func (d *keyDecoder) keep(val []byte, ok bool, kv *basics.TealValue, prev []byte
 	d.last[1].val, d.last[1].ok, d.last[1].kv = prev, prevOK, prevKV
 }
 
-// stateKeyValue decodes an app params or local state record and returns
-// key's value in its state, nil if it has none.
+// stateKeyValue returns key's value in the state of an app params or local
+// state record, nil if it has none. It walks the record's msgpack to the
+// state map and decodes only the key's value (a full decode copies the
+// programs, about 70% of a key page's time), falling back to a full decode
+// for a record it cannot walk.
 func stateKeyValue(obj, val, key []byte) (*basics.TealValue, error) {
+	rec, field := val, "tkv" // AppLocalState.KeyValue
+	if obj[0] == timetravel.KindAppParams {
+		var creator basics.Address
+		if len(val) < len(creator) {
+			return nil, fmt.Errorf("short params record %x", obj)
+		}
+		rec, field = val[len(creator):], "gs" // AppParams.GlobalState
+	}
+	if tv, ok := findStateKey(rec, field, key); ok {
+		return tv, nil
+	}
+	return fullStateKeyValue(obj, val, key)
+}
+
+// findStateKey finds key in the state map field of a msgpack-encoded struct
+// (a map, as protocol.Encode writes it). ok is false if it cannot walk rec.
+func findStateKey(rec []byte, field string, key []byte) (tv *basics.TealValue, ok bool) {
+	n, _, b, err := msgp.ReadMapHeaderBytes(rec)
+	if err != nil {
+		return nil, false
+	}
+	for range n {
+		var f []byte
+		if f, b, err = msgp.ReadMapKeyZC(b); err != nil {
+			return nil, false
+		}
+		if string(f) != field {
+			if b, err = msgp.Skip(b); err != nil {
+				return nil, false
+			}
+			continue
+		}
+		var m int
+		if m, _, b, err = msgp.ReadMapHeaderBytes(b); err != nil {
+			return nil, false
+		}
+		for range m {
+			var k []byte
+			if k, b, err = msgp.ReadStringZC(b); err != nil {
+				return nil, false
+			}
+			if bytes.Equal(k, key) {
+				var v basics.TealValue
+				if _, err = v.UnmarshalMsg(b); err != nil {
+					return nil, false
+				}
+				return &v, true
+			}
+			if b, err = msgp.Skip(b); err != nil {
+				return nil, false
+			}
+		}
+		return nil, true // canonical encodings have each field once
+	}
+	return nil, true
+}
+
+// fullStateKeyValue is stateKeyValue by a full decode of the record.
+func fullStateKeyValue(obj, val, key []byte) (*basics.TealValue, error) {
 	var kv basics.TealKeyValue
 	switch obj[0] {
 	case timetravel.KindAppParams:
