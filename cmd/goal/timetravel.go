@@ -526,7 +526,7 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 			return
 		}
 		// with --key or --prefix a page can be empty: there is more to read
-		if !versionsAll && len(entries) > 0 {
+		if !versionsAll && (len(entries) > 0 || (p.Key == "" && p.Prefix == "")) {
 			fmt.Fprintf(os.Stderr, "More versions: --next %s\n", *next)
 			return
 		}

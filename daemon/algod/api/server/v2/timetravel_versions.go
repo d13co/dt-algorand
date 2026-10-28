@@ -143,7 +143,7 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 	}
 	if q.key != nil {
 		if !q.keyOK {
-			return nil, r, errors.New("key applies to application state")
+			return nil, r, errors.New("key applies to the versions of an application or of an account's local state of one")
 		}
 		if q.rounds != nil {
 			return nil, r, errors.New("key cannot be combined with rounds")

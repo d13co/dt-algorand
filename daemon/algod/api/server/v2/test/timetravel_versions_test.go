@@ -272,19 +272,19 @@ func TestVersionsParams(t *testing.T) {
 			MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, ""},
 		"key on account": {func(ctx echo.Context) error {
 			return h.AccountVersions(ctx, addr, model.AccountVersionsParams{Key: str("str:a")})
-		}, ledger.VersionRange{}, "key applies to application state"},
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
 		"key on holding": {func(ctx echo.Context) error {
 			return h.AccountAssetVersions(ctx, addr, 7, model.AccountAssetVersionsParams{Key: str("str:a")})
-		}, ledger.VersionRange{}, "key applies to application state"},
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
 		"key on asset": {func(ctx echo.Context) error {
 			return h.AssetVersions(ctx, 7, model.AssetVersionsParams{Key: str("str:a")})
-		}, ledger.VersionRange{}, "key applies to application state"},
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
 		"key on box": {func(ctx echo.Context) error {
 			return h.ApplicationBoxVersions(ctx, 9, model.ApplicationBoxVersionsParams{Name: "str:b", Key: str("str:a")})
-		}, ledger.VersionRange{}, "key applies to application state"},
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
 		"key on boxes": {func(ctx echo.Context) error {
 			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Key: str("str:a")})
-		}, ledger.VersionRange{}, "key applies to application state"},
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
 		"prefix on app": {func(ctx echo.Context) error {
 			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Prefix: str("str:a")})
 		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},

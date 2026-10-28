@@ -1465,7 +1465,8 @@ func checkBoxPrefixVersions(t *testing.T, l *Ledger, app basics.AppIndex, every 
 	lookup := func(r VersionRange) (VersionPage, error) { return l.AppBoxVersions(app, r) }
 	var emptyPages int
 	// maps that share a first byte, 0x00 in names, prefixes that are whole
-	// names (a\x00b is one only), one that matches nothing
+	// names (a, a\x00, and a\x00b, which prefixes no other), one that
+	// matches nothing
 	for _, pfx := range []string{"a", "a\x00", "a\x00b", "ab", "c", "c1", "s", "t", "zz"} {
 		has := func(name string) bool { return strings.HasPrefix(name, pfx) }
 		for _, values := range []bool{false, true} {

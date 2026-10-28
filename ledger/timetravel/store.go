@@ -979,8 +979,9 @@ type BoxChangesEnd struct {
 // BoxChanges stops when fn returns false, or as o says. It fails with
 // ErrNoBoxIndex if it needs a round before BoxIndexFrom: if lo is before it,
 // ascending, or once it reaches it, descending (fn has then seen the later
-// changes). Reading a page costs a seek per index entry in it, however many
-// boxes the app ever had.
+// changes). Reading a page costs a seek per index entry it reads, however
+// many boxes the app ever had; with a prefix, the entries of other boxes
+// cost a step each.
 func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn func(rnd uint64, name, val []byte, ok bool) bool) (BoxChangesEnd, error) {
 	var end BoxChangesEnd
 	if err := s.acquire(); err != nil {

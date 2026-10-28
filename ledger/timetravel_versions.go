@@ -536,7 +536,14 @@ func keyVersions(h *histView, obj []byte, r VersionRange) (VersionPage, error) {
 			page.More, page.Next = true, R
 			return false
 		}
-		matches = append(matches, match{R, val, prev, ok, prevOK, cur})
+		m := match{rnd: R, ok: ok, prevOK: prevOK, kv: cur}
+		if r.Values || r.Keys { // keep only the values the page returns or reads keys from
+			m.val = val
+		}
+		if r.Keys {
+			m.prev = prev
+		}
+		matches = append(matches, m)
 		return true
 	})
 	if err == nil {
