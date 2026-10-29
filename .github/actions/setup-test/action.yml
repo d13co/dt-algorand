@@ -8,11 +8,13 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # a libsodium built for a newer macOS than MACOSX_DEPLOYMENT_TARGET would raise the
+    # binaries' minimum, so the target is part of the key
     - name: Cache libsodium
       uses: actions/cache@v4
       with:
         path: crypto/libs
-        key: libsodium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crypto/libsodium-fork/**') }}
+        key: libsodium-${{ runner.os }}-${{ runner.arch }}${{ env.MACOSX_DEPLOYMENT_TARGET && format('-macos{0}', env.MACOSX_DEPLOYMENT_TARGET) || '' }}-${{ hashFiles('crypto/libsodium-fork/**') }}
     - name: Build libsodium
       run: make libsodium
       shell: bash

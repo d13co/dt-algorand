@@ -25,7 +25,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/sstable"
 
 	"github.com/algorand/go-algorand/ledger/timetravel"
@@ -56,8 +55,6 @@ func ingest(args []string) error {
 	from := fs.Uint64("from", 0, "first round")
 	to := fs.Uint64("to", 0, "last round")
 	dbPath := fs.String("db", "", "store directory (recreated)")
-	n := fs.Uint64("n", 1, "checkpoint interval")
-	inc := fs.Bool("inc", false, "incremental patches")
 	comp := fs.String("comp", "zstd", "zstd|snappy|minlz|none")
 	block := fs.Int("block", 32<<10, "sstable block size")
 	hdrs := fs.Bool("hdr", false, "store block headers")
@@ -78,7 +75,7 @@ func ingest(args []string) error {
 		dedupEntries = 0
 	}
 	os.RemoveAll(*dbPath)
-	s, err := timetravel.Open(*dbPath, timetravel.Options{CheckpointInterval: *n, Incremental: *inc, Compression: cp, BlockSize: *block, CacheSize: *cacheMB << 20, DedupEntries: dedupEntries})
+	s, err := timetravel.Open(*dbPath, timetravel.Options{Compression: cp, BlockSize: *block, CacheSize: *cacheMB << 20, DedupEntries: dedupEntries})
 	if err != nil {
 		return err
 	}
@@ -89,13 +86,12 @@ func ingest(args []string) error {
 		}
 	}()
 
-	rng := rand.New(rand.NewSource(int64(*n)))
+	rng := rand.New(rand.NewSource(1))
 	const reservoir = 200000
 	var hot, uniform []query
 	var nChanges, nDistinct int
 	seen := map[string]bool{}
-	var tWrite, tCkpt, maxRound time.Duration
-	var nCkpt int
+	var tWrite, maxRound time.Duration
 	start := time.Now()
 	for rd := range load(*data, *from, *to) {
 		if rd.err != nil {
@@ -112,10 +108,6 @@ func ingest(args []string) error {
 		d := time.Since(t0)
 		tWrite += d
 		maxRound = max(maxRound, d)
-		if rd.rnd%*n == 0 {
-			tCkpt += d
-			nCkpt++
-		}
 		for _, ch := range rd.changes {
 			nChanges++
 			if len(hot) < reservoir {
@@ -140,10 +132,9 @@ func ingest(args []string) error {
 	}
 	rounds := *to - *from + 1
 	res := map[string]any{
-		"from": *from, "to": *to, "n": *n, "inc": *inc, "comp": *comp, "block": *block, "hdr": *hdrs,
+		"from": *from, "to": *to, "comp": *comp, "block": *block, "hdr": *hdrs,
 		"rounds": rounds, "changes": nChanges, "distinct": nDistinct,
 		"write_us_per_round":      float64(tWrite.Microseconds()) / float64(rounds),
-		"ckpt_ms_mean":            float64(tCkpt.Microseconds()) / 1000 / float64(max(nCkpt, 1)),
 		"max_round_ms":            float64(maxRound.Microseconds()) / 1000,
 		"wall_s":                  wall.Seconds(),
 		"size_before_compact_mib": float64(dirSize(*dbPath)) / (1 << 20),
@@ -172,7 +163,7 @@ func ingest(args []string) error {
 		sz := int64(len(k) + len(it.Value()))
 		total += sz
 		cls := string(k[:1])
-		if (k[0] == 'c' || k[0] == 'p') && len(k) > 9 {
+		if k[0] == 'c' && len(k) > 9 {
 			cls += string(k[1:2])
 		}
 		logical[cls] += sz
@@ -202,8 +193,7 @@ func ingest(args []string) error {
 			continue
 		}
 		var lat latencies
-		var depths []int
-		var chain, found int
+		var found int
 		for i := 0; i < *nq; i++ {
 			q := class.qs[rng.Intn(len(class.qs))]
 			if q.rnd < *from+*warm {
@@ -219,61 +209,11 @@ func ingest(args []string) error {
 			if ok {
 				found++
 			}
-			d, c := depth(s, q.obj, r)
-			depths = append(depths, d)
-			chain += c
 		}
 		sum := lat.summary()
 		sum["found_frac"] = float64(found) / float64(*nq)
-		sum["patches_in_window_mean"] = float64(chain) / float64(*nq)
-		hist := map[string]float64{}
-		for _, d := range depths {
-			switch {
-			case d < 0:
-				hist["none"]++
-			case d == 0:
-				hist["0"]++
-			case d <= 3:
-				hist["1-3"]++
-			case d <= 15:
-				hist["4-15"]++
-			case d <= 63:
-				hist["16-63"]++
-			default:
-				hist["64+"]++
-			}
-		}
-		for k := range hist {
-			hist[k] /= float64(len(depths))
-		}
 		res["read_"+class.name] = sum
-		res["ckpt_depth_"+class.name] = hist
 	}
 	emit(res)
 	return nil
-}
-
-// depth reports how many sparse checkpoints back the base of obj@rnd is
-// (-1: none) and how many patches sit in rnd's window.
-func depth(s *timetravel.Store, obj []byte, rnd uint64) (int, int) {
-	n := s.CheckpointInterval()
-	c := rnd - rnd%n
-	key := func(pfx byte, r uint64) []byte {
-		return binary.BigEndian.AppendUint64(append([]byte{pfx}, obj...), r)
-	}
-	d := -1
-	if it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: key('c', 0), UpperBound: key('c', c+1)}); err == nil {
-		if it.Last() {
-			d = int((c - binary.BigEndian.Uint64(it.Key()[len(it.Key())-8:])) / n)
-		}
-		it.Close()
-	}
-	chain := 0
-	if it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: key('p', c+1), UpperBound: key('p', rnd+1)}); err == nil {
-		for it.First(); it.Valid(); it.Next() {
-			chain++
-		}
-		it.Close()
-	}
-	return d, chain
 }

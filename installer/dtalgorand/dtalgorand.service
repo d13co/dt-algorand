@@ -9,6 +9,8 @@ User=dtalgorand
 Group=dtalgorand
 Restart=always
 RestartSec=5s
+# 78: the node refused to start because it holds participation keys (DangerouslyEnableParticipation)
+RestartPreventExitStatus=78
 ProtectSystem=full
 ProtectHome=true
 

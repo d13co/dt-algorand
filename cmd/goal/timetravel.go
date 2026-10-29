@@ -56,13 +56,28 @@ var (
 	versionsAssetID, versionsAppID     uint64
 )
 
+var (
+	holdersLimit            uint64
+	holdersNext             string
+	holdersAll, holdersJSON bool
+)
+
 func init() {
 	for _, cmd := range []*cobra.Command{
 		infoCmd, balanceCmd, dumpCmd, rewardsCmd, assetDetailsCmd, applicationDetailsCmd,
-		infoAssetCmd, infoAppCmd, readStateAppCmd, appBoxInfoCmd, supplyCmd,
+		infoAssetCmd, infoAppCmd, readStateAppCmd, appBoxInfoCmd, supplyCmd, assetHoldersCmd,
 	} {
 		cmd.Flags().Uint64Var(&ttRound, "round", 0, roundFlagHelp)
 	}
+
+	assetCmd.AddCommand(assetHoldersCmd)
+	f := assetHoldersCmd.Flags()
+	f.Uint64Var((*uint64)(&assetID), "assetid", 0, "Asset ID (required)")
+	assetHoldersCmd.MarkFlagRequired("assetid")
+	f.Uint64Var(&holdersLimit, "limit", 0, "Holders per page (default: the node's, 1,000)")
+	f.StringVar(&holdersNext, "next", "", "Continue from a previous page's next token, with that page's --round")
+	f.BoolVar(&holdersAll, "all", false, "Follow the next tokens to the last page, at the first page's round")
+	f.BoolVar(&holdersJSON, "json", false, "Print each page as the node returns it, one JSON document per line")
 
 	accountCmd.AddCommand(accountVersionsCmd)
 	assetCmd.AddCommand(assetVersionsCmd)
@@ -179,6 +194,49 @@ var assetVersionsCmd = &cobra.Command{
 			}
 			return resp, resp.NextToken, ens, err
 		})
+	},
+}
+
+var assetHoldersCmd = &cobra.Command{
+	Use:   "holders",
+	Short: "List the accounts that hold an asset (time travel)",
+	Long: `List the accounts that hold an asset, at the latest round or --round, in address order: one line per holder with its address, its amount in base units, and "frozen" if its holding is frozen. Accounts opted in with a zero balance are listed. Needs a node with EnableTimeTravel and TimeTravelHoldersIndex.
+
+A page can be short, or even empty, while more holders remain: --all follows the next tokens to the last page, reading every page at the first page's round.`,
+	Args: validateNoPosArgsFn,
+	Run: func(cmd *cobra.Command, _ []string) {
+		client := withRound(cmd, ensureAlgodClient(datadir.EnsureSingleDataDir()))
+		next := holdersNext
+		for {
+			resp, err := client.AssetHolders(assetID, 0, holdersLimit, next)
+			if err != nil {
+				reportErrorf(errorRequestFail, err)
+			}
+			if holdersJSON {
+				b, err := json.Marshal(resp)
+				if err != nil {
+					reportErrorf("%v", err)
+				}
+				fmt.Println(string(b))
+			} else {
+				for _, h := range resp.Holders {
+					frozen := ""
+					if h.IsFrozen {
+						frozen = " frozen"
+					}
+					fmt.Printf("%s %d%s\n", h.Address, h.Amount, frozen)
+				}
+			}
+			if resp.NextToken == nil {
+				return
+			}
+			if !holdersAll {
+				fmt.Fprintf(os.Stderr, "More holders: --round %d --next %s\n", resp.Round, *resp.NextToken)
+				return
+			}
+			// the pages after the first at its round, even without --round
+			client, next = client.AtRound(resp.Round), *resp.NextToken
+		}
 	},
 }
 

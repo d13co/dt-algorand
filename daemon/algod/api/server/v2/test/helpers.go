@@ -161,6 +161,10 @@ func (m *mockNode) GenesisID() string {
 	return m.genesisID
 }
 
+func (m *mockNode) ParticipationRefused() bool {
+	return m.config.ParticipationRefused(m.genesisID)
+}
+
 func (m *mockNode) GenesisHash() crypto.Digest {
 	return m.ledger.(*data.Ledger).GenesisHash()
 }

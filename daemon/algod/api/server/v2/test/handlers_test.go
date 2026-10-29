@@ -3347,6 +3347,52 @@ func TestGeneratePartkeys(t *testing.T) {
 
 }
 
+// TestGeneratePartkeysRefused: on a gated network without DangerouslyEnableParticipation, key generation is refused
+// up front, before it takes the limiter.
+func TestGeneratePartkeysRefused(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	numAccounts := 1
+	numTransactions := 1
+	offlineAccounts := true
+	mockLedger, _, _, _, releasefunc := testingenv(t, numAccounts, numTransactions, offlineAccounts)
+	defer releasefunc()
+	mockNode := makeMockNodeWithConfig(mockLedger, "testnet-v1.0", nil, cannedStatusReportGolden, false, config.GetDefaultLocal())
+	handler := v2.Handlers{
+		Node:          mockNode,
+		Log:           logging.Base(),
+		Shutdown:      make(chan struct{}),
+		KeygenLimiter: semaphore.NewWeighted(1),
+	}
+	e := echo.New()
+
+	// not TestGeneratePartkeys' address: the parallel tests write their keys to the same temp file name, from
+	// address and rounds
+	var addr basics.Address
+	addr[0] = 2
+	params := model.GenerateParticipationKeysParams{First: 1000, Last: 2000}
+
+	rec := httptest.NewRecorder()
+	err := handler.GenerateParticipationKeys(e.NewContext(httptest.NewRequest(http.MethodPost, "/", nil), rec), addr, params)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "DangerouslyEnableParticipation")
+	require.True(t, handler.KeygenLimiter.TryAcquire(1), "the refusal must not hold the limiter")
+	handler.KeygenLimiter.Release(1)
+	require.Empty(t, mockNode.PartKeyBinary)
+
+	// with the flag set, the request goes through
+	mockNode.config.DangerouslyEnableParticipation = true
+	rec = httptest.NewRecorder()
+	err = handler.GenerateParticipationKeys(e.NewContext(httptest.NewRequest(http.MethodPost, "/", nil), rec), addr, params)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, handler.KeygenLimiter.Acquire(context.Background(), 1))
+	require.NotEmpty(t, mockNode.PartKeyBinary)
+	handler.KeygenLimiter.Release(1)
+}
+
 func TestDebugExtraPprofEndpoint(t *testing.T) {
 	partitiontest.PartitionTest(t)
 

@@ -195,7 +195,7 @@ func (c *comparer) commonRange() error {
 			return fmt.Errorf("store %c is empty", 'A'+i)
 		}
 		firsts[i], lasts[i] = first, last
-		fmt.Printf("store %c: rounds %d..%d, checkpoint interval %d\n", 'A'+i, first, last, s.CheckpointInterval())
+		fmt.Printf("store %c: rounds %d..%d\n", 'A'+i, first, last)
 	}
 	c.lo, c.hi = max(firsts[0], firsts[1]), min(lasts[0], lasts[1])
 	if c.lo > c.hi {

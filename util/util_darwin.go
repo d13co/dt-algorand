@@ -32,3 +32,15 @@ func getTotalMemory() uint64 {
 	}
 	return *(*uint64)(unsafe.Pointer(&b[0]))
 }
+
+// maxFdLimit is the highest soft RLIMIT_NOFILE that macOS accepts. setrlimit
+// fails with EINVAL above kern.maxfilesperproc, even when the hard limit is
+// higher (launchd starts processes with an unlimited one). Go itself caps the
+// soft limit it sets at startup the same way.
+func maxFdLimit(hard uint64) uint64 {
+	n, err := syscall.SysctlUint32("kern.maxfilesperproc")
+	if err != nil {
+		return hard
+	}
+	return min(hard, uint64(n))
+}

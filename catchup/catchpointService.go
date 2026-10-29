@@ -98,6 +98,10 @@ type CatchpointCatchupService struct {
 	// the catchup due to an internal issue ( such as exceeding number of retries )
 	abortCtx     context.Context
 	abortCtxFunc context.CancelFunc
+	// stopCtx ends when Stop is called, even after an Abort: a shutdown, which
+	// interrupts the time travel history's truncation that an abort waits for.
+	stopCtx     context.Context
+	stopCtxFunc context.CancelFunc
 	// blocksDownloadPeerSelector is the peer selector used for downloading blocks.
 	blocksDownloadPeerSelector peerSelector
 }
@@ -168,6 +172,7 @@ func (cs *CatchpointCatchupService) Start(ctx context.Context) error {
 	}
 	cs.ctx, cs.cancelCtxFunc = context.WithCancel(ctx)
 	cs.abortCtx, cs.abortCtxFunc = context.WithCancel(context.Background())
+	cs.stopCtx, cs.stopCtxFunc = context.WithCancel(context.Background())
 	cs.running.Add(1)
 	go cs.run()
 	return nil
@@ -188,7 +193,9 @@ func (cs *CatchpointCatchupService) Stop() {
 	cs.log.Debug("catchpoint service is stopping")
 	defer cs.log.Debug("catchpoint service has stopped")
 
-	// signal the running goroutine that we want to stop
+	// signal the running goroutine that we want to stop, even if it waits for
+	// the time travel history after an abort
+	cs.stopCtxFunc()
 	cs.cancelCtxFunc()
 	// wait for the running goroutine to terminate.
 	cs.running.Wait()
@@ -702,9 +709,29 @@ func (cs *CatchpointCatchupService) fetchBlock(round basics.Round, retryCount ui
 
 // processStageSwitch is the fifth catchpoint catchup stage. It completes the catchup process, swap the new tables and restart the node functionality.
 func (cs *CatchpointCatchupService) processStageSwitch() (err error) {
+	// A time travel node's history first: its truncation takes minutes on
+	// mainnet, and one cut short leaves the store refusing rounds until it is
+	// opened again. So a shutdown (Stop) interrupts it, and the next start
+	// resumes this stage, but an abort waits for it, unless a shutdown follows:
+	// Abort marks abortCtx before it cancels ctx, and Stop marks stopCtx.
+	hctx, hcancel := context.WithCancel(context.Background())
+	stopAfter := context.AfterFunc(cs.ctx, func() {
+		if cs.abortCtx.Err() == nil {
+			hcancel()
+		}
+	})
+	stopOnStop := context.AfterFunc(cs.stopCtx, hcancel)
+	err = cs.ledgerAccessor.PrepareCatchpointHistory(hctx)
+	stopAfter()
+	stopOnStop()
+	hcancel()
+	if err != nil {
+		return cs.historyFailed("prepare the time travel history", err)
+	}
+
 	err = cs.ledgerAccessor.CompleteCatchup(cs.ctx)
 	if err != nil {
-		return cs.abort(fmt.Errorf("processStageSwitch failed to complete catchup : %v", err))
+		return cs.historyFailed("complete catchup", err)
 	}
 
 	err = cs.updateStage(ledger.CatchpointCatchupStateInactive)
@@ -716,6 +743,30 @@ func (cs *CatchpointCatchupService) processStageSwitch() (err error) {
 	// run function would exit.
 	cs.cancelCtxFunc()
 	return nil
+}
+
+// historyFailed handles an error of PrepareCatchpointHistory or
+// CompleteCatchup: an interrupted or unfinished truncation of the time travel
+// history, which comes before the swap, keeps the stage; anything else aborts.
+func (cs *CatchpointCatchupService) historyFailed(step string, err error) error {
+	switch {
+	case errors.Is(err, ledger.ErrHistoryTruncationInterrupted) && cs.abortCtx.Err() == nil:
+		return nil // a shutdown before anything was swapped: resume
+	case errors.Is(err, ledger.ErrHistoryTruncationUnfinished):
+		// The time travel store refuses rounds until it is opened again, so
+		// the node can't go back to normal operation: it stays in catchup
+		// mode, and the next start finishes the truncation and resumes this
+		// stage (or aborts, if asked again then).
+		if cs.abortCtx.Err() != nil {
+			cs.log.Errorf("catchpoint catchup: not aborted: %v", err)
+		} else {
+			cs.log.Errorf("catchpoint catchup: %v", err)
+		}
+		cs.cancelCtxFunc() // run returns, and the stage stays
+		return err
+	default:
+		return cs.abort(fmt.Errorf("processStageSwitch failed to %s : %v", step, err))
+	}
 }
 
 // stopOrAbort is called when any of the stage processing function sees that cs.ctx has been canceled. It can be

@@ -92,6 +92,11 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 	if !ok || !v2.Node.Config().EnableTimeTravel {
 		return nil, ledger.VersionRange{}, errors.New("versions require EnableTimeTravel")
 	}
+	if hu, ok := l.(historyTrust); ok {
+		if err := hu.HistoryUntrusted(); err != nil {
+			return nil, ledger.VersionRange{}, err
+		}
+	}
 	r := ledger.VersionRange{Max: l.Latest(), Limit: DefaultVersions}
 	for _, inc := range q.include {
 		switch inc {
@@ -215,7 +220,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 	}
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	r.MaxObjects = v2.Node.Config().MaxAPIResourcesPerAccount
 	page, err := vl.AccountVersions(address, ex, r)
@@ -230,7 +235,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Address, assetID basics.AssetIndex, params model.AccountAssetVersionsParams) error {
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	page, err := vl.AccountAssetVersions(address, assetID, r)
 	if err != nil {
@@ -244,7 +249,7 @@ func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Addres
 func (v2 *Handlers) AccountApplicationVersions(ctx echo.Context, address basics.Address, applicationID basics.AppIndex, params model.AccountApplicationVersionsParams) error {
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	page, err := vl.AccountAppVersions(address, applicationID, r)
 	if err != nil {
@@ -419,7 +424,7 @@ func BoxVersionToModel(v ledger.Version, values bool) (model.BoxVersion, error) 
 func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, params model.AssetVersionsParams) error {
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	page, err := vl.AssetVersions(assetID, r)
 	if err != nil {
@@ -441,7 +446,7 @@ func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, p
 func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationVersionsParams) error {
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), true, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	page, err := vl.AppVersions(applicationID, r)
 	if err != nil {
@@ -471,7 +476,7 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 	}
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	page, err := vl.KvVersions(apps.MakeBoxKey(uint64(applicationID), string(boxName)), r)
 	if err != nil {
@@ -506,7 +511,7 @@ func BoxesVersionToModel(v ledger.Version, values bool) model.BoxesVersion {
 func (v2 *Handlers) ApplicationBoxesVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationBoxesVersionsParams) error {
 	vl, r, err := v2.versionsRange(versionsQuery{params.MinRound, params.MaxRound, (*string)(params.Order), params.Limit, params.Next, strs(params.Include), false, params.Rounds})
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	if r.Rounds != nil {
 		// as of a round, every box the app ever had is merged

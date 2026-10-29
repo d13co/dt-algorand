@@ -33,16 +33,14 @@ import (
 	"github.com/algorand/avm-abi/apps"
 
 	"github.com/algorand/go-algorand/cmd/util/ttview"
+	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger/timetravel"
 )
 
 // The store's record layout (ledger/timetravel/store.go): versioned records
 // are keyspace, object key, big-endian round; their values start with a tag,
-// 'F' (full value), 'D' (deleted) or 'X' (patch).
-const (
-	recDeleted = 'D'
-	recPatch   = 'X'
-)
+// 'F' (full value) or 'D' (deleted).
+const recDeleted = 'D'
 
 // progressInterval is how often a long scan reports on stderr.
 const progressInterval = 10 * time.Second
@@ -57,18 +55,16 @@ func splitRecord(k []byte) ([]byte, uint64, bool) {
 
 // kindStats are the statistics of one kind of objects in one keyspace.
 type kindStats struct {
-	Keyspace   string  `json:"keyspace"`
-	Kind       string  `json:"kind"`
-	Name       string  `json:"name"`
-	Records    uint64  `json:"records"`
-	Objects    uint64  `json:"objects"`
-	Tombstones uint64  `json:"tombstones"`
-	Patches    uint64  `json:"patches,omitempty"`
-	Noops      *uint64 `json:"noops,omitempty"` // N = 1 only
-	KeyBytes   uint64  `json:"key-bytes"`
-	ValueBytes uint64  `json:"value-bytes"`
-	MostRecs   uint64  `json:"most-records"`
-	MostObject string  `json:"most-records-object"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Records    uint64 `json:"records"`
+	Objects    uint64 `json:"objects"`
+	Tombstones uint64 `json:"tombstones"`
+	Noops      uint64 `json:"noops"`
+	KeyBytes   uint64 `json:"key-bytes"`
+	ValueBytes uint64 `json:"value-bytes"`
+	MostRecs   uint64 `json:"most-records"`
+	MostObject string `json:"most-records-object"`
 }
 
 type objCount struct {
@@ -100,85 +96,74 @@ func cmdStats(e *env, args []string) error {
 	if len(*kindFlag) > 1 {
 		return usagef("-kind is one letter: a h l A P k T C")
 	}
-	n1 := e.store.CheckpointInterval() == 1
 	var all []*kindStats
 	tops := &topHeap{}
 	scanned, started := uint64(0), time.Now()
 	printed := started
-	for _, pfx := range []byte{'c', 'p'} {
-		lo := append([]byte{pfx}, *kindFlag...)
-		it, err := e.store.DB().NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
-		if err != nil {
-			return err
+	lo := append([]byte{'c'}, *kindFlag...)
+	it, err := e.store.DB().NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
+	if err != nil {
+		return err
+	}
+	var cur *kindStats
+	var obj, prev []byte
+	var objRecs uint64
+	endObject := func() {
+		if obj == nil {
+			return
 		}
-		var cur *kindStats
-		var obj, prev []byte
-		var objRecs uint64
-		endObject := func() {
-			if obj == nil {
-				return
-			}
-			if objRecs > cur.MostRecs {
-				cur.MostRecs, cur.MostObject = objRecs, objectOf(obj).String()
-			}
-			if *top > 0 {
-				if tops.Len() < *top {
-					heap.Push(tops, objCount{objectOf(obj).String(), objRecs})
-				} else if objRecs > (*tops)[0].Records {
-					(*tops)[0] = objCount{objectOf(obj).String(), objRecs}
-					heap.Fix(tops, 0)
-				}
+		if objRecs > cur.MostRecs {
+			cur.MostRecs, cur.MostObject = objRecs, objectOf(obj).String()
+		}
+		if *top > 0 {
+			if tops.Len() < *top {
+				heap.Push(tops, objCount{objectOf(obj).String(), objRecs})
+			} else if objRecs > (*tops)[0].Records {
+				(*tops)[0] = objCount{objectOf(obj).String(), objRecs}
+				heap.Fix(tops, 0)
 			}
 		}
-		for valid := it.First(); valid; valid = it.Next() {
-			k, v := it.Key(), it.Value()
-			o, _, ok := splitRecord(k)
-			if !ok {
-				continue
-			}
-			if cur == nil || cur.Kind != string(o[0]) {
-				endObject()
-				obj = nil
-				cur = &kindStats{Keyspace: string(pfx), Kind: string(o[0]), Name: kindName(o[0])}
-				if n1 {
-					cur.Noops = new(uint64)
-				}
-				all = append(all, cur)
-			}
-			if !bytes.Equal(o, obj) {
-				endObject()
-				obj = append(obj[:0], o...)
-				prev = append(prev[:0], recDeleted) // absent before its first record
-				objRecs = 0
-				cur.Objects++
-			}
-			cur.Records++
-			objRecs++
-			cur.KeyBytes += uint64(len(k))
-			cur.ValueBytes += uint64(len(v))
-			switch {
-			case len(v) > 0 && v[0] == recDeleted:
-				cur.Tombstones++
-			case len(v) > 0 && v[0] == recPatch:
-				cur.Patches++
-			}
-			if n1 {
-				if bytes.Equal(v, prev) {
-					*cur.Noops++
-				}
-				prev = append(prev[:0], v...)
-			}
-			if scanned++; scanned%65536 == 0 && time.Since(printed) >= progressInterval {
-				printed = time.Now()
-				fmt.Fprintf(e.errOut, "scanned %d records (%s) in %v\n", scanned, cur.Name, time.Since(started).Round(time.Second))
-			}
+	}
+	for valid := it.First(); valid; valid = it.Next() {
+		k, v := it.Key(), it.Value()
+		o, _, ok := splitRecord(k)
+		if !ok {
+			continue
 		}
-		if cur != nil {
+		if cur == nil || cur.Kind != string(o[0]) {
 			endObject()
+			obj = nil
+			cur = &kindStats{Kind: string(o[0]), Name: kindName(o[0])}
+			all = append(all, cur)
 		}
-		if err := it.Close(); err != nil {
-			return err
+		if !bytes.Equal(o, obj) {
+			endObject()
+			obj = append(obj[:0], o...)
+			prev = append(prev[:0], recDeleted) // absent before its first record
+			objRecs = 0
+			cur.Objects++
 		}
+		cur.Records++
+		objRecs++
+		cur.KeyBytes += uint64(len(k))
+		cur.ValueBytes += uint64(len(v))
+		if len(v) > 0 && v[0] == recDeleted {
+			cur.Tombstones++
+		}
+		if bytes.Equal(v, prev) {
+			cur.Noops++
+		}
+		prev = append(prev[:0], v...)
+		if scanned++; scanned%65536 == 0 && time.Since(printed) >= progressInterval {
+			printed = time.Now()
+			fmt.Fprintf(e.errOut, "scanned %d records (%s) in %v\n", scanned, cur.Name, time.Since(started).Round(time.Second))
+		}
+	}
+	if cur != nil {
+		endObject()
+	}
+	if err := it.Close(); err != nil {
+		return err
 	}
 	topList := slices.Clone(*tops)
 	slices.SortFunc(topList, func(a, b objCount) int {
@@ -192,15 +177,11 @@ func cmdStats(e *env, args []string) error {
 	}
 	rows := make([][]string, 0, len(all))
 	for _, s := range all {
-		noops := "-"
-		if s.Noops != nil {
-			noops = strconv.FormatUint(*s.Noops, 10)
-		}
-		rows = append(rows, []string{s.Keyspace, s.Kind, s.Name, strconv.FormatUint(s.Records, 10), strconv.FormatUint(s.Objects, 10),
-			strconv.FormatUint(s.Tombstones, 10), noops, sizeString(s.KeyBytes), sizeString(s.ValueBytes),
+		rows = append(rows, []string{s.Kind, s.Name, strconv.FormatUint(s.Records, 10), strconv.FormatUint(s.Objects, 10),
+			strconv.FormatUint(s.Tombstones, 10), strconv.FormatUint(s.Noops, 10), sizeString(s.KeyBytes), sizeString(s.ValueBytes),
 			strconv.FormatUint(s.MostRecs, 10)})
 	}
-	if err := ttview.WriteTable(e.out, []string{"keyspace", "kind", "contents", "records", "objects", "tombstones", "no-ops", "keys", "values", "most per object"}, rows); err != nil {
+	if err := ttview.WriteTable(e.out, []string{"kind", "contents", "records", "objects", "tombstones", "no-ops", "keys", "values", "most per object"}, rows); err != nil {
 		return err
 	}
 	if len(topList) == 0 {
@@ -233,22 +214,25 @@ type rawOut struct {
 	Round    *uint64 `json:"round,omitempty"`
 	Tag      string  `json:"tag,omitempty"`
 	Value    []byte  `json:"value"`
+	// Intervals are the rounds at which the holding of an asset holders index
+	// entry was created and deleted, alternating.
+	Intervals []uint64 `json:"intervals,omitempty"`
 }
 
 func cmdRaw(e *env, args []string) error {
 	fs := e.newFlags("raw")
-	prefixFlag := fs.String("prefix", "", "an object, a keyspace (b c p r H E m) or hex:PREFIX")
+	prefixFlag := fs.String("prefix", "", "an object, a keyspace (a b c H E m) or hex:PREFIX")
 	after := fs.String("after", "", "start after this record key (hex, as printed)")
 	n := fs.Uint64("n", 100, "at most this many records (0: all)")
 	if _, err := parse(fs, args, 0, 0); err != nil {
 		return err
 	}
-	// the key ranges to list: an object's records are in two keyspaces
+	// the key range to list
 	var ranges [][]byte
 	switch p := *prefixFlag; {
 	case p == "":
 		ranges = [][]byte{nil}
-	case len(p) == 1 && strings.Contains("bcprHEm", p):
+	case len(p) == 1 && strings.Contains("abcHEm", p):
 		ranges = [][]byte{[]byte(p)}
 	case strings.HasPrefix(p, "hex:"):
 		b, err := hex.DecodeString(p[4:])
@@ -261,7 +245,7 @@ func cmdRaw(e *env, args []string) error {
 		if err != nil {
 			return usageError{err}
 		}
-		ranges = [][]byte{append([]byte{'c'}, o.key...), append([]byte{'p'}, o.key...)}
+		ranges = [][]byte{append([]byte{'c'}, o.key...)}
 	}
 	var afterKey []byte
 	if *after != "" {
@@ -300,8 +284,12 @@ func cmdRaw(e *env, args []string) error {
 				if out.Round != nil {
 					rnd = strconv.FormatUint(*out.Round, 10)
 				}
+				val := hexPrefix(out.Value, 16)
+				if out.Intervals != nil {
+					val = "rounds " + strings.Trim(fmt.Sprint(out.Intervals), "[]")
+				}
 				err = t.add([]string{"key", "keyspace", "object", "round", "tag", "bytes", "value"},
-					[]string{out.Key, out.Keyspace, out.Object, rnd, out.Tag, strconv.Itoa(len(out.Value)), hexPrefix(out.Value, 16)})
+					[]string{out.Key, out.Keyspace, out.Object, rnd, out.Tag, strconv.Itoa(len(out.Value)), val})
 			}
 			if err != nil {
 				it.Close()
@@ -328,17 +316,26 @@ func cmdRaw(e *env, args []string) error {
 func rawRecord(k, v []byte) rawOut {
 	out := rawOut{Key: hex.EncodeToString(k), Keyspace: string(k[:1]), Value: v}
 	switch k[0] {
-	case 'c', 'p':
+	case 'c':
 		if o, rnd, ok := splitRecord(k); ok {
 			out.Object, out.Round = objectOf(o).String(), &rnd
 		}
 		if len(v) > 0 {
 			out.Tag, out.Value = string(v[:1]), v[1:]
 		}
-	case 'r', 'H', 'E':
+	case 'H', 'E':
 		if len(k) == 9 {
 			rnd := binary.BigEndian.Uint64(k[1:])
 			out.Round = &rnd
+		}
+	case 'a': // asset, addr -> the holding's intervals
+		if len(k) == 1+8+32 {
+			var addr basics.Address
+			copy(addr[:], k[9:])
+			out.Object = objectOf(timetravel.HoldingKey(addr, basics.AssetIndex(binary.BigEndian.Uint64(k[1:])))).String()
+		}
+		if iv, err := timetravel.HolderIntervals(v); err == nil {
+			out.Intervals = iv
 		}
 	case 'b': // app, round, name
 		if len(k) >= 1+8+8 {
@@ -369,31 +366,23 @@ type everOut struct {
 	Live    bool   `json:"live"`
 }
 
-// lsEver lists every object under prefix that has a record, in either
-// versioned keyspace, with the rounds of its first and last records, its
-// record count, and whether it exists at the last round.
+// lsEver lists every object under prefix that has a record, with the rounds
+// of its first and last records, its record count, and whether it exists at
+// the last round.
 func lsEver(e *env, prefix, after []byte, n uint64) error {
-	its := make([]*pebble.Iterator, 0, 2)
-	defer func() {
-		for _, it := range its {
-			it.Close()
-		}
-	}()
-	for _, pfx := range []byte{'c', 'p'} {
-		lo := append([]byte{pfx}, prefix...)
-		it, err := e.store.DB().NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
-		if err != nil {
-			return err
-		}
-		if after != nil {
-			it.SeekGE(prefixEnd(append([]byte{pfx}, after...)))
-		} else {
-			it.First()
-		}
-		its = append(its, it)
+	lo := append([]byte{'c'}, prefix...)
+	it, err := e.store.DB().NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
+	if err != nil {
+		return err
 	}
-	// the object an iterator is on, nil when done
-	objOf := func(it *pebble.Iterator) []byte {
+	defer it.Close()
+	if after != nil {
+		it.SeekGE(prefixEnd(append([]byte{'c'}, after...)))
+	} else {
+		it.First()
+	}
+	// the object the iterator is on, nil when done
+	objOf := func() []byte {
 		if !it.Valid() {
 			return nil
 		}
@@ -404,13 +393,7 @@ func lsEver(e *env, prefix, after []byte, n uint64) error {
 	count := uint64(0)
 	var lastObj object
 	for {
-		// the smallest object either keyspace is on
-		var obj []byte
-		for _, it := range its {
-			if o := objOf(it); o != nil && (obj == nil || bytes.Compare(o, obj) < 0) {
-				obj = slices.Clone(o)
-			}
-		}
+		obj := slices.Clone(objOf())
 		if obj == nil {
 			break
 		}
@@ -419,13 +402,11 @@ func lsEver(e *env, prefix, after []byte, n uint64) error {
 			break
 		}
 		out := everOut{Object: objectOf(obj).String(), First: ^uint64(0)}
-		for _, it := range its {
-			for o := objOf(it); o != nil && bytes.Equal(o, obj); o = objOf(it) {
-				_, rnd, _ := splitRecord(it.Key())
-				out.First, out.Last = min(out.First, rnd), max(out.Last, rnd)
-				out.Records++
-				it.Next()
-			}
+		for o := objOf(); o != nil && bytes.Equal(o, obj); o = objOf() {
+			_, rnd, _ := splitRecord(it.Key())
+			out.First, out.Last = min(out.First, rnd), max(out.Last, rnd)
+			out.Records++
+			it.Next()
 		}
 		_, live, err := e.store.Get(obj, uint64(e.last))
 		if err != nil {
@@ -448,10 +429,8 @@ func lsEver(e *env, prefix, after []byte, n uint64) error {
 			return err
 		}
 	}
-	for _, it := range its {
-		if err := it.Error(); err != nil {
-			return err
-		}
+	if err := it.Error(); err != nil {
+		return err
 	}
 	if count == 0 && !e.json {
 		fmt.Fprintln(e.out, "no records")

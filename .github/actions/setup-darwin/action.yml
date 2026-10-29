@@ -1,0 +1,18 @@
+name: 'Set up the macOS build'
+description: 'Go, libsodium and its build tools for installer/dtalgorand/build_darwin.sh; shared by the release and darwin workflows'
+runs:
+  using: 'composite'
+  steps:
+    # The job sets it, so that setup-test's libsodium and the binaries share it.
+    - name: Check MACOSX_DEPLOYMENT_TARGET
+      shell: bash
+      run: '[ -n "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "set MACOSX_DEPLOYMENT_TARGET in the job"; exit 1; }'
+    - uses: ./.github/actions/setup-go
+      with:
+        cache-prefix: buildsrc
+    # setup-test builds libsodium before configure_dev.sh installs its build
+    # tools, and macos-15 images lack libtool
+    - name: Install libsodium's build tools
+      shell: bash
+      run: brew install autoconf automake libtool
+    - uses: ./.github/actions/setup-test

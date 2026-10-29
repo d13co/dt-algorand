@@ -173,6 +173,7 @@ func OpenLedger[T string | DirsAndPrefix](
 		if herr != nil {
 			return nil, herr
 		}
+		h.genesisHdr = protocol.Encode(&genesisInitState.Block.BlockHeader)
 		l.history = h
 	}
 
