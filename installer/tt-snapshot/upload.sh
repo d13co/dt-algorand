@@ -8,9 +8,9 @@
 #   4. deletions: whatever ttsnap gc removed from OUT, and *.tmp files of interrupted publishes
 #
 # It holds dt_snapshot.sh's lock, ROOT/@snap/.lock, so that no publish runs during an upload (step 3
-# would send a pointer whose new blobs step 1 missed). When all four steps succeed, it records a
-# digest of what it mirrored in /var/lib/tt-snapshot/uploaded (lib.sh's mirror_digest), so that the
-# trigger can tell an upload that failed at any step. dt_snapshot.sh runs it as UPLOAD after each
+# would send a pointer whose new blobs step 1 missed), and refuses to run without ROOT/@snap. When
+# all four steps succeed, it records a digest of what it mirrored in /var/lib/tt-snapshot/uploaded
+# (lib.sh's mirror_digest), so that the trigger can tell an upload that failed at any step. dt_snapshot.sh runs it as UPLOAD after each
 # publish, and tt-snapshot-upload.service runs it when the bucket lags OUT. By hand:
 #   sudo systemctl start tt-snapshot-upload.service && journalctl -fu tt-snapshot-upload
 set -euo pipefail
@@ -32,11 +32,11 @@ command -v rclone >/dev/null || die "rclone not found"
 [[ -n $(pointers "$out") ]] || die "$out holds no latest-* pointer; not uploading"
 [[ -d $out/blobs ]] || die "$out/blobs does not exist"
 
-if [[ -d $root/@snap ]]; then
-  # run by dt_snapshot.sh, this inherits the lock it holds as fd 9
-  [[ /proc/self/fd/9 -ef $root/@snap/.lock ]] || exec 9>"$root/@snap/.lock"
-  flock -n 9 || die "dt_snapshot.sh or another upload is running"
-fi
+# without the lock a publish could run during the upload: refuse rather than upload unlocked
+[[ -d $root/@snap ]] || die "$root/@snap does not exist: set ROOT to dt_snapshot.sh's, whose lock keeps publishes out of the upload"
+# run by dt_snapshot.sh, this inherits the lock it holds as fd 9
+[[ /proc/self/fd/9 -ef $root/@snap/.lock ]] || exec 9>"$root/@snap/.lock"
+flock -n 9 || die "dt_snapshot.sh or another upload is running"
 # before the copies: OUT may still change during them (statements added by hand), and the receipt
 # must then differ from it
 digest=$(mirror_digest "$out" "$bucket")

@@ -48,7 +48,7 @@ apt trusts every key in `d13co.asc`, so check that it holds exactly one primary 
 
 ## Starting the node
 
-The package does not enable or start `dtalgorand.service`. A time travel node syncs from genesis, and a node that synced without time travel cannot turn it on later. On a new install, the package writes a `config.json` with `"EnableTimeTravel": true` and `"TimeTravelHoldersIndex": true`: the node keeps an [asset holders index](../../ledger/timetravel/README.md#holders-index) up to date once it is built (step 3), for `GET /v2/assets/{asset-id}/holders` (`goal asset holders`), which answers 503 until then. Before the first start:
+The package does not enable or start `dtalgorand.service`. A time travel node syncs from genesis, and a node that synced without time travel cannot turn it on later. On a new install, the package writes a `config.json` with `"EnableTimeTravel": true` and `"TimeTravelHoldersIndex": true`: the node keeps an [asset holders index](../../ledger/timetravel/README.md#holders-index) for `GET /v2/assets/{asset-id}/holders` (`goal asset holders`). A node that syncs from genesis, or an import, has it from round 0; a snapshot needs it built (step 3), and the endpoint answers 503 until then. Before the first start:
 
 1. Optionally, put the history on a fast disk. `ProtectHome` keeps the node out of `/home`.
 
@@ -64,7 +64,7 @@ The package does not enable or start `dtalgorand.service`. A time travel node sy
    sudo chown -R dtalgorand:dtalgorand /var/lib/dtalgorand /mnt/fast/dtalgorand
    ```
 
-3. Build the asset holders index, with the node stopped (about 5 minutes on mainnet; see [ttimport](../../tools/ttimport/README.md#building-the-asset-holders-index)). After a snapshot or an import, do it now; a node that syncs from genesis has holdings to index only once synced, so stop it then and build it. Without it the node runs as usual and logs a warning at start; to do without, set `TimeTravelHoldersIndex` to `false`, and the node deletes any index at its next start.
+3. After a snapshot, build the asset holders index, with the node stopped (about 5 minutes on mainnet; see [ttimport](../../tools/ttimport/README.md#building-the-asset-holders-index)): `ttsnap fetch` installs the history without it. A sync from genesis or an import keeps the index from round 0 and needs no build. Without the index the node runs as usual and logs a warning at start; to do without, set `TimeTravelHoldersIndex` to `false`, and the node deletes any index at its next start.
 
    ```sh
    sudo -u dtalgorand ttimport -holders-index -d /var/lib/dtalgorand
@@ -141,7 +141,7 @@ The steps of [Starting the node](#starting-the-node), on a Mac: no `sudo`, `chow
    ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d $D
    ```
 
-3. Build the asset holders index, with the node stopped (`brew services stop dtalgorand`; after a sync from genesis, once it has synced):
+3. After a snapshot, build the asset holders index, with the node stopped (a sync from genesis or an import needs no build):
 
    ```sh
    ttimport -holders-index -d $D

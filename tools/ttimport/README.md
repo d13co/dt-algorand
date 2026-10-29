@@ -79,14 +79,13 @@ A time travel node's history comes from every round's state delta since genesis:
 
 ### Into a package's data directory
 
-The examples build `~/tt` and start it with `goal`. To build the node of a dtalgorand package instead, import into the package's data directory before the node's first start, then start it as the package does. The package's `config.json` already sets `EnableTimeTravel` and `TimeTravelHoldersIndex`, so build the [holders index](#building-the-asset-holders-index) after the import.
+The examples build `~/tt` and start it with `goal`. To build the node of a dtalgorand package instead, import into the package's data directory before the node's first start, then start it as the package does. The package's `config.json` already sets `EnableTimeTravel` and `TimeTravelHoldersIndex`, so an import from genesis keeps the [holders index](#building-the-asset-holders-index) from round 0 and needs no build.
 
 - **Debian:** `/var/lib/dtalgorand`, as root, then hand the result to the `dtalgorand` user (see [Starting the node](../../installer/dtalgorand/README.md#starting-the-node)): an algod's ledger directory is private to its user.
 - **macOS (Homebrew):** `$(brew --prefix)/var/dtalgorand`, as yourself, with no `chown`: the node runs as you (see [macOS](../../installer/dtalgorand/README.md#running-the-node)). The archive is wherever that archival node's data directory is: `/var/lib/algorand/...` in the examples is the Linux package's.
 
   ```sh
   ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d $(brew --prefix)/var/dtalgorand
-  ttimport -holders-index -d $(brew --prefix)/var/dtalgorand
   brew services start dtalgorand
   ```
 

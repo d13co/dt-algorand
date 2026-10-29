@@ -60,12 +60,15 @@ fi
 exec 9>"$root/@snap/.lock"
 flock -n 9 || die "another dt_snapshot.sh is running"
 
-# a failed run's snapshot stays writable, kept for a look until this next run: retries don't pile
-# them up, each pinning the blocks the node rewrites
-for s in "$root"/@snap/2*Z; do
-  [[ -d $s && $(btrfs property get -ts "$s" ro) == ro=false ]] || continue
-  log "deleting $(basename "$s"), the snapshot of a failed run"
-  btrfs subvolume delete "$s" >/dev/null
+# a failed run's snapshot stays writable, kept for a look: the newest stays until a run succeeds
+# (the KEEP cleanup below deletes it then) or another fails, so retries don't pile them up, each
+# pinning the blocks the node rewrites; names sort by time
+mapfile -t failed < <(for s in "$root"/@snap/2*Z; do
+  [[ -d $s && $(btrfs property get -ts "$s" ro) == ro=false ]] && basename "$s"
+done | sort)
+for ((i = 0; i < ${#failed[@]} - 1; i++)); do
+  log "deleting ${failed[i]}, the snapshot of an earlier failed run"
+  btrfs subvolume delete "$root/@snap/${failed[i]}" >/dev/null
 done
 
 # the latest catchpoint before the snapshot, so that the history reaches its balances round
@@ -84,8 +87,8 @@ ledger=$snap${sub:+/$sub}
 log "snapshotting $root/@live to $snap"
 btrfs subvolume snapshot "$root/@live" "$snap" >/dev/null
 
-# a snapshot whose prepare or publish failed is kept for a look; the next run deletes it
-trap 'echo "error: failed; the snapshot is kept at $snap" >&2' ERR
+# a snapshot whose prepare or publish failed is kept for a look, until a run succeeds or another fails
+trap 'echo "error: failed; the snapshot is kept at $snap until a run succeeds or another fails" >&2' ERR
 
 log "preparing $snap"
 "$ttsnap" prepare ${full:+-full} "$ledger"
