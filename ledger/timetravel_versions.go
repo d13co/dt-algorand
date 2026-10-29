@@ -92,7 +92,8 @@ type VersionRange struct {
 	// passes, and the stored value an object had before its rounds still in
 	// memory, are not counted. A page always has at least one round, except
 	// that a round of an app's boxes that reads more fails with
-	// ErrRoundTooLarge. A Key page counts each version it examines likewise.
+	// ErrRoundTooLarge. A Key page counts each version it examines once: its
+	// value, plus the value before the first one.
 	MaxReadBytes uint64
 }
 
@@ -516,7 +517,13 @@ func keyVersions(h *histView, obj []byte, r VersionRange) (VersionPage, error) {
 	// the callback must not read the store, as for BoxChanges
 	err := h.VersionsPrev(obj, uint64(r.Min), uint64(r.Max), r.Desc, func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
 		R := basics.Round(rnd)
-		n := uint64(len(val) + len(prev))
+		// The scan reads each record once: it is one version's value and the
+		// next one's previous value. Only the first version's previous value
+		// is read for it alone.
+		n := uint64(len(val))
+		if scanned == 0 {
+			n += uint64(len(prev))
+		}
 		if scanned > 0 && ((r.MaxScanned > 0 && scanned >= r.MaxScanned) || (r.MaxReadBytes > 0 && read+n > r.MaxReadBytes)) {
 			page.More, page.Next = true, R
 			return false
