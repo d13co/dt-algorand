@@ -62,7 +62,7 @@ func TestSimulateLimits(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxResponseBytes: 64 << 20, MaxRounds: 16}
+	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16}
 	for _, tc := range []struct {
 		name      string
 		configure func(*config.Local)
@@ -83,6 +83,7 @@ func TestSimulateLimits(t *testing.T) {
 			c.MaxAPIQueryCallBudget = 0
 			c.MaxAPIQueryCallLogBytes = 0
 			c.MaxAPIQueryResponseBytes = 0
+			c.MaxAPIQueryCallStateBytes = 0
 			c.MaxAPIQueryRounds = 1_000_000
 		}, model.SimulateLimitsResponse{
 			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,

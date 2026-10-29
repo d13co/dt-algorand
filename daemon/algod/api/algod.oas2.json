@@ -5025,7 +5025,7 @@
           "$ref": "#/definitions/SimulateProtocolOverride"
         },
         "error": {
-          "description": "Why the round could not be queried. There are no calls then.",
+          "description": "Why the round could not be queried: outside the history, a protocol it can't run under, or a failure of the node to read it while the calls ran. There are no calls then.",
           "type": "string"
         },
         "calls": {
@@ -5064,7 +5064,7 @@
     "QueryLimits": {
       "description": "The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.",
       "type": "object",
-      "required": ["max-calls", "max-call-budget", "max-call-log-bytes", "max-response-bytes", "max-rounds"],
+      "required": ["max-calls", "max-call-budget", "max-call-log-bytes", "max-call-state-bytes", "max-response-bytes", "max-rounds"],
       "properties": {
         "max-calls": {
           "description": "The most calls a request may hold (node config MaxAPIQueryCalls).",
@@ -5078,6 +5078,11 @@
         },
         "max-call-log-bytes": {
           "description": "The most bytes each program of a call may log, in up to 2048 logs. 0 means the protocol's limits: 1024 bytes in 32 logs (node config MaxAPIQueryCallLogBytes).",
+          "type": "integer",
+          "x-go-type": "uint64"
+        },
+        "max-call-state-bytes": {
+          "description": "The most bytes of ledger state a call may read: accounts, holdings and local states, asset and app params (programs and global state included), and boxes, each counted once however often the call reads it. A call that reads more fails with an error, and the other calls run on. 0 means no limit (node config MaxAPIQueryCallStateBytes).",
           "type": "integer",
           "x-go-type": "uint64"
         },

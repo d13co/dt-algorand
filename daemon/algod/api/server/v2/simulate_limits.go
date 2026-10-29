@@ -53,11 +53,12 @@ func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
 	var query *model.QueryLimits
 	if q := simulation.QueryLimitsFromConfig(cfg); q.MaxCalls > 0 {
 		query = &model.QueryLimits{
-			MaxCalls:         uint64(q.MaxCalls),
-			MaxCallBudget:    uint64(q.MaxCallBudget),
-			MaxCallLogBytes:  uint64(q.MaxCallLogBytes),
-			MaxResponseBytes: q.MaxResponseBytes,
-			MaxRounds:        uint64(q.MaxRounds),
+			MaxCalls:          uint64(q.MaxCalls),
+			MaxCallBudget:     uint64(q.MaxCallBudget),
+			MaxCallLogBytes:   uint64(q.MaxCallLogBytes),
+			MaxCallStateBytes: q.MaxCallStateBytes,
+			MaxResponseBytes:  q.MaxResponseBytes,
+			MaxRounds:         uint64(q.MaxRounds),
 		}
 	}
 	return model.SimulateLimitsResponse{

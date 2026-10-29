@@ -687,3 +687,93 @@ func TestQueryTimeTravel(t *testing.T) {
 		require.Equal(t, []string{u64(balances[r])}, rr.Calls[0].Logs, "round %d", r)
 	}
 }
+
+// TestQueryCallStateLimit: a call that reads more ledger state than MaxCallStateBytes fails and the
+// others run on; whether a call is over depends only on what it reads, not on what the calls before
+// it on the same worker left cached, so the answers are the same with one worker or several.
+func TestQueryCallStateLimit(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+
+	// reads the balances of the accounts numbered arg0 up to arg1, 256 bytes of state each
+	program := `#pragma version 10
+txna ApplicationArgs 0; btoi; store 0
+txna ApplicationArgs 1; btoi; store 1
+loop:
+load 0; load 1; >=; bnz done
+load 0; itob; int 24; bzero; concat; balance; pop
+load 0; int 1; +; store 0
+b loop
+done:
+int 1`
+	span := func(lo, hi uint64) simulation.QueryCall {
+		return simulation.QueryCall{Args: [][]byte{[]byte(u64(lo)), []byte(u64(hi))}}
+	}
+	// 150 accounts fit in 50,000 bytes alone, but not after another 150; 250 never fit
+	calls := []simulation.QueryCall{span(0, 150), span(150, 300), span(0, 250), span(0, 0), span(300, 450)}
+	over := []bool{false, false, true, false, false}
+	for _, workers := range []int{1, 3} {
+		req := f.request(t, program, calls...)
+		req.Limits.MaxCallStateBytes = 50_000
+		req.Limits.Parallelism = workers
+		result, err := s.Query(req)
+		require.NoError(t, err)
+		rr := result.Rounds[0]
+		require.Empty(t, rr.Error)
+		for i, c := range rr.Calls {
+			if over[i] {
+				require.Contains(t, c.Error, "more than 50000 bytes of ledger state (MaxAPIQueryCallStateBytes)", "workers %d call %d", workers, i)
+			} else {
+				require.Empty(t, c.Error, "workers %d call %d", workers, i)
+				require.Positive(t, c.Cost)
+			}
+		}
+	}
+
+	// 0: no limit
+	req := f.request(t, program, calls...)
+	req.Limits.MaxCallStateBytes = 0
+	result, err := s.Query(req)
+	require.NoError(t, err)
+	for i, c := range result.Rounds[0].Calls {
+		require.Empty(t, c.Error, "call %d", i)
+	}
+}
+
+// TestQueryLookupFailure: when the node fails to read the round while the calls run, the round
+// reports the failure as its error, without calls, instead of passing it off as the calls' errors.
+func TestQueryLookupFailure(t *testing.T) { // nolint:paralleltest // sets the lookup fault of every query
+	partitiontest.PartitionTest(t)
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+	latest := f.env.TxnInfo.LatestRound()
+
+	defer simulation.SetLookupFault(func(method string) error {
+		if method == "LookupKv" {
+			return errors.New("disk on fire")
+		}
+		return nil
+	})()
+
+	// the ghost program reads the reader app's box
+	req := f.request(t, f.ghost(), args("a"), args("b"))
+	req.Rounds = []basics.Round{latest, latest - 1}
+	result, err := s.Query(req)
+	require.NoError(t, err)
+	for i, rr := range result.Rounds {
+		require.Equal(t, fmt.Sprintf("reading round %d failed: disk on fire", req.Rounds[i]), rr.Error)
+		require.Empty(t, rr.Calls)
+	}
+
+	// a program that reads no box is not affected
+	result, err = s.Query(f.request(t, "#pragma version 10\nint 1", args()))
+	require.NoError(t, err)
+	require.Empty(t, result.Rounds[0].Error)
+	require.Empty(t, result.Rounds[0].Calls[0].Error)
+}

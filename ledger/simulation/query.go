@@ -61,6 +61,9 @@ type QueryLimits struct {
 	MaxCallLogBytes int
 	// MaxResponseBytes is the most log bytes a request may return. 0 means no limit.
 	MaxResponseBytes uint64
+	// MaxCallStateBytes is the most bytes of ledger state a call may read, as queryLedger counts
+	// them: a call that reads more fails. 0 means no limit.
+	MaxCallStateBytes uint64
 	// MaxRounds is the most rounds a request may list.
 	MaxRounds int
 	// Parallelism is the most workers that run the calls of a request at once.
@@ -71,12 +74,13 @@ type QueryLimits struct {
 // config documents. The node and GET /v2/transactions/simulate/limits both take them from here.
 func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 	return QueryLimits{
-		MaxCalls:         int(min(cfg.MaxAPIQueryCalls, math.MaxInt32)),
-		MaxCallBudget:    int(max(1, min(cfg.MaxAPIQueryCallBudget, MaxExtraOpcodeBudgetCeiling))),
-		MaxCallLogBytes:  int(min(cfg.MaxAPIQueryCallLogBytes, math.MaxInt32)),
-		MaxResponseBytes: cfg.MaxAPIQueryResponseBytes,
-		MaxRounds:        int(max(1, min(cfg.MaxAPIQueryRounds, MaxQueryRounds))),
-		Parallelism:      max(1, min(cfg.QueryParallelism, MaxQueryRounds)),
+		MaxCalls:          int(min(cfg.MaxAPIQueryCalls, math.MaxInt32)),
+		MaxCallBudget:     int(max(1, min(cfg.MaxAPIQueryCallBudget, MaxExtraOpcodeBudgetCeiling))),
+		MaxCallLogBytes:   int(min(cfg.MaxAPIQueryCallLogBytes, math.MaxInt32)),
+		MaxResponseBytes:  cfg.MaxAPIQueryResponseBytes,
+		MaxCallStateBytes: cfg.MaxAPIQueryCallStateBytes,
+		MaxRounds:         int(max(1, min(cfg.MaxAPIQueryRounds, MaxQueryRounds))),
+		Parallelism:       max(1, min(cfg.QueryParallelism, MaxQueryRounds)),
 	}
 }
 
@@ -259,7 +263,10 @@ type queryRound struct {
 	totals   ledgercore.AccountTotals
 	txns     []transactions.SignedTxn
 	err      error
-	calls    []QueryCallResult
+	// failed is set when the node fails to read the round while the calls run: it is the round's
+	// error then. Guarded by queryRun.mu.
+	failed error
+	calls  []QueryCallResult
 	// uses is how many entries of the request's rounds are this round: its results are in the
 	// response that many times.
 	uses uint64
@@ -497,9 +504,12 @@ func (s Simulator) Query(req QueryRequest) (QueryResult, error) {
 		if qr.override != nil && (qr.override.Applied || req.Protocol != "") {
 			rr.Protocol = qr.override
 		}
-		if qr.err != nil {
+		switch {
+		case qr.err != nil:
 			rr.Error = qr.err.Error()
-		} else {
+		case qr.failed != nil:
+			rr.Error = fmt.Sprintf("reading round %d failed: %v", distinct[j], qr.failed)
+		default:
 			rr.Calls = qr.calls
 		}
 		result.Rounds[i] = rr
@@ -517,8 +527,8 @@ type queryRun struct {
 	// size counts the log bytes of the calls run, up to maxSize (0: no limit).
 	size    atomic.Uint64
 	maxSize uint64
-	// hitsMu guards the hits of the plans.
-	hitsMu deadlock.Mutex
+	// mu guards the hits and failed of the plans.
+	mu deadlock.Mutex
 }
 
 // runAll runs work in a pool of workers. The first runs in the slot the request's caller holds;
@@ -565,27 +575,37 @@ func (run *queryRun) runAll(work []queryWork) {
 // runPiece runs the calls of piece, on one QueryState, so they share its lookups.
 func (run *queryRun) runPiece(piece queryWork) {
 	qr := run.plans[piece.round]
-	if qr.err != nil || run.ctx.Err() != nil {
+	if qr.err != nil || run.ctx.Err() != nil || run.failed(qr) {
 		return
 	}
 	tracer := &queryTracer{
-		abort: abortState{ctx: run.ctx, done: run.ctx.Done(), effort: run.effort},
-		gaps:  qr.gaps,
+		abort:      abortState{ctx: run.ctx, done: run.ctx.Done(), effort: run.effort},
+		gaps:       qr.gaps,
+		stateLimit: int(min(run.req.Limits.MaxCallStateBytes, math.MaxInt)),
 	}
 	if qr.gaps != nil {
 		tracer.hits = &ProtocolOverride{}
 		defer func() {
-			run.hitsMu.Lock()
+			run.mu.Lock()
 			qr.hits = append(qr.hits, tracer.hits)
-			run.hitsMu.Unlock()
+			run.mu.Unlock()
 		}()
 	}
 
-	qs, err := eval.NewQueryState(qr.ledger, qr.prevHdr, qr.nextHdr, qr.totals)
-	if err != nil {
-		for i := piece.lo; i < piece.hi; i++ {
-			qr.calls[i].Error = err.Error()
+	var ql *queryLedger
+	var qs *eval.QueryState
+	// fresh starts over with an empty cache. Its error is the round's.
+	fresh := func() bool {
+		ql = &queryLedger{simulatorLedger: qr.ledger}
+		var err error
+		if qs, err = eval.NewQueryState(ql, qr.prevHdr, qr.nextHdr, qr.totals); err != nil {
+			run.fail(qr, err)
+			return false
 		}
+		tracer.ledger, tracer.warm = ql, false
+		return true
+	}
+	if !fresh() {
 		return
 	}
 	opts := eval.QueryCallOptions{
@@ -598,36 +618,75 @@ func (run *queryRun) runPiece(piece queryWork) {
 		if run.ctx.Err() != nil {
 			return
 		}
-		tracer.startCall(i)
-		logs, err := callQuery(qs, qr.txns[i], opts)
-		if tracer.abort.aborted != nil {
-			// The request is stopping; the call did not finish.
+		// call runs call i into logs and err. It returns false when the piece must stop.
+		var logs []string
+		var err error
+		call := func() bool {
+			tracer.startCall(i)
+			logs, err = callQuery(qs, qr.txns[i], opts)
+			if tracer.abort.aborted != nil {
+				// The request is stopping; the call did not finish.
+				return false
+			}
+			if ql.err != nil {
+				// The node failed to read the round: no answer of this round can be trusted.
+				run.fail(qr, ql.err)
+				return false
+			}
+			return true
+		}
+		if !call() {
 			return
 		}
+		if tracer.overState() && tracer.warm {
+			// Over the state limit on a cache earlier calls filled: run the call again on an empty
+			// one, so that whether it is over depends only on what it reads itself, not on which
+			// calls ran before it on the same worker.
+			if !fresh() || !call() {
+				return
+			}
+		}
 		res := QueryCallResult{Logs: logs, Cost: tracer.cost}
-		if err != nil {
+		switch {
+		case tracer.overState():
+			res.Error = fmt.Sprintf("the call read more than %d bytes of ledger state (MaxAPIQueryCallStateBytes)", tracer.stateLimit)
+		case err != nil:
 			res.Error = err.Error()
 		}
 		if !run.charge(&res, qr.uses) {
 			return
 		}
 		qr.calls[i] = res
-		if qs.CachedBytes() > maxQueryCacheBytes && i+1 < piece.hi {
+		tracer.warm = true
+		if ql.bytes > maxQueryCacheBytes && i+1 < piece.hi {
 			// Start over with an empty cache, so that the memory a piece holds stays bounded.
-			if qs, err = eval.NewQueryState(qr.ledger, qr.prevHdr, qr.nextHdr, qr.totals); err != nil {
-				for k := i + 1; k < piece.hi; k++ {
-					qr.calls[k].Error = err.Error()
-				}
+			if !fresh() {
 				return
 			}
 		}
 	}
 }
 
-// maxQueryCacheBytes is the most memory, as QueryState.CachedBytes estimates it, of the lookups a
-// worker keeps cached before it starts over with a new state. A call may read tens of thousands
-// of distinct objects within its budget, and a piece may hold every call of the request; every
-// worker holds a slot of SimulateParallelism, so the node's total stays bounded.
+// fail records err, a failure of the node to read qr's round, as the round's error.
+func (run *queryRun) fail(qr *queryRound, err error) {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if qr.failed == nil {
+		qr.failed = err
+	}
+}
+
+// failed reports whether qr's round failed.
+func (run *queryRun) failed(qr *queryRound) bool {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return qr.failed != nil
+}
+
+// maxQueryCacheBytes is the most memory, as queryLedger counts it, of the lookups a worker keeps
+// cached before it starts over with a new state, between calls. A piece may hold every call of
+// the request; every worker holds a slot of SimulateParallelism, so the node's total stays
+// bounded. Within a call, MaxCallStateBytes bounds it.
 const maxQueryCacheBytes = 32 << 20
 
 // queryLogOverhead is what the response bytes of a call count for each of its logs, besides its
@@ -686,6 +745,13 @@ type queryTracer struct {
 	// call is the index of the running call, and cost the budget it used so far.
 	call int
 	cost int
+	// ledger is that of the call's state, whose bytes stateLimit bounds (0: no limit). warm is set
+	// once a call ran on the state, and stateOver once the running call read more than stateLimit:
+	// every later opcode of the call stops its program.
+	ledger     *queryLedger
+	stateLimit int
+	warm       bool
+	stateOver  bool
 	// gaps, when set, are those of a protocol override, and hits the notes the calls hit.
 	gaps       *protocolGaps
 	hits       *ProtocolOverride
@@ -694,7 +760,7 @@ type queryTracer struct {
 
 // startCall readies the tracer for call i.
 func (t *queryTracer) startCall(i int) {
-	t.call, t.cost, t.pendingGap = i, 0, ""
+	t.call, t.cost, t.pendingGap, t.stateOver = i, 0, "", false
 	// As BeforeTxnGroup and BeforeTxn of the call's group would, which Call does not run.
 	t.relativeCursor = append(t.relativeCursor[:0], 0)
 	t.previousInnerTxns = append(t.previousInnerTxns[:0], 0)
@@ -723,6 +789,9 @@ func (t *queryTracer) BeforeProgram(cx *logic.EvalContext) {
 // protocol override.
 func (t *queryTracer) BeforeOpcode(cx *logic.EvalContext) {
 	t.abort.checkAbort(cx)
+	if t.overState() {
+		panic(logic.EvalAborted{Cause: errQueryCallState})
+	}
 	if t.gaps != nil {
 		t.pendingGap = t.gaps.opcodeGap(cx)
 	}
@@ -742,6 +811,18 @@ func (t *queryTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 func (t *queryTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalError error) {
 	t.cost += cx.Cost()
 	t.abort.effort.AddOpcodes(uint64(cx.Cost()))
+}
+
+// errQueryCallState stops a call that read more ledger state than it may.
+var errQueryCallState = errors.New("the call read more ledger state than MaxAPIQueryCallStateBytes allows")
+
+// overState reports whether the running call read more ledger state than it may. Its lookups
+// outside programs count too, so it is asked after the call as well.
+func (t *queryTracer) overState() bool {
+	if !t.stateOver && t.stateLimit > 0 && t.ledger.bytes > t.stateLimit {
+		t.stateOver = true
+	}
+	return t.stateOver
 }
 
 // DetailedEvalErrors makes the errors carry the disassembly of where the program failed.

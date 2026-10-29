@@ -153,21 +153,3 @@ func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (l
 	// The program logs into its EvalParams' txn, which ApplicationCall does not clear on failure.
 	return ep.TxnGroup[0].EvalDelta.Logs, err
 }
-
-// queryCachedObjectBytes is the estimated memory of a cached object, besides a box's value.
-const queryCachedObjectBytes = 256
-
-// CachedBytes estimates the memory of the ledger lookups the state keeps cached: it grows with
-// every distinct object the calls read. Box values count their length.
-func (q *QueryState) CachedBytes() int {
-	b, ok := q.cow.lookupParent.(*roundCowBase)
-	if !ok {
-		return 0
-	}
-	n := queryCachedObjectBytes * (len(b.accounts) + len(b.onlineAccounts) + len(b.appParams) +
-		len(b.assetParams) + len(b.appLocalStates) + len(b.assets) + len(b.creators) + len(b.kvStore))
-	for _, v := range b.kvStore {
-		n += len(v)
-	}
-	return n
-}

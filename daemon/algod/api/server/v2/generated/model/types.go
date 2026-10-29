@@ -1132,6 +1132,9 @@ type QueryLimits struct {
 	// MaxCallLogBytes The most bytes each program of a call may log, in up to 2048 logs. 0 means the protocol's limits: 1024 bytes in 32 logs (node config MaxAPIQueryCallLogBytes).
 	MaxCallLogBytes uint64 `json:"max-call-log-bytes"`
 
+	// MaxCallStateBytes The most bytes of ledger state a call may read: accounts, holdings and local states, asset and app params (programs and global state included), and boxes, each counted once however often the call reads it. A call that reads more fails with an error, and the other calls run on. 0 means no limit (node config MaxAPIQueryCallStateBytes).
+	MaxCallStateBytes uint64 `json:"max-call-state-bytes"`
+
 	// MaxCalls The most calls a request may hold (node config MaxAPIQueryCalls).
 	MaxCalls uint64 `json:"max-calls"`
 
@@ -1180,7 +1183,7 @@ type QueryRoundResult struct {
 	// Calls One result for each call of the request, in order.
 	Calls *[]QueryCallResult `json:"calls,omitempty"`
 
-	// Error Why the round could not be queried. There are no calls then.
+	// Error Why the round could not be queried: outside the history, a protocol it can't run under, or a failure of the node to read it while the calls ran. There are no calls then.
 	Error *string `json:"error,omitempty"`
 
 	// Protocol How the request's protocol applied to the simulated round. Non-standard fork feature.

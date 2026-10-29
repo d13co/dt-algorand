@@ -649,7 +649,14 @@ type Local struct {
 	// more; a request that goes over fails with 400. 0 means no limit. The answer is built and encoded in
 	// memory while the request holds its slot of SimulateParallelism, so each running request can take two
 	// to three times this much memory. Non-standard fork feature.
-	MaxAPIQueryResponseBytes uint64 `version[39]:"67108864"`
+	MaxAPIQueryResponseBytes uint64 `version[39]:"16777216"`
+
+	// MaxAPIQueryCallStateBytes is the most bytes of ledger state one POST /v2/query call may read: accounts,
+	// holdings and local states, asset and app params (programs and global state included), and boxes, each
+	// counted once however often the call reads it. A call that reads more fails with an error, and the
+	// other calls run on. A worker keeps what its calls read in memory while it runs, so this bounds the
+	// memory one call can make a worker hold. 0 means no limit. Non-standard fork feature.
+	MaxAPIQueryCallStateBytes uint64 `version[39]:"67108864"`
 
 	// MaxAPIQueryRounds is the most rounds one POST /v2/query request may list; duplicates count against the
 	// limit. Values below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
