@@ -18,11 +18,12 @@
 #     or statements added by hand), or R2_PUBLIC_URL serves an older latest-* pointer than OUT
 #     holds. This part needs no node, and goes on while algod is down.
 # It starts neither while one runs. It starts a unit again only RETRY seconds after its last run
-# ended when that run failed, or was started for the same round or the same OUT and fell short;
-# the latter it logs as a warning, as another run may do no better (for an upload: R2_PUBLIC_URL
-# serves another bucket, or a cache holds latest-*). In /run/tt-snapshot it keeps what it started
-# each unit for, and the units record when each run ended. Otherwise it logs only when it starts
-# a unit or cannot read the node or the bucket.
+# ended when that run was started for the same round or the same OUT, and failed or fell short
+# (a failure for an earlier catchpoint doesn't delay the next one's run). A run that fell short it
+# logs as a warning, as another run may do no better (for an upload: R2_PUBLIC_URL serves another
+# bucket, or a cache holds latest-*). In /run/tt-snapshot it keeps what it started each unit for,
+# and the units record when each run ended. Otherwise it logs only when it starts a unit or cannot
+# read the node or the bucket.
 #
 # Env (all optional): ALGOD_DATA (default /var/lib/dtalgorand, for algod.net and algod.token),
 # ALGOD_URL and ALGOD_TOKEN (default: from ALGOD_DATA), OUT, UPLOAD, R2_BUCKET and R2_PUBLIC_URL
@@ -63,14 +64,15 @@ state() { systemctl show --property=ActiveState --value "$1"; }
 ended() { stat -c %Y "$ran/$1.ended" 2>/dev/null || echo 0; }
 
 # Start unit $1 for goal $2 (the round OUT should reach, or OUT's digest for the bucket), logging
-# reason $3, and exit. If its last run failed, or the trigger last started it for goal $2 too,
-# return instead until RETRY seconds after that run ended, or after the trigger started it if that
-# is later (a start whose job never ran). Then say which: a run that failed, a start that never ran,
-# or a run for goal $2 that fell short, as $4 tells how; the last two as warnings.
+# reason $3, and exit. If the trigger last started it for goal $2 too, return instead until RETRY
+# seconds after that run ended, or after the trigger started it if that is later (a start whose job
+# never ran). Then say which: a run that failed, a start that never ran, or a run for goal $2 that
+# fell short, as $4 tells how; the last two as warnings. A run for another goal that failed delays
+# nothing: a new catchpoint's run starts on time.
 start() {
   local unit=$1 goal=$2 why=$3 last='' at=0 end since now level=5 what=$1
   if [[ -r $ran/$unit ]]; then read -r last at <"$ran/$unit" || true; fi
-  if [[ $(state "$unit") == failed || $last == "$goal" ]]; then
+  if [[ $last == "$goal" ]]; then
     end=$(ended "$unit")
     since=$((end > at ? end : at))
     now=$(date +%s)
@@ -86,6 +88,8 @@ start() {
     else
       level=4 what="$unit again" why=$4
     fi
+  elif [[ $(state "$unit") == failed ]]; then
+    what="$unit, whose last run, for another goal, failed"
   fi
   if [[ -n ${DRY_RUN:-} ]]; then
     say "would start $what: $why"
