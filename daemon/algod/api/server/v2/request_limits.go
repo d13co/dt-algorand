@@ -129,13 +129,17 @@ func answerBusy(ctx echo.Context, err error, log logging.Logger) error {
 	return serviceUnavailable(ctx, err, err.Error(), log)
 }
 
-// EffectiveSimulateParallelism returns the most simulations that run at once across the node for
-// the config value SimulateParallelism: GOMAXPROCS when it is 0 or less.
-func EffectiveSimulateParallelism(p int) int {
-	if p <= 0 {
-		return runtime.GOMAXPROCS(0)
+// NewSimulateLimiter returns the node-wide limiter of simulations for the config value
+// SimulateParallelism: GOMAXPROCS slots when it is 0, and nil, which admits every request, when it
+// is negative.
+func NewSimulateLimiter(p int) *semaphore.Weighted {
+	switch {
+	case p < 0:
+		return nil
+	case p == 0:
+		p = runtime.GOMAXPROCS(0)
 	}
-	return p
+	return semaphore.NewWeighted(int64(p))
 }
 
 // admitSimulate takes a slot of limiter for a new simulate request, waiting at most admissionWait.
