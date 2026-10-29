@@ -156,7 +156,6 @@ var defaultLocal = Local{
 	TLSCertFile:                                "",
 	TLSKeyFile:                                 "",
 	TelemetryToLog:                             true,
-	TimeTravelCheckpointInterval:               1,
 	TimeTravelDBDir:                            "",
 	TimeTravelHoldersIndex:                     false,
 	TrackerDBDir:                               "",

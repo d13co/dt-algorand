@@ -147,7 +147,7 @@ func TimeTravelPath(dirs DirsAndPrefix) string {
 
 func openHistoryTracker(dirs DirsAndPrefix, cfg config.Local, log logging.Logger) (*historyTracker, error) {
 	path := TimeTravelPath(dirs)
-	s, err := timetravel.Open(path, timetravel.Options{CheckpointInterval: cfg.TimeTravelCheckpointInterval, Logger: pebbleLog{log}, Infof: log.Infof, HoldersIndex: cfg.TimeTravelHoldersIndex})
+	s, err := timetravel.Open(path, timetravel.Options{Logger: pebbleLog{log}, Infof: log.Infof, HoldersIndex: cfg.TimeTravelHoldersIndex})
 	if err != nil {
 		return nil, fmt.Errorf("opening time travel store %s: %w", path, err)
 	}

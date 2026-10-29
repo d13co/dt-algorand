@@ -81,7 +81,6 @@ type TruncateOptions struct {
 // reads of an object take every key that starts with the object's for one of
 // its records, so such a key could pass for a version of any round. It marks
 // the store diverged, ends it at b and returns an error wrapping ErrCorrupt.
-// It needs N = 1, as commitments do.
 //
 // An interrupted or failed truncation (a crash, Close, which cancels it, or
 // an error) finishes when the store is next opened writable; until then
@@ -102,9 +101,6 @@ func (s *Store) truncateAfter(ctx context.Context, b uint64, o TruncateOptions, 
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.n != 1 {
-		return 0, fmt.Errorf("timetravel: truncating needs a store with N = 1, not %d", s.n)
-	}
 	pending, ok, err := s.pendingTruncate()
 	if err != nil {
 		return 0, err
@@ -153,13 +149,10 @@ func (s *Store) truncate(ctx context.Context, b uint64, o TruncateOptions, split
 		o.Workers = runtime.GOMAXPROCS(0)
 	}
 	after := func(pfx byte) []byte { return binary.BigEndian.AppendUint64([]byte{pfx}, b+1) }
-	// the records keyed by round, and the patches and round indexes, which
-	// an N = 1 store never writes
+	// the records keyed by round
 	for _, r := range [][2][]byte{
 		{after(pfxHeader), {pfxHeader + 1}},
 		{after(pfxExpired), {pfxExpired + 1}},
-		{{pfxPatch}, {pfxPatch + 1}},
-		{{pfxRoundIndex}, {pfxRoundIndex + 1}},
 	} {
 		if err := s.db.DeleteRange(r[0], r[1], pebble.NoSync); err != nil {
 			return 0, err
@@ -193,9 +186,7 @@ func (s *Store) truncate(ctx context.Context, b uint64, o TruncateOptions, split
 func (s *Store) endTruncate(b uint64, extra func(*pebble.Batch) error) error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
-	meta := binary.BigEndian.AppendUint64(nil, b)
-	meta = binary.BigEndian.AppendUint64(meta, s.n)
-	meta = append(meta, boolByte(s.incremental))
+	meta := metaRecord(b)
 	// the index lists every box change from b+1 on once AddRound adds them,
 	// whatever it was complete from before
 	from := s.boxFrom.Load()
@@ -288,7 +279,7 @@ func (s *Store) truncateVersions(ctx context.Context, b uint64, workers int, spl
 	// the deletions go to the store; the scans read what it held before
 	snap := s.db.NewSnapshot()
 	defer snap.Close()
-	lo, hi := []byte{pfxCheckpoint}, []byte{pfxCheckpoint + 1}
+	lo, hi := []byte{pfxRecord}, []byte{pfxRecord + 1}
 	keys, err := splits(snap, lo, hi, 16*workers)
 	if err != nil {
 		return err

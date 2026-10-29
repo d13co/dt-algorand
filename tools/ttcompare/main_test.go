@@ -72,7 +72,7 @@ func TestCompareIgnoresNoops(t *testing.T) {
 	t.Parallel()
 
 	a := buildStore(t, timetravel.Options{DedupEntries: -1}, 500, nil)
-	b := buildStore(t, timetravel.Options{CheckpointInterval: 16}, 500, nil)
+	b := buildStore(t, timetravel.Options{}, 500, nil) // no-ops skipped
 	c := compare(t, a, b)
 	require.Zero(t, c.diffs)
 	require.Positive(t, c.versionsChecked)

@@ -26,12 +26,10 @@ import (
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger"
-	"github.com/algorand/go-algorand/ledger/timetravel"
 )
 
 // holdersLedger is implemented by ledgers that keep the time travel history.
 type holdersLedger interface {
-	HoldersIndexState() (timetravel.HoldersState, uint64)
 	AssetHoldersAt(rnd basics.Round, aidx basics.AssetIndex, after *basics.Address, limit uint64) (ledger.AssetHoldersPage, error)
 }
 
@@ -50,10 +48,6 @@ func (v2 *Handlers) GetAssetHolders(ctx echo.Context, assetID basics.AssetIndex,
 	hl, ok := l.(holdersLedger)
 	if !ok || !cfg.EnableTimeTravel || !cfg.TimeTravelHoldersIndex {
 		err := errors.New("asset holders require EnableTimeTravel and TimeTravelHoldersIndex")
-		return badRequest(ctx, err, err.Error(), v2.Log)
-	}
-	if _, n := hl.HoldersIndexState(); n != 1 {
-		err := fmt.Errorf("asset holders need a time travel store with N = 1, not %d", n)
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	if hu, ok := l.(historyTrust); ok {

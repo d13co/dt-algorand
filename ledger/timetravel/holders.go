@@ -124,10 +124,8 @@ func (s *Store) loadHolders() error {
 		s.holders.Store(uint32(HoldersStale))
 		return nil
 	}
-	// an empty store takes N from the options: one built on with N = 1 and
-	// reopened with another N has an index nothing may maintain
 	st := HoldersStale
-	if binary.BigEndian.Uint64(v) == s.next() && s.n == 1 {
+	if binary.BigEndian.Uint64(v) == s.next() {
 		st = HoldersComplete
 	}
 	s.holders.Store(uint32(st))
@@ -404,8 +402,8 @@ func (s *Store) clearHolders() error {
 	return b.Commit(pebble.Sync)
 }
 
-// IndexHolders builds the asset holders index from the holding records of an
-// N = 1 store, replacing any index there was, and returns its entries: one
+// IndexHolders builds the asset holders index from the holding records of the
+// store, replacing any index there was, and returns its entries: one
 // per holding that ever existed. From then on AddRound keeps it up to date.
 // Nothing may read the store meanwhile (see AssetHolders); AddRound waits.
 // Cancelled or failed, it leaves no index (HoldersNone), and a rerun starts
@@ -422,13 +420,10 @@ func (s *Store) IndexHolders(ctx context.Context, progress func(scanned, indexed
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.n != 1 {
-		return 0, fmt.Errorf("timetravel: the asset holders index needs a store with N = 1, not %d", s.n)
-	}
 	if err := s.clearHolders(); err != nil {
 		return 0, err
 	}
-	lo := []byte{pfxCheckpoint, KindHolding}
+	lo := []byte{pfxRecord, KindHolding}
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
 	if err != nil {
 		return 0, err
@@ -502,7 +497,7 @@ func (s *Store) IndexHolders(ctx context.Context, progress func(scanned, indexed
 }
 
 // CompactHoldersIndex rewrites the asset holders index, dropping the entries
-// that IndexHolders replaced. It compacts in steps, as CompactCheckpoints
+// that IndexHolders replaced. It compacts in steps, as CompactRecords
 // does: at once, the free disk it needs could approach the store's size.
 func (s *Store) CompactHoldersIndex(ctx context.Context) error {
 	if err := s.acquire(); err != nil {

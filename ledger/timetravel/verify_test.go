@@ -31,65 +31,60 @@ func TestStoreVerify(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	for _, n := range []uint64{1, 4} {
-		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
-			t.Parallel()
-			objs := modelObjects()
-			const rounds = 40
-			changes, _ := modelRounds(7, objs, rounds)
-			hdr := func(r int) []byte { return []byte(fmt.Sprintf("header %d", r)) }
-			expired := func(r int) *uint64 {
-				if r%2 == 0 {
-					return nil
-				}
-				e := uint64(r * 1000)
-				return &e
-			}
-
-			s, err := Open(t.TempDir(), Options{CheckpointInterval: n})
-			require.NoError(t, err)
-			defer s.Close()
-			for r := range rounds {
-				require.NoError(t, s.AddRound(uint64(r), cloneChanges(changes[r]), hdr(r), expired(r)))
-			}
-
-			// every stored round verifies as it was added, including
-			// its no-op writes, which the dedup cache did not store
-			for r := range rounds {
-				require.NoError(t, s.Verify(uint64(r), changes[r], hdr(r), expired(r)), "round %d", r)
-			}
-
-			r := 30
-			for len(changes[r]) == 0 {
-				r++
-			}
-			require.ErrorIs(t, s.Verify(uint64(r), changes[r], []byte("forged"), expired(r)), ErrDiverged)
-
-			// an evaluation with a different value (its digest differs too;
-			// TestStoreVerifyTamperedValue covers a stored value changed under
-			// its digest)
-			forged := cloneChanges(changes[r])
-			i := 0
-			for forged[i].Deleted {
-				i++
-			}
-			forged[i].Value = append(forged[i].Value, 1)
-			err = s.Verify(uint64(r), forged, hdr(r), expired(r))
-			require.ErrorIs(t, err, ErrDiverged)
-
-			// a missing or extra change: caught by the digest
-			require.ErrorIs(t, s.Verify(uint64(r), changes[r][1:], hdr(r), expired(r)), ErrDiverged)
-
-			odd, even := 31, 32
-			e := uint64(1)
-			require.ErrorIs(t, s.Verify(uint64(odd), changes[odd], hdr(odd), &e), ErrDiverged)
-			require.ErrorIs(t, s.Verify(uint64(odd), changes[odd], hdr(odd), nil), ErrDiverged)
-			// no record (an older build): accepted
-			require.NoError(t, s.Verify(uint64(even), changes[even], hdr(even), &e))
-
-			require.Error(t, s.Verify(rounds, nil, hdr(rounds), nil))
-		})
+	objs := modelObjects()
+	const rounds = 40
+	changes, _ := modelRounds(7, objs, rounds)
+	hdr := func(r int) []byte { return []byte(fmt.Sprintf("header %d", r)) }
+	expired := func(r int) *uint64 {
+		if r%2 == 0 {
+			return nil
+		}
+		e := uint64(r * 1000)
+		return &e
 	}
+
+	s, err := Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	for r := range rounds {
+		require.NoError(t, s.AddRound(uint64(r), cloneChanges(changes[r]), hdr(r), expired(r)))
+	}
+
+	// every stored round verifies as it was added, including
+	// its no-op writes, which the dedup cache did not store
+	for r := range rounds {
+		require.NoError(t, s.Verify(uint64(r), changes[r], hdr(r), expired(r)), "round %d", r)
+	}
+
+	r := 30
+	for len(changes[r]) == 0 {
+		r++
+	}
+	require.ErrorIs(t, s.Verify(uint64(r), changes[r], []byte("forged"), expired(r)), ErrDiverged)
+
+	// an evaluation with a different value (its digest differs too;
+	// TestStoreVerifyTamperedValue covers a stored value changed under
+	// its digest)
+	forged := cloneChanges(changes[r])
+	i := 0
+	for forged[i].Deleted {
+		i++
+	}
+	forged[i].Value = append(forged[i].Value, 1)
+	err = s.Verify(uint64(r), forged, hdr(r), expired(r))
+	require.ErrorIs(t, err, ErrDiverged)
+
+	// a missing or extra change: caught by the digest
+	require.ErrorIs(t, s.Verify(uint64(r), changes[r][1:], hdr(r), expired(r)), ErrDiverged)
+
+	odd, even := 31, 32
+	e := uint64(1)
+	require.ErrorIs(t, s.Verify(uint64(odd), changes[odd], hdr(odd), &e), ErrDiverged)
+	require.ErrorIs(t, s.Verify(uint64(odd), changes[odd], hdr(odd), nil), ErrDiverged)
+	// no record (an older build): accepted
+	require.NoError(t, s.Verify(uint64(even), changes[even], hdr(even), &e))
+
+	require.Error(t, s.Verify(rounds, nil, hdr(rounds), nil))
 }
 
 // TestStoreVerifyTamperedValue changes a stored value under its unchanged
@@ -107,7 +102,7 @@ func TestStoreVerifyTamperedValue(t *testing.T) {
 	require.NoError(t, s.AddRound(1, cloneChanges(chs), []byte("h1"), nil))
 	require.NoError(t, s.Verify(1, chs, []byte("h1"), nil))
 
-	key := verKey(pfxCheckpoint, obj, 1)
+	key := verKey(pfxRecord, obj, 1)
 	require.NoError(t, s.db.Set(key, append([]byte{recFull}, "fake"...), pebble.Sync))
 	require.ErrorIs(t, s.Verify(1, chs, []byte("h1"), nil), ErrDiverged)
 
@@ -133,7 +128,7 @@ func TestStoreVerifyCorrupt(t *testing.T) {
 			require.NoError(t, s.db.Set(binary.BigEndian.AppendUint64([]byte{pfxExpired}, 1), nil, pebble.Sync))
 		},
 		"tag": func(s *Store) {
-			require.NoError(t, s.db.Set(verKey(pfxCheckpoint, obj, 1), []byte("Zjunk"), pebble.Sync))
+			require.NoError(t, s.db.Set(verKey(pfxRecord, obj, 1), []byte("Zjunk"), pebble.Sync))
 		},
 		"header": func(s *Store) {
 			require.NoError(t, s.db.Set(binary.BigEndian.AppendUint64([]byte{pfxHeader}, 1), []byte{1, 2}, pebble.Sync))

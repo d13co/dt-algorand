@@ -50,10 +50,9 @@ type HistoryInfo struct {
 	LastHash     string       `json:"last-hash"`
 	LastTime     int64        `json:"last-timestamp"`
 	BoxIndexFrom basics.Round `json:"box-index-from"`
-	// CheckpointInterval is the store's N, PebbleFormat its Pebble format
-	// major version: a reader needs a Pebble that knows it.
-	CheckpointInterval uint64 `json:"checkpoint-interval"`
-	PebbleFormat       uint64 `json:"pebble-format"`
+	// PebbleFormat is the store's Pebble format major version: a reader
+	// needs a Pebble that knows it.
+	PebbleFormat uint64 `json:"pebble-format"`
 }
 
 // RoundRange is an inclusive range of rounds.
@@ -111,7 +110,6 @@ func readHistory(dir string) (HistoryInfo, network, error) {
 		return hi, nw, errors.New("the store's box index is being rebuilt")
 	}
 	hi.BoxIndexFrom = basics.Round(bif)
-	hi.CheckpointInterval = st.CheckpointInterval()
 	hi.PebbleFormat = uint64(st.DB().FormatMajorVersion())
 	return hi, nw, nil
 }
