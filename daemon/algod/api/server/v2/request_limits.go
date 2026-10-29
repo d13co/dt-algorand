@@ -180,7 +180,13 @@ func answerAdmission(ctx echo.Context, err error, log logging.Logger) error {
 // requestContext. answered reports that it already answered the request (busy, client gone or time
 // limit), with err the handler's return value; otherwise err is the simulation's error.
 func (v2 *Handlers) simulateOnce(ctx echo.Context, request simulation.Request) (result simulation.Result, answered bool, err error) {
-	reqCtx, cancel := requestContext(ctx, v2.Node.Config())
+	cfg := v2.Node.Config()
+	// Refuse an invalid request before it takes a slot, as the node would: on a busy node it would
+	// otherwise get a 503 and be retried, to the same end.
+	if err = request.WithNodeLimits(cfg).Validate(cfg.EnableDeveloperAPI); err != nil {
+		return simulation.Result{}, false, err
+	}
+	reqCtx, cancel := requestContext(ctx, cfg)
 	defer cancel()
 	if admitErr := admitSimulate(reqCtx, v2.SimulateLimiter); admitErr != nil {
 		return simulation.Result{}, true, answerAdmission(ctx, admitErr, v2.Log)

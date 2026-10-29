@@ -190,6 +190,18 @@ func TestSimulateBusy(t *testing.T) {
 			// Every slot the request took was given back.
 			limiter.Release(1)
 			require.True(t, limiter.TryAcquire(2))
+
+			// An invalid request is refused at once, busy or not.
+			invalid := request
+			invalid.ExtraOpcodeBudget = 1 << 40
+			ran := n.calls.Load()
+			start = time.Now()
+			rec, err = simulateRoundsDirect(context.Background(), t, handler, invalid)
+			require.NoError(t, err)
+			require.Less(t, time.Since(start), 250*time.Millisecond)
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "extra budget")
+			require.Equal(t, ran, n.calls.Load())
 		})
 	}
 }
