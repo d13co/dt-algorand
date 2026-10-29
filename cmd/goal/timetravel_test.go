@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -181,4 +182,34 @@ func TestKeyVersions(t *testing.T) { // nolint:paralleltest // sets the versions
 	require.Len(t, queries, 2)
 	require.Contains(t, queries[0], "key=str%3Acount")
 	require.NotContains(t, queries[0], "include=values", "the key's value is enough")
+
+	// 25 empty pages, then one version: a progress note every 10 empty pages
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		n, _ := strconv.Atoi(r.URL.Query().Get("next"))
+		if n < 25 {
+			fmt.Fprintf(w, `{"round":100,"versions":[],"next-token":"%d"}`, n+1)
+			return
+		}
+		w.Write([]byte(`{"round":100,"versions":[{"round":50,"timestamp":60,"deleted":false,"key-value":{"type":2,"uint":3,"bytes":""}}]}`))
+	}))
+	defer srv2.Close()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "algod.net"), []byte(strings.TrimPrefix(srv2.URL, "http://")), 0600))
+	c, err = libgoal.MakeClientWithBinDir(dir, dir, "", libgoal.AlgodClient)
+	require.NoError(t, err)
+	var note bytes.Buffer
+	defer func(w io.Writer) { versionsNote = w }(versionsNote)
+	versionsNote = &note
+	out.Reset()
+	listVersions(appVersionsCmd, c, func(p apiclient.VersionsParams) (any, *string, []versionEntry, error) {
+		resp, err := c.ApplicationVersions(6, p)
+		var ens []versionEntry
+		for _, v := range resp.Versions {
+			ens = append(ens, versionEntry{round: v.Round, timestamp: v.Timestamp, label: "app:6", deleted: v.Deleted, value: ptrValue(v.KeyValue)})
+		}
+		return resp, resp.NextToken, ens, err
+	})
+	require.Equal(t, "50  1970-01-01 00:01:00  app:6 str:count = 3\n", out.String())
+	require.Equal(t, "Still searching: 10 pages without a match, now at --next 10\n"+
+		"Still searching: 20 pages without a match, now at --next 20\n", note.String())
 }

@@ -505,6 +505,12 @@ func viewOptions(label string) ttview.Options {
 // versionsOut is where listVersions prints; tests replace it.
 var versionsOut io.Writer = os.Stdout
 
+// versionsNote is where listVersions writes notes for the user: the next token, and progress.
+var versionsNote io.Writer = os.Stderr
+
+// emptyPagesNote is how many empty pages in a row listVersions follows between progress notes.
+const emptyPagesNote = 10
+
 // listVersions prints the pages fetch returns: as JSON, or as the objects'
 // changes. It follows next tokens with --all, and otherwise prints the token
 // of the next page on stderr.
@@ -543,6 +549,7 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 	}
 	h := ttview.History{W: versionsOut, Full: versionsDesc}
 	seen := map[string]bool{}
+	empty := 0 // pages in a row without a version
 	for {
 		page, next, entries, err := fetch(p)
 		if err != nil {
@@ -585,8 +592,14 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 		}
 		// with --key or --prefix a page can be empty: there is more to read
 		if !versionsAll && (len(entries) > 0 || (p.Key == "" && p.Prefix == "")) {
-			fmt.Fprintf(os.Stderr, "More versions: --next %s\n", *next)
+			fmt.Fprintf(versionsNote, "More versions: --next %s\n", *next)
 			return
+		}
+		// say that a long search is still going, and where it is
+		if len(entries) > 0 {
+			empty = 0
+		} else if empty++; empty%emptyPagesNote == 0 {
+			fmt.Fprintf(versionsNote, "Still searching: %d pages without a match, now at --next %s\n", empty, *next)
 		}
 		p.Next = *next
 	}
