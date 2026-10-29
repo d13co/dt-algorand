@@ -650,13 +650,18 @@ func TestHistoryVerifyReplayed(t *testing.T) {
 	})
 
 	t.Run("repair fails", func(t *testing.T) {
-		st, err := timetravel.Open(t.TempDir(), timetravel.Options{CheckpointInterval: 2})
+		// a read-only store refuses the truncation
+		dir := t.TempDir()
+		st, err := timetravel.Open(dir, timetravel.Options{})
 		require.NoError(t, err)
-		t.Cleanup(func() { st.Close() })
 		ch := []timetravel.Change{{Key: key, Value: []byte("v")}}
 		for r := range 4 {
 			require.NoError(t, st.AddRound(uint64(r), ch, []byte("h"), nil))
 		}
+		require.NoError(t, st.Close())
+		st, err = timetravel.Open(dir, timetravel.Options{ReadOnly: true})
+		require.NoError(t, err)
+		t.Cleanup(func() { st.Close() })
 		ht := &historyTracker{store: st, path: "test", log: logging.TestingLog(t)}
 		ht.verifyReplayed(historyRound{rnd: 2, changes: []timetravel.Change{{Key: key, Value: []byte("w")}}, hdr: []byte("h")})
 		require.ErrorIs(t, ht.untrusted, ErrHistoryUntrusted)

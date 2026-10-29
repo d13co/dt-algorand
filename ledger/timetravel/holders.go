@@ -41,13 +41,15 @@ import (
 // reopened within a round has no boundary.
 //
 // IndexHolders builds the index from the holding records; from then on every
-// AddRound keeps it up to date, in the round's batch. keyHoldersMeta holds
-// the round after the last one the index covers, and exists only once
-// IndexHolders has finished. A build without the index adds rounds without
-// moving it: the index is then stale, and AddRound leaves it alone, since
-// finding the holdings those rounds changed means reading every holding, a
-// rebuild anyway. Open writes the index only to finish an interrupted
-// truncation.
+// AddRound keeps it up to date, in the round's batch. A store created with
+// Options.HoldersIndex needs no build: its first AddRound starts the index in
+// the round's batch, so the round is never stored without it. keyHoldersMeta
+// holds the round after the last one the index covers, and exists only once
+// IndexHolders has finished or a first AddRound has started the index. A build
+// without the index adds rounds without moving it: the index is then stale,
+// and AddRound leaves it alone, since finding the holdings those rounds
+// changed means reading every holding, a rebuild anyway. Open writes the index
+// only to finish an interrupted truncation.
 //
 // Records are removed by RemoveNoops, which removes only records that repeat
 // their object's state and tombstones before an object's first value: no
@@ -122,10 +124,8 @@ func (s *Store) loadHolders() error {
 		s.holders.Store(uint32(HoldersStale))
 		return nil
 	}
-	// an empty store takes N from the options: one built on with N = 1 and
-	// reopened with another N has an index nothing may maintain
 	st := HoldersStale
-	if binary.BigEndian.Uint64(v) == s.next() && s.n == 1 {
+	if binary.BigEndian.Uint64(v) == s.next() {
 		st = HoldersComplete
 	}
 	s.holders.Store(uint32(st))
@@ -268,13 +268,20 @@ func (s *Store) truncateHolders(ctx context.Context, b uint64, scanned, deleted 
 	if err != nil {
 		return err
 	}
-	complete := len(v) == 8 && binary.BigEndian.Uint64(v) == s.next()
+	// truncateAfter ends the store at b from the start, but the meta record
+	// keeps the round it ended at until endTruncate, also when Open resumes
+	next, err := s.storedNext()
+	if err != nil {
+		closer.Close()
+		return err
+	}
+	complete := len(v) == 8 && binary.BigEndian.Uint64(v) == next
 	closer.Close()
 	if !complete {
 		s.infof("timetravel: dropping the asset holders index, which does not cover the store's last round, for the truncation: rebuild it with ttimport -holders-index")
 		return s.clearHolders()
 	}
-	if s.next() <= b+1 {
+	if next <= b+1 {
 		return nil // TruncateAfter(last): no boundary is after b
 	}
 	s.holders.Store(uint32(HoldersStale))
@@ -367,6 +374,20 @@ func (s *Store) truncateHoldersMeta(batch *pebble.Batch, b uint64) error {
 	return nil
 }
 
+// storedNext is the round after the one the store's meta record ends it at,
+// which a truncation changes only when it ends.
+func (s *Store) storedNext() (uint64, error) {
+	v, closer, err := s.db.Get(keyMeta)
+	if err != nil {
+		return 0, err
+	}
+	defer closer.Close()
+	if len(v) < 8 {
+		return 0, errors.New("timetravel: bad meta record")
+	}
+	return binary.BigEndian.Uint64(v) + 1, nil
+}
+
 // dropHoldersInBatch adds to batch the deletion of the holders index and its
 // meta record, after anything else batch writes to them.
 func dropHoldersInBatch(batch *pebble.Batch) error {
@@ -402,8 +423,8 @@ func (s *Store) clearHolders() error {
 	return b.Commit(pebble.Sync)
 }
 
-// IndexHolders builds the asset holders index from the holding records of an
-// N = 1 store, replacing any index there was, and returns its entries: one
+// IndexHolders builds the asset holders index from the holding records of the
+// store, replacing any index there was, and returns its entries: one
 // per holding that ever existed. From then on AddRound keeps it up to date.
 // Nothing may read the store meanwhile (see AssetHolders); AddRound waits.
 // Cancelled or failed, it leaves no index (HoldersNone), and a rerun starts
@@ -420,13 +441,10 @@ func (s *Store) IndexHolders(ctx context.Context, progress func(scanned, indexed
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.n != 1 {
-		return 0, fmt.Errorf("timetravel: the asset holders index needs a store with N = 1, not %d", s.n)
-	}
 	if err := s.clearHolders(); err != nil {
 		return 0, err
 	}
-	lo := []byte{pfxCheckpoint, KindHolding}
+	lo := []byte{pfxRecord, KindHolding}
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
 	if err != nil {
 		return 0, err
@@ -500,7 +518,7 @@ func (s *Store) IndexHolders(ctx context.Context, progress func(scanned, indexed
 }
 
 // CompactHoldersIndex rewrites the asset holders index, dropping the entries
-// that IndexHolders replaced. It compacts in steps, as CompactCheckpoints
+// that IndexHolders replaced. It compacts in steps, as CompactRecords
 // does: at once, the free disk it needs could approach the store's size.
 func (s *Store) CompactHoldersIndex(ctx context.Context) error {
 	if err := s.acquire(); err != nil {

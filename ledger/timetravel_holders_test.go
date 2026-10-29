@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math/rand"
 	"slices"
 	"sync"
@@ -367,78 +366,59 @@ func TestTimeTravelInitHoldersIndex(t *testing.T) {
 	t.Parallel()
 
 	genBalances, addrs, _ := ledgertesting.NewTestGenesis()
-	for _, n := range []uint64{1, 3} {
-		t.Run(fmt.Sprintf("N=%d", n), func(t *testing.T) {
-			cfg := config.GetDefaultLocal()
-			cfg.EnableTimeTravel = true
-			cfg.TimeTravelCheckpointInterval = n
-			cfg.MaxAcctLookback = 4
-			// the ledgers' goroutines log too: a locked buffer, from the start
-			var logged logBuffer
-			log := logging.NewLogger()
-			log.SetOutput(&logged)
-			dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, simpleLedgerNotArchival(), simpleLedgerLogger(log))
-			defer dl.Close()
-			l := dl.validator
-			s := l.history.store
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	cfg.MaxAcctLookback = 4
+	// the ledgers' goroutines log too: a locked buffer, from the start
+	var logged logBuffer
+	log := logging.NewLogger()
+	log.SetOutput(&logged)
+	dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, simpleLedgerNotArchival(), simpleLedgerLogger(log))
+	defer dl.Close()
+	l := dl.validator
+	s := l.history.store
 
-			if n != 1 {
-				require.NoError(t, l.InitHoldersIndex(true))
-				require.Contains(t, logged.String(), "N = 1")
-				_, err := s.IndexHolders(context.Background(), nil)
-				require.Error(t, err)
-				st, gotN := l.HoldersIndexState()
-				require.Equal(t, timetravel.HoldersNone, st)
-				require.Equal(t, n, gotN)
-				return
-			}
+	require.NoError(t, l.InitHoldersIndex(true))
+	require.Contains(t, logged.String(), "the asset holders index is missing")
+	require.Contains(t, logged.String(), "ttimport -holders-index")
+	_, err := s.IndexHolders(context.Background(), nil)
+	require.NoError(t, err)
+	logged.Reset()
+	require.NoError(t, l.InitHoldersIndex(true))
+	require.NotContains(t, logged.String(), "holders", "nothing to say about a complete index")
 
-			require.NoError(t, l.InitHoldersIndex(true))
-			require.Contains(t, logged.String(), "the asset holders index is missing")
-			require.Contains(t, logged.String(), "ttimport -holders-index")
-			_, err := s.IndexHolders(context.Background(), nil)
-			require.NoError(t, err)
-			logged.Reset()
-			require.NoError(t, l.InitHoldersIndex(true))
-			require.NotContains(t, logged.String(), "holders", "nothing to say about a complete index")
-
-			// a ledger loaded without the call, as ttimport loads it, keeps a
-			// complete index up to date whatever its options
-			assets, _ := holdersHistory(t, &dl, addrs, 4, 12)
-			commitRoundLookback(0, l)
-			st, gotN := l.HoldersIndexState()
-			require.Equal(t, timetravel.HoldersComplete, st)
-			require.EqualValues(t, 1, gotN)
-			for _, aidx := range assets[:1] {
-				w, _ := ttHolders(t, l, addrs, l.Latest(), aidx)
-				require.NotEmpty(t, w)
-				p, err := l.AssetHoldersAt(l.Latest(), aidx, nil, 1000)
-				require.NoError(t, err)
-				require.Equal(t, w, p.Holders)
-			}
-
-			require.NoError(t, l.InitHoldersIndex(false))
-			require.Contains(t, logged.String(), "deleted the asset holders index: TimeTravelHoldersIndex is off")
-			st, _ = l.HoldersIndexState()
-			require.Equal(t, timetravel.HoldersNone, st)
-			_, err = l.AssetHoldersAt(l.Latest(), assets[0], nil, 10)
-			require.ErrorIs(t, err, ErrNoHoldersIndex)
-			require.ErrorContains(t, err, "the asset holders index is missing")
-			logged.Reset()
-			require.NoError(t, l.InitHoldersIndex(false))
-			require.NotContains(t, logged.String(), "holders", "nothing left to delete")
-		})
+	// a ledger loaded without the call, as ttimport loads it, keeps a
+	// complete index up to date whatever its options
+	assets, _ := holdersHistory(t, &dl, addrs, 4, 12)
+	commitRoundLookback(0, l)
+	require.Equal(t, timetravel.HoldersComplete, l.HoldersIndexState())
+	for _, aidx := range assets[:1] {
+		w, _ := ttHolders(t, l, addrs, l.Latest(), aidx)
+		require.NotEmpty(t, w)
+		p, err := l.AssetHoldersAt(l.Latest(), aidx, nil, 1000)
+		require.NoError(t, err)
+		require.Equal(t, w, p.Holders)
 	}
 
-	// without time travel there is nothing to do
-	cfg := config.GetDefaultLocal()
-	dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg)
-	defer dl.Close()
-	require.NoError(t, dl.validator.InitHoldersIndex(false))
-	require.NoError(t, dl.validator.InitHoldersIndex(true))
-	st, n := dl.validator.HoldersIndexState()
+	require.NoError(t, l.InitHoldersIndex(false))
+	require.Contains(t, logged.String(), "deleted the asset holders index: TimeTravelHoldersIndex is off")
+	st := l.HoldersIndexState()
 	require.Equal(t, timetravel.HoldersNone, st)
-	require.Zero(t, n)
+	_, err = l.AssetHoldersAt(l.Latest(), assets[0], nil, 10)
+	require.ErrorIs(t, err, ErrNoHoldersIndex)
+	require.ErrorContains(t, err, "the asset holders index is missing")
+	logged.Reset()
+	require.NoError(t, l.InitHoldersIndex(false))
+	require.NotContains(t, logged.String(), "holders", "nothing left to delete")
+
+	t.Run("without time travel", func(t *testing.T) {
+		// nothing to do
+		dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, config.GetDefaultLocal())
+		defer dl.Close()
+		require.NoError(t, dl.validator.InitHoldersIndex(false))
+		require.NoError(t, dl.validator.InitHoldersIndex(true))
+		require.Equal(t, timetravel.HoldersNone, dl.validator.HoldersIndexState())
+	})
 }
 
 // logBuffer collects a ledger's log, which its goroutines write too.
@@ -524,12 +504,12 @@ func TestTimeTravelHoldersIndexReopen(t *testing.T) {
 
 	assets, _ := holdersHistory(t, &dl, addrs, 6, 12)
 	l := reopen(nil)
-	st, _ := l.HoldersIndexState()
+	st := l.HoldersIndexState()
 	require.Equal(t, timetravel.HoldersComplete, st, "loading a ledger leaves a complete index alone")
 	check(l, assets)
 	more, _ := holdersHistory(t, &dl, addrs, 7, 12)
 	commitRoundLookback(0, l)
-	st, _ = l.HoldersIndexState()
+	st = l.HoldersIndexState()
 	require.Equal(t, timetravel.HoldersComplete, st)
 	check(l, append(assets, more...))
 
@@ -539,7 +519,7 @@ func TestTimeTravelHoldersIndexReopen(t *testing.T) {
 		require.Equal(t, timetravel.HoldersComplete, s.HoldersIndexState())
 		require.NoError(t, s.DB().Set([]byte("mh"), meta, pebble.Sync))
 	})
-	st, _ = l.HoldersIndexState()
+	st = l.HoldersIndexState()
 	require.Equal(t, timetravel.HoldersStale, st)
 	logged.Reset()
 	require.NoError(t, l.InitHoldersIndex(true))
@@ -561,7 +541,7 @@ func TestTimeTravelHoldersIndexReopen(t *testing.T) {
 	logged.Reset()
 	require.NoError(t, l.InitHoldersIndex(false))
 	require.Contains(t, logged.String(), "deleted the asset holders index: TimeTravelHoldersIndex is off")
-	st, _ = l.HoldersIndexState()
+	st = l.HoldersIndexState()
 	require.Equal(t, timetravel.HoldersNone, st)
 	require.Empty(t, holdersEntries(t, l.history.store))
 	_, _, err = l.history.store.DB().Get([]byte("mh"))
@@ -644,5 +624,87 @@ func TestTimeTravelAssetHoldersFirstRound(t *testing.T) {
 		p, err = r.AssetHoldersAt(rnd, aidx, nil, 10)
 		require.NoError(t, err)
 		require.Equal(t, w, p.Holders, "reader round %d", rnd)
+	}
+}
+
+// TestTimeTravelHoldersIndexFromGenesis checks that a ledger starting its
+// store from genesis with TimeTravelHoldersIndex, as a node syncing from
+// genesis does, has the index from the genesis round (its holdings included)
+// and keeps it up to date, with no ttimport -holders-index; and that it has
+// none with the option off.
+func TestTimeTravelHoldersIndexFromGenesis(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genBalances, addrs, _ := ledgertesting.NewTestGenesis()
+	// an asset that exists at genesis, held by its creator and another account
+	const genAsset = basics.AssetIndex(1 << 40)
+	creator := genBalances.Balances[addrs[0]]
+	creator.AssetParams = map[basics.AssetIndex]basics.AssetParams{genAsset: {Total: 100, UnitName: "g"}}
+	creator.Assets = map[basics.AssetIndex]basics.AssetHolding{genAsset: {Amount: 60}}
+	genBalances.Balances[addrs[0]] = creator
+	holder := genBalances.Balances[addrs[9]]
+	holder.Assets = map[basics.AssetIndex]basics.AssetHolding{genAsset: {Amount: 40, Frozen: true}}
+	genBalances.Balances[addrs[9]] = holder
+
+	newCfg := func(on bool) config.Local {
+		cfg := config.GetDefaultLocal()
+		cfg.EnableTimeTravel = true
+		cfg.TimeTravelHoldersIndex = on
+		cfg.MaxAcctLookback = 4
+		return cfg
+	}
+	// check compares the holders of the assets at every round with the oracle
+	check := func(l *Ledger, assets []basics.AssetIndex) {
+		for rnd := basics.Round(0); rnd <= l.Latest(); rnd++ {
+			for _, aidx := range assets {
+				w, exists := ttHolders(t, l, addrs, rnd, aidx)
+				if !exists {
+					continue
+				}
+				p, err := l.AssetHoldersAt(rnd, aidx, nil, 1000)
+				require.NoError(t, err)
+				require.Equal(t, w, p.Holders, "round %d asset %d", rnd, aidx)
+			}
+		}
+	}
+
+	t.Run("on", func(t *testing.T) {
+		t.Parallel()
+		var logged logBuffer
+		log := logging.NewLogger()
+		log.SetOutput(&logged)
+		dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, newCfg(true), simpleLedgerNotArchival(), simpleLedgerLogger(log))
+		defer dl.Close()
+		l := dl.validator
+		st := l.HoldersIndexState()
+		require.Equal(t, timetravel.HoldersComplete, st)
+		require.Contains(t, logged.String(), "indexing asset holders from the genesis round")
+		p, err := l.AssetHoldersAt(0, genAsset, nil, 10)
+		require.NoError(t, err)
+		require.Len(t, p.Holders, 2)
+		logged.Reset()
+		require.NoError(t, l.InitHoldersIndex(true))
+		require.NotContains(t, logged.String(), "holders", "the node's launch has nothing to say")
+
+		assets, _ := holdersHistory(t, &dl, addrs, 9, 12)
+		commitRoundLookback(0, l)
+		st = l.HoldersIndexState()
+		require.Equal(t, timetravel.HoldersComplete, st)
+		check(l, append(assets, genAsset))
+	})
+
+	for name, cfg := range map[string]config.Local{"off": newCfg(false)} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var logged logBuffer
+			log := logging.NewLogger()
+			log.SetOutput(&logged)
+			dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, simpleLedgerNotArchival(), simpleLedgerLogger(log))
+			defer dl.Close()
+			st := dl.validator.HoldersIndexState()
+			require.Equal(t, timetravel.HoldersNone, st)
+			require.NotContains(t, logged.String(), "the genesis round", "neither built nor tried")
+		})
 	}
 }

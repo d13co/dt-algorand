@@ -71,9 +71,7 @@ var keyspaces = []struct {
 	{'H', "headers and digests", false},
 	{'a', "asset holders index", false},
 	{'b', "box index", false},
-	{'c', "checkpoints (versions)", true},
-	{'p', "patches", true},
-	{'r', "round index", false},
+	{'c', "versions", true},
 }
 
 type estimate struct {
@@ -84,17 +82,15 @@ type estimate struct {
 }
 
 type infoOut struct {
-	Path               string     `json:"path"`
-	First              uint64     `json:"first-round"`
-	Last               uint64     `json:"last-round"`
-	FirstTimestamp     int64      `json:"first-timestamp"`
-	LastTimestamp      int64      `json:"last-timestamp"`
-	CheckpointInterval uint64     `json:"checkpoint-interval"`
-	Incremental        bool       `json:"incremental"`
-	DiskBytes          int64      `json:"disk-bytes"`
-	BoxIndexFrom       *uint64    `json:"box-index-from,omitempty"` // absent while it is rebuilt
-	HoldersIndex       string     `json:"holders-index"`            // complete, stale or missing
-	Estimates          []estimate `json:"estimates"`
+	Path           string     `json:"path"`
+	First          uint64     `json:"first-round"`
+	Last           uint64     `json:"last-round"`
+	FirstTimestamp int64      `json:"first-timestamp"`
+	LastTimestamp  int64      `json:"last-timestamp"`
+	DiskBytes      int64      `json:"disk-bytes"`
+	BoxIndexFrom   *uint64    `json:"box-index-from,omitempty"` // absent while it is rebuilt
+	HoldersIndex   string     `json:"holders-index"`            // complete, stale or missing
+	Estimates      []estimate `json:"estimates"`
 }
 
 func cmdInfo(e *env, args []string) error {
@@ -102,7 +98,6 @@ func cmdInfo(e *env, args []string) error {
 		return err
 	}
 	out := infoOut{Path: e.path, First: uint64(e.first), Last: uint64(e.last),
-		CheckpointInterval: e.store.CheckpointInterval(), Incremental: e.store.Incremental(),
 		HoldersIndex: e.store.HoldersIndexState().String()}
 	if from, ok := e.store.BoxIndexFrom(); ok {
 		out.BoxIndexFrom = &from
@@ -132,9 +127,7 @@ func cmdInfo(e *env, args []string) error {
 			if err != nil {
 				return err
 			}
-			if n > 0 || ks.pfx == 'c' {
-				out.Estimates = append(out.Estimates, estimate{Keyspace: string(ks.pfx), Kind: string(k.kind), Name: k.name, Bytes: n})
-			}
+			out.Estimates = append(out.Estimates, estimate{Keyspace: string(ks.pfx), Kind: string(k.kind), Name: k.name, Bytes: n})
 		}
 	}
 	if e.json {
@@ -142,11 +135,7 @@ func cmdInfo(e *env, args []string) error {
 	}
 	fmt.Fprintf(e.out, "store        %s\n", out.Path)
 	fmt.Fprintf(e.out, "rounds       %d..%d (%s .. %s)\n", out.First, out.Last, e.when(e.first), e.when(e.last))
-	fmt.Fprintf(e.out, "checkpoints  every %d rounds", out.CheckpointInterval)
-	if out.Incremental {
-		fmt.Fprint(e.out, ", incremental patches")
-	}
-	fmt.Fprintf(e.out, "\ndisk         %s\n", sizeString(uint64(out.DiskBytes)))
+	fmt.Fprintf(e.out, "disk         %s\n", sizeString(uint64(out.DiskBytes)))
 	switch from := out.BoxIndexFrom; {
 	case from == nil:
 		fmt.Fprint(e.out, "box index    being rebuilt (ttimport -index-boxes)\n")
@@ -159,11 +148,7 @@ func cmdInfo(e *env, args []string) error {
 	case timetravel.HoldersComplete:
 		fmt.Fprint(e.out, "holders      index complete\n\n")
 	case timetravel.HoldersStale:
-		if n := out.CheckpointInterval; n != 1 {
-			fmt.Fprintf(e.out, "holders      index stale: it needs a store with N = 1, not %d\n\n", n)
-		} else {
-			fmt.Fprint(e.out, "holders      index stale: a build without it added rounds, or its meta record is bad (ttimport -holders-index rebuilds it)\n\n")
-		}
+		fmt.Fprint(e.out, "holders      index stale: a build without it added rounds, or its meta record is bad (ttimport -holders-index rebuilds it)\n\n")
 	default:
 		fmt.Fprint(e.out, "holders      no index (TimeTravelHoldersIndex, ttimport -holders-index)\n\n")
 	}

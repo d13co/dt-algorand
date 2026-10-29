@@ -18,21 +18,19 @@
 // object can be projected at any round.
 //
 // Every object (account, holding, local state, asset/app params, kv/box,
-// totals) is addressed by an object key. Its history lives in two
-// object-major keyspaces, ordered by (object, round):
+// totals) is addressed by an object key. Its history lives in an
+// object-major keyspace, ordered by (object, round):
 //
-//	'c' obj round -> full value or tombstone   (sparse checkpoints)
-//	'p' obj round -> patch, full value or tombstone
+//	'c' obj round -> full value or tombstone
 //
-// Every N rounds a checkpoint round c writes the value of every object that
-// changed in (c-N, c]; objects that did not change are not repeated. Rounds
-// in (c, c+N) write, per changed object, a patch against the object's value
-// at c. Reading obj@R is two bounded seeks: the latest checkpoint record at
-// or before c(R) -- however many sparse checkpoints back that is -- and the
-// latest patch in (c(R), R]. Genesis (round 0) is the only full checkpoint.
+// Each round writes the new value of every object that changed in it; objects
+// that did not change are not repeated. Reading obj@R is one seek: the latest
+// record at or before R. Writes are blind appends. With zstd over large
+// blocks, an object's adjacent versions compress as well as patches against
+// earlier versions would, at a fraction of the write cost (see README.md for
+// the evaluation on mainnet data).
 //
-// 'r' round -> keys changed in that round, kept only until the next
-// checkpoint is materialized. 'H' round -> encoded block header.
+// 'H' round -> encoded block header.
 // 'E' round -> the round's expired online stake (uvarint), see ExpiredStake.
 // 'b' app round name -> 'F' or 'D', the box index: an entry per box record
 // AddRound writes, round-major per app, so that BoxChanges reads a range of
@@ -42,11 +40,6 @@
 // the asset holders index: an entry per holding ever, asset-major, so that
 // AssetHolders lists an asset's holders without reading every holding (see
 // IndexHolders). Unlike the others it exists only once built.
-//
-// N = 1 (every version stored in full, one seek per read, writes that read
-// nothing) is the recommended setting: with zstd over large blocks, an
-// object's adjacent versions compress as well as patches would, at a fraction
-// of the write cost. See README.md for the evaluation on mainnet data.
 //
 // A change that repeats the state of its object's latest record is not
 // stored when an in-memory cache of recently written objects knows that state
@@ -70,13 +63,11 @@ import (
 )
 
 const (
-	pfxCheckpoint = 'c'
-	pfxPatch      = 'p'
-	pfxRoundIndex = 'r'
-	pfxHeader     = 'H'
-	pfxExpired    = 'E'
-	pfxBoxIndex   = 'b'
-	pfxHolders    = 'a'
+	pfxRecord   = 'c'
+	pfxHeader   = 'H'
+	pfxExpired  = 'E'
+	pfxBoxIndex = 'b'
+	pfxHolders  = 'a'
 )
 
 var keyMeta = []byte("m")
@@ -94,21 +85,14 @@ const boxIndexNone = ^uint64(0)
 const (
 	recFull    = 'F'
 	recDeleted = 'D'
-	recPatch   = 'X'
 )
 
 // MaxOpenFiles is how many files a store keeps open at most. algod counts
 // them when it raises its file descriptor limit.
 const MaxOpenFiles = 4096
 
-// Options configure a new store. Existing stores keep the parameters they
-// were created with.
+// Options configure how a store is opened.
 type Options struct {
-	// CheckpointInterval is N. 1 stores every version in full.
-	CheckpointInterval uint64
-	// Incremental chains patches from the previous version instead of the
-	// checkpoint value. Smaller patches, reads apply up to N-1 of them.
-	Incremental bool
 	// CacheSize is the block cache size in bytes.
 	CacheSize int64
 	// BlockSize is the sstable block size; larger compresses better.
@@ -126,10 +110,15 @@ type Options struct {
 	// large store.
 	Infof func(format string, args ...any)
 	// ReadOnly opens an existing store without writing to it: no new store,
-	// no compactions, and AddRound, RemoveNoops, CompactCheckpoints and Sync
+	// no compactions, and AddRound, RemoveNoops, CompactRecords and Sync
 	// fail with ErrReadOnly. The store is still locked, so another process
 	// cannot open it meanwhile.
 	ReadOnly bool
+	// HoldersIndex makes a new store index asset holders from its first
+	// round: AddRound writes that round and the index in one batch, and every
+	// later round keeps the index up to date. An existing store
+	// ignores it: build its index with IndexHolders.
+	HoldersIndex bool
 }
 
 // Change is the new value of one object in a round.
@@ -143,11 +132,9 @@ type Change struct {
 // rounds; Get/Header/Scan may be called concurrently for any round up to
 // Last(), and fail with ErrClosed after Close.
 type Store struct {
-	db          *pebble.DB
-	n           uint64
-	incremental bool
-	readOnly    bool
-	last        atomic.Int64 // -1 when empty
+	db       *pebble.DB
+	readOnly bool
+	last     atomic.Int64 // -1 when empty
 
 	writeMu deadlock.Mutex // serializes AddRound, RemoveNoops, IndexBoxes and the holders index's writers
 	dedup   *lastWritten   // nil: store every change; guarded by writeMu
@@ -157,6 +144,7 @@ type Store struct {
 
 	holders     atomic.Uint32 // HoldersState; changes under writeMu
 	skipHolders bool          // tests: AddRound leaves the holders index alone, as a build without it does
+	newHolders  bool          // Options.HoldersIndex: the first round of an empty store starts the holders index
 
 	truncating atomic.Bool // a TruncateAfter is unfinished; AddRound fails
 	// truncatedAfter is 1 + the round the last TruncateAfter of this
@@ -204,9 +192,6 @@ func (s *Store) acquire() error {
 
 // Open opens or creates a store in dir.
 func Open(dir string, o Options) (*Store, error) {
-	if o.CheckpointInterval == 0 {
-		o.CheckpointInterval = 1
-	}
 	if o.CacheSize == 0 {
 		o.CacheSize = 256 << 20
 	}
@@ -245,7 +230,7 @@ func Open(dir string, o Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, n: o.CheckpointInterval, incremental: o.Incremental, readOnly: o.ReadOnly, closing: make(chan struct{}), infof: o.Infof}
+	s := &Store{db: db, readOnly: o.ReadOnly, newHolders: o.HoldersIndex, closing: make(chan struct{}), infof: o.Infof}
 	if s.infof == nil {
 		s.infof = func(string, ...any) {}
 	}
@@ -284,10 +269,23 @@ func (s *Store) loadMeta() error {
 	if len(v) != 17 {
 		return fmt.Errorf("timetravel: bad meta record")
 	}
+	// the checkpoint interval N of the patch layouts, which builds before
+	// their removal could create; with N = 1 they wrote full records only,
+	// whatever the incremental flag
+	if n := binary.BigEndian.Uint64(v[8:]); n != 1 {
+		return fmt.Errorf("timetravel: the store was created with TimeTravelCheckpointInterval %d, which is no longer supported: rebuild it", n)
+	}
 	s.last.Store(int64(binary.BigEndian.Uint64(v)))
-	s.n = binary.BigEndian.Uint64(v[8:])
-	s.incremental = v[16] == 1
 	return nil
+}
+
+// metaRecord is the meta record of a store whose last round is last. It
+// keeps the layout of the builds that had a checkpoint interval: N = 1, not
+// incremental.
+func metaRecord(last uint64) []byte {
+	meta := binary.BigEndian.AppendUint64(nil, last)
+	meta = binary.BigEndian.AppendUint64(meta, 1)
+	return append(meta, 0)
 }
 
 // next is the first round that AddRound has not added.
@@ -344,21 +342,16 @@ func (s *Store) loadBoxIndex() error {
 
 // hasBoxes reports whether the store holds a record of any box.
 func (s *Store) hasBoxes() (bool, error) {
-	for _, pfx := range []byte{pfxCheckpoint, pfxPatch} {
-		lo := append([]byte{pfx}, kvBoxPrefix...)
-		it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
-		if err != nil {
-			return false, err
-		}
-		found := it.First()
-		if err := it.Close(); err != nil {
-			return false, err
-		}
-		if found {
-			return true, nil
-		}
+	lo := append([]byte{pfxRecord}, kvBoxPrefix...)
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)})
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	found := it.First()
+	if err := it.Close(); err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 // setBoxFrom records the round the box index is complete from. The caller
@@ -438,12 +431,6 @@ func (s *Store) First() (uint64, bool, error) {
 	return binary.BigEndian.Uint64(it.Key()[1:]), true, nil
 }
 
-// CheckpointInterval returns N.
-func (s *Store) CheckpointInterval() uint64 { return s.n }
-
-// Incremental reports whether patches chain from the previous version.
-func (s *Store) Incremental() bool { return s.incremental }
-
 // Sync makes all added rounds durable.
 func (s *Store) Sync() error {
 	if err := s.acquire(); err != nil {
@@ -503,34 +490,18 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	if err := b.Set(keyBoxIndexMeta, boxIndexMeta(s.boxFrom.Load(), rnd+1), nil); err != nil {
 		return err
 	}
-	// a complete holders index is kept up to date, in the round's batch
-	if s.HoldersIndexState() == HoldersComplete && !s.skipHolders {
+	// a complete holders index is kept up to date, in the round's batch, and
+	// a new store with Options.HoldersIndex starts one with its first round:
+	// an empty store has no holding records, so it has no entries to clear
+	startHolders := !ok && s.newHolders
+	if (startHolders || s.HoldersIndexState() == HoldersComplete) && !s.skipHolders {
 		if err := s.indexHolders(b, write, rnd); err != nil {
 			return err
 		}
 	}
-	c := rnd - rnd%s.n
-	if rnd == c {
-		if err := s.checkpoint(b, rnd, write); err != nil {
+	for _, ch := range write {
+		if err := b.Set(verKey(pfxRecord, ch.Key, rnd), fullRecord(ch), nil); err != nil {
 			return err
-		}
-	} else {
-		var idx []byte
-		for _, ch := range write {
-			rec, err := s.patchRecord(ch, rnd, c)
-			if err != nil {
-				return err
-			}
-			if err := b.Set(verKey(pfxPatch, ch.Key, rnd), rec, nil); err != nil {
-				return err
-			}
-			idx = binary.AppendUvarint(idx, uint64(len(ch.Key)))
-			idx = append(idx, ch.Key...)
-		}
-		if len(idx) > 0 {
-			if err := b.Set(binary.BigEndian.AppendUint64([]byte{pfxRoundIndex}, rnd), idx, nil); err != nil {
-				return err
-			}
 		}
 	}
 	// the header record also carries the round's ChangesDigest
@@ -542,10 +513,7 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 			return err
 		}
 	}
-	meta := binary.BigEndian.AppendUint64(nil, rnd)
-	meta = binary.BigEndian.AppendUint64(meta, s.n)
-	meta = append(meta, boolByte(s.incremental))
-	if err := b.Set(keyMeta, meta, nil); err != nil {
+	if err := b.Set(keyMeta, metaRecord(rnd), nil); err != nil {
 		return err
 	}
 	if err := commitBatch(b); err != nil {
@@ -553,6 +521,9 @@ func (s *Store) AddRound(rnd uint64, changes []Change, hdr []byte, expired *uint
 	}
 	s.last.Store(int64(rnd))
 	s.truncatedAfter.Store(0)
+	if startHolders && !s.skipHolders {
+		s.holders.Store(uint32(HoldersComplete))
+	}
 	// only now: a round that failed to commit is added again, and must not
 	// find its own changes in the cache
 	s.dedup.update(states)
@@ -585,13 +556,6 @@ func indexBox(b *pebble.Batch, ch Change, rnd uint64) error {
 	return b.Set(boxIndexKey(app, rnd, name), boxIndexEntry(ch.Deleted), nil)
 }
 
-func boolByte(b bool) byte {
-	if b {
-		return 1
-	}
-	return 0
-}
-
 func fullRecord(ch Change) []byte {
 	if ch.Deleted {
 		return []byte{recDeleted}
@@ -599,88 +563,18 @@ func fullRecord(ch Change) []byte {
 	return append([]byte{recFull}, ch.Value...)
 }
 
-func (s *Store) patchRecord(ch Change, rnd, c uint64) ([]byte, error) {
-	if ch.Deleted {
-		return []byte{recDeleted}, nil
-	}
-	var base []byte
-	var ok bool
-	var err error
-	if s.incremental {
-		base, ok, err = s.get(ch.Key, rnd-1)
-	} else {
-		base, ok, err = s.checkpointValue(ch.Key, c)
-	}
-	if err != nil || !ok {
-		return fullRecord(ch), err
-	}
-	p := Diff(base, ch.Value)
-	if len(p) >= len(ch.Value) {
-		return fullRecord(ch), nil
-	}
-	return append([]byte{recPatch}, p...), nil
-}
-
-// checkpoint materializes checkpoint rnd: the value at rnd of every object
-// changed since the previous checkpoint.
-func (s *Store) checkpoint(b *pebble.Batch, rnd uint64, changes []Change) error {
-	written := make(map[string]bool, len(changes))
-	for _, ch := range changes {
-		written[string(ch.Key)] = true
-		if err := b.Set(verKey(pfxCheckpoint, ch.Key, rnd), fullRecord(ch), nil); err != nil {
-			return err
-		}
-	}
-	if rnd == 0 || s.n == 1 {
-		return nil
-	}
-	lo := binary.BigEndian.AppendUint64([]byte{pfxRoundIndex}, rnd-s.n+1)
-	hi := binary.BigEndian.AppendUint64([]byte{pfxRoundIndex}, rnd)
-	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
-	if err != nil {
-		return err
-	}
-	defer it.Close()
-	for it.First(); it.Valid(); it.Next() {
-		idx := it.Value()
-		for len(idx) > 0 {
-			l, k := binary.Uvarint(idx)
-			if k <= 0 || uint64(len(idx)-k) < l {
-				return fmt.Errorf("timetravel: corrupt round index")
-			}
-			key := idx[k : k+int(l)]
-			idx = idx[k+int(l):]
-			if written[string(key)] {
-				continue
-			}
-			written[string(key)] = true
-			v, ok, err := s.get(key, rnd-1)
-			if err != nil {
-				return err
-			}
-			if err := b.Set(verKey(pfxCheckpoint, key, rnd), fullRecord(Change{Value: v, Deleted: !ok}), nil); err != nil {
-				return err
-			}
-		}
-	}
-	if err := it.Error(); err != nil {
-		return err
-	}
-	return b.DeleteRange(lo, hi, nil)
-}
-
 // removeNoopsBatchOps is the number of writes RemoveNoops and IndexBoxes
 // commit at once.
 var removeNoopsBatchOps = uint32(1 << 16)
 
-// RemoveNoops deletes the records of an N = 1 store that change nothing:
+// RemoveNoops deletes the records of the store that change nothing:
 // those that repeat the object's previous record (the no-op writes of stores
 // written before AddRound skipped them, and the ones its cache missed), and
 // tombstones before an object's first value (objects created and deleted in
 // one round). Every read answers as before, except that Objects no longer
 // lists objects that never had a value. In the same pass it rebuilds the box
 // index, as IndexBoxes does. The asset holders index stays as it is: no
-// record it removes creates or deletes a holding. CompactCheckpoints reclaims
+// record it removes creates or deletes a holding. CompactRecords reclaims
 // the space. progress,
 // if not nil, is called with the records scanned and removed after each batch
 // of writes and at the end. Reads may run concurrently; AddRound waits.
@@ -694,10 +588,7 @@ func (s *Store) RemoveNoops(ctx context.Context, progress func(scanned, removed 
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.n != 1 {
-		return 0, fmt.Errorf("timetravel: RemoveNoops needs a store with N = 1, not %d", s.n)
-	}
-	removed, _, err := s.sweep(ctx, []byte{pfxCheckpoint}, []byte{pfxCheckpoint + 1}, true, func(scanned, removed, _ uint64) {
+	removed, _, err := s.sweep(ctx, []byte{pfxRecord}, []byte{pfxRecord + 1}, true, func(scanned, removed, _ uint64) {
 		if progress != nil {
 			progress(scanned, removed)
 		}
@@ -709,10 +600,10 @@ func (s *Store) RemoveNoops(ctx context.Context, progress func(scanned, removed 
 // complete from round 0 (BoxIndexFrom), and returns its entries: one per box
 // version, so none for the no-op writes that AddRound indexes when its cache
 // misses them. It is idempotent; CompactBoxIndex reclaims the space of the
-// entries it replaced. progress, if not nil, is called with the records (N =
-// 1) or boxes (N > 1) scanned and the entries written after each batch of
-// writes and at the end. Reads may run concurrently, but BoxChanges fails
-// until it is done; AddRound waits.
+// entries it replaced. progress, if not nil, is called with the records
+// scanned and the entries written after each batch of writes and at the end.
+// Reads may run concurrently, but BoxChanges fails until it is done; AddRound
+// waits.
 func (s *Store) IndexBoxes(ctx context.Context, progress func(scanned, indexed uint64)) (uint64, error) {
 	if err := s.acquire(); err != nil {
 		return 0, err
@@ -728,14 +619,8 @@ func (s *Store) IndexBoxes(ctx context.Context, progress func(scanned, indexed u
 			progress(scanned, indexed)
 		}
 	}
-	var indexed uint64
-	var err error
-	if s.n == 1 {
-		lo := append([]byte{pfxCheckpoint}, kvBoxPrefix...)
-		_, indexed, err = s.sweep(ctx, lo, prefixEnd(lo), false, report)
-	} else {
-		indexed, err = s.indexPatched(ctx, report)
-	}
+	lo := append([]byte{pfxRecord}, kvBoxPrefix...)
+	_, indexed, err := s.sweep(ctx, lo, prefixEnd(lo), false, report)
 	return indexed, s.rebuilt(err)
 }
 
@@ -796,7 +681,7 @@ func (s *Store) clearBoxIndex() error {
 	return s.db.DeleteRange([]byte{pfxBoxIndex}, []byte{pfxBoxIndex + 1}, pebble.Sync)
 }
 
-// sweep walks the checkpoint records of an N = 1 store with keys in [lower,
+// sweep walks the records of the store with keys in [lower,
 // upper), each compared with its object's previous record, and rebuilds the
 // box index from the box records that are versions. With remove, it also
 // deletes the records that are not. It returns the records it found that are
@@ -886,57 +771,9 @@ func (s *Store) sweep(ctx context.Context, lower, upper []byte, remove bool, pro
 	return removed, indexed, s.setBoxFrom(0)
 }
 
-// indexPatched is IndexBoxes for N > 1: every box's versions, one box at a
-// time.
-func (s *Store) indexPatched(ctx context.Context, progress func(scanned, removed, indexed uint64)) (uint64, error) {
-	if err := s.clearBoxIndex(); err != nil {
-		return 0, err
-	}
-	last := uint64(s.last.Load())
-	if s.last.Load() < 0 {
-		return 0, s.setBoxFrom(0)
-	}
-	var scanned, indexed uint64
-	w := s.newWriter(func() { progress(scanned, 0, indexed) })
-	defer func() { w.close() }()
-	var ferr error
-	err := s.distinct(kvBoxPrefix, nil, func(obj []byte) bool {
-		app, name, ok := BoxOf(obj)
-		if !ok {
-			return true
-		}
-		if ferr = ctx.Err(); ferr != nil {
-			return false
-		}
-		scanned++
-		err := s.patchedVersions(obj, 0, last, false, func(rnd uint64, _ []byte, ok bool) bool {
-			if ferr = w.b.Set(boxIndexKey(app, rnd, name), boxIndexEntry(!ok), nil); ferr != nil {
-				return false
-			}
-			indexed++
-			ferr = w.maybeCommit()
-			return ferr == nil
-		})
-		if ferr == nil {
-			ferr = err
-		}
-		return ferr == nil
-	})
-	if err == nil {
-		err = ferr
-	}
-	if err == nil {
-		err = w.finish()
-	}
-	if err != nil {
-		return indexed, err
-	}
-	return indexed, s.setBoxFrom(0)
-}
-
-// CompactCheckpoints rewrites the checkpoint keyspace and the box index,
+// CompactRecords rewrites the records keyspace and the box index,
 // dropping the records that RemoveNoops deleted or replaced.
-func (s *Store) CompactCheckpoints(ctx context.Context) error {
+func (s *Store) CompactRecords(ctx context.Context) error {
 	if err := s.acquire(); err != nil {
 		return err
 	}
@@ -944,8 +781,8 @@ func (s *Store) CompactCheckpoints(ctx context.Context) error {
 	if s.readOnly {
 		return ErrReadOnly
 	}
-	// the box index precedes the checkpoints
-	return s.compactRange(ctx, []byte{pfxBoxIndex}, []byte{pfxCheckpoint + 1})
+	// the box index precedes the records
+	return s.compactRange(ctx, []byte{pfxBoxIndex}, []byte{pfxRecord + 1})
 }
 
 // CompactBoxIndex rewrites the box index, dropping the entries that
@@ -1032,16 +869,14 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, na
 		return err
 	}
 	defer it.Close()
-	// N = 1: the records of the app's boxes, to read each entry's record and
-	// the one before it
-	var recs *pebble.Iterator
-	if s.n == 1 {
-		lo := append([]byte{pfxCheckpoint}, BoxKvPrefix(app)...)
-		if recs, err = s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: prefixEnd(lo)}); err != nil {
-			return err
-		}
-		defer recs.Close()
+	// the records of the app's boxes, to read each entry's record and the one
+	// before it
+	rlo := append([]byte{pfxRecord}, BoxKvPrefix(app)...)
+	recs, err := s.db.NewIter(&pebble.IterOptions{LowerBound: rlo, UpperBound: prefixEnd(rlo)})
+	if err != nil {
+		return err
 	}
+	defer recs.Close()
 	if boxChangesOpened != nil {
 		boxChangesOpened()
 	}
@@ -1067,26 +902,12 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, na
 		if rnd < from {
 			return boxIndexError(from)
 		}
-		obj := boxObject(app, name)
-		var val, prev []byte
-		var ok, prevOK bool
-		if recs != nil {
-			var found bool
-			if val, ok, prev, prevOK, found, err = fullChange(recs, obj, rnd); err != nil {
-				return err
-			}
-			if !found { // a no-op record that RemoveNoops deleted
-				continue
-			}
-		} else {
-			if val, ok, err = s.get(obj, rnd); err != nil {
-				return err
-			}
-			if rnd > 0 {
-				if prev, prevOK, err = s.get(obj, rnd-1); err != nil {
-					return err
-				}
-			}
+		val, ok, prev, prevOK, found, err := fullChange(recs, boxObject(app, name), rnd)
+		if err != nil {
+			return err
+		}
+		if !found { // a no-op record that RemoveNoops deleted
+			continue
 		}
 		if !sameState(prev, prevOK, val, ok) && !fn(rnd, bytes.Clone(name), val, ok) {
 			return nil
@@ -1112,20 +933,20 @@ func step(it *pebble.Iterator, desc bool) bool {
 	return it.Next()
 }
 
-// fullChange reads, from an iterator over the checkpoint records of an N = 1
-// store, obj's record at rnd, if there is one, and the record before it.
+// fullChange reads, from an iterator over the records of the store, obj's
+// record at rnd, if there is one, and the record before it.
 func fullChange(recs *pebble.Iterator, obj []byte, rnd uint64) (val []byte, ok bool, prev []byte, prevOK, found bool, err error) {
-	key := verKey(pfxCheckpoint, obj, rnd)
+	key := verKey(pfxRecord, obj, rnd)
 	if !recs.SeekGE(key) || !bytes.Equal(recs.Key(), key) {
 		return nil, false, nil, false, false, recs.Error()
 	}
-	if val, ok, err = applyRecord(nil, false, recs.Value()); err != nil {
+	if val, ok, err = decodeRecord(recs.Value()); err != nil {
 		return
 	}
 	val = bytes.Clone(val) // Prev may reuse the buffer
 	if recs.Prev() {
 		if k := recs.Key(); len(k) == len(key) && bytes.Equal(k[:len(k)-8], key[:len(key)-8]) {
-			if prev, prevOK, err = applyRecord(nil, false, recs.Value()); err != nil {
+			if prev, prevOK, err = decodeRecord(recs.Value()); err != nil {
 				return
 			}
 		}
@@ -1133,37 +954,15 @@ func fullChange(recs *pebble.Iterator, obj []byte, rnd uint64) (val []byte, ok b
 	return val, ok, prev, prevOK, true, recs.Error()
 }
 
-// latest returns the newest record of obj in keyspace pfx with round in [lo, hi].
-func (s *Store) latest(pfx byte, obj []byte, lo, hi uint64) ([]byte, bool, error) {
-	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfx, obj, lo), UpperBound: verKey(pfx, obj, hi+1)})
-	if err != nil {
-		return nil, false, err
-	}
-	defer it.Close()
-	if !it.Last() {
-		return nil, false, it.Error()
-	}
-	return append([]byte(nil), it.Value()...), true, nil
-}
-
-func (s *Store) checkpointValue(obj []byte, c uint64) ([]byte, bool, error) {
-	rec, found, err := s.latest(pfxCheckpoint, obj, 0, c)
-	if err != nil || !found {
-		return nil, false, err
-	}
-	return applyRecord(nil, false, rec)
-}
-
-func applyRecord(base []byte, ok bool, rec []byte) ([]byte, bool, error) {
+// decodeRecord decodes a record: the object's value, or ok false for a
+// tombstone.
+func decodeRecord(rec []byte) ([]byte, bool, error) {
 	switch {
 	case len(rec) == 0:
 	case rec[0] == recFull:
 		return rec[1:], true, nil
 	case rec[0] == recDeleted:
 		return nil, false, nil
-	case rec[0] == recPatch && ok:
-		v, err := Apply(base, rec[1:])
-		return v, err == nil, err
 	}
 	return nil, false, fmt.Errorf("%w: bad record %q", ErrCorrupt, rec)
 }
@@ -1177,37 +976,16 @@ func (s *Store) Get(obj []byte, rnd uint64) ([]byte, bool, error) {
 	return s.get(obj, rnd)
 }
 
-func (s *Store) get(obj []byte, rnd uint64) (val []byte, ok bool, err error) {
-	c := rnd - rnd%s.n
-	val, ok, err = s.checkpointValue(obj, c)
-	if err != nil || rnd == c {
-		return
-	}
-	if !s.incremental {
-		var rec []byte
-		var found bool
-		rec, found, err = s.latest(pfxPatch, obj, c+1, rnd)
-		if err != nil || !found {
-			return val, ok, err
-		}
-		return applyRecord(val, ok, rec)
-	}
-	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxPatch, obj, c+1), UpperBound: verKey(pfxPatch, obj, rnd+1)})
+func (s *Store) get(obj []byte, rnd uint64) ([]byte, bool, error) {
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxRecord, obj, 0), UpperBound: verKey(pfxRecord, obj, rnd+1)})
 	if err != nil {
 		return nil, false, err
 	}
 	defer it.Close()
-	for it.First(); it.Valid(); it.Next() {
-		rec := it.Value()
-		if len(rec) > 0 && rec[0] == recFull {
-			// a full record's value is the record, which Next may overwrite
-			rec = append([]byte(nil), rec...)
-		}
-		if val, ok, err = applyRecord(val, ok, rec); err != nil {
-			return nil, false, err
-		}
+	if !it.Last() {
+		return nil, false, it.Error()
 	}
-	return val, ok, it.Error()
+	return decodeRecord(bytes.Clone(it.Value()))
 }
 
 // Header returns the encoded block header of round rnd.
@@ -1288,8 +1066,6 @@ func (s *Store) Scan(prefix, after []byte, rnd uint64, fn func(obj, val []byte) 
 		return err
 	}
 	defer s.closeMu.RUnlock()
-	// Objects exist at rnd only if they have a checkpoint record <= c or a
-	// patch record in (c, rnd]; walk the distinct objects of both keyspaces.
 	var err error
 	derr := s.distinct(prefix, after, func(obj []byte) bool {
 		var v []byte
@@ -1322,49 +1098,29 @@ func (s *Store) ObjectsAfter(prefix, after []byte, fn func(obj []byte) bool) err
 	return s.distinct(prefix, after, fn)
 }
 
-// distinct calls fn for the distinct objects of both versioned keyspaces
-// whose key starts with prefix and is greater than after.
+// distinct calls fn for the distinct objects whose key starts with prefix
+// and is greater than after.
 func (s *Store) distinct(prefix, after []byte, fn func(obj []byte) bool) error {
-	cIt, err := s.objects(pfxCheckpoint, prefix, after)
+	it, err := s.objects(prefix, after)
 	if err != nil {
 		return err
 	}
-	defer cIt.close()
-	pIt, err := s.objects(pfxPatch, prefix, after)
-	if err != nil {
-		return err
-	}
-	defer pIt.close()
-	for cIt.obj != nil || pIt.obj != nil {
-		var obj []byte
-		switch {
-		case pIt.obj == nil || (cIt.obj != nil && string(cIt.obj) < string(pIt.obj)):
-			obj = cIt.obj
-			cIt.next()
-		case cIt.obj == nil || string(pIt.obj) < string(cIt.obj):
-			obj = pIt.obj
-			pIt.next()
-		default:
-			obj = cIt.obj
-			cIt.next()
-			pIt.next()
-		}
+	defer it.close()
+	for it.obj != nil {
+		obj := it.obj
+		it.next()
 		if !fn(obj) {
 			return nil
 		}
 	}
-	if cIt.err != nil {
-		return cIt.err
-	}
-	return pIt.err
+	return it.err
 }
 
 // Versions calls fn, in round order (newest first if desc), for every
 // version of obj with round in [lo, hi]: each round at which its value
 // changed, with the new value (ok false: deleted). Records that repeat the
-// previous value are not versions: no-op writes, and with N > 1 the
-// checkpoint copies of objects that changed earlier in the interval. fn owns
-// val. Versions stops when fn returns false.
+// previous value, no-op writes, are not versions. fn owns val. Versions stops
+// when fn returns false.
 func (s *Store) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
 	if err := s.acquire(); err != nil {
 		return err
@@ -1373,41 +1129,38 @@ func (s *Store) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint6
 	if lo > hi {
 		return nil
 	}
-	if s.n == 1 {
-		return s.fullVersions(obj, lo, hi, desc, fn)
-	}
-	return s.patchedVersions(obj, lo, hi, desc, fn)
+	return s.fullVersions(obj, lo, hi, desc, fn)
 }
 
 func sameState(a []byte, aok bool, b []byte, bok bool) bool {
 	return aok == bok && (!aok || bytes.Equal(a, b))
 }
 
-// fullVersions is Versions for N = 1, where every record is a full value or
-// a tombstone in the checkpoint keyspace: one iterator, plus the record
-// before the range to compare the first one with.
+// fullVersions is Versions past its checks. Every record is a full value or
+// a tombstone: one iterator, plus the record before the range to compare the
+// first one with.
 func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
-	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxCheckpoint, obj, 0), UpperBound: verKey(pfxCheckpoint, obj, hi+1)})
+	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxRecord, obj, 0), UpperBound: verKey(pfxRecord, obj, hi+1)})
 	if err != nil {
 		return err
 	}
 	defer it.Close()
 	record := func() (rnd uint64, v []byte, ok bool, err error) {
 		k := it.Key()
-		v, ok, err = applyRecord(nil, false, it.Value())
+		v, ok, err = decodeRecord(it.Value())
 		return binary.BigEndian.Uint64(k[len(k)-8:]), append([]byte(nil), v...), ok, err
 	}
 	if !desc {
 		var prev []byte
 		var prevOK bool
-		valid := it.SeekLT(verKey(pfxCheckpoint, obj, lo))
+		valid := it.SeekLT(verKey(pfxRecord, obj, lo))
 		if valid {
 			if _, prev, prevOK, err = record(); err != nil {
 				return err
 			}
 			valid = it.Next()
 		} else {
-			valid = it.SeekGE(verKey(pfxCheckpoint, obj, lo))
+			valid = it.SeekGE(verKey(pfxRecord, obj, lo))
 		}
 		for ; valid; valid = it.Next() {
 			rnd, v, ok, err := record()
@@ -1450,90 +1203,23 @@ func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 	}
 }
 
-// patchedVersions is Versions for N > 1: the rounds that have a record in
-// either keyspace are the candidates, and each one is compared with the
-// value just before it.
-func (s *Store) patchedVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool) bool) error {
-	var its [2]*pebble.Iterator
-	var valid [2]bool
-	for i, pfx := range []byte{pfxCheckpoint, pfxPatch} {
-		it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfx, obj, lo), UpperBound: verKey(pfx, obj, hi+1)})
-		if err != nil {
-			return err
-		}
-		defer it.Close()
-		its[i] = it
-		if desc {
-			valid[i] = it.Last()
-		} else {
-			valid[i] = it.First()
-		}
-	}
-	round := func(i int) uint64 {
-		k := its[i].Key()
-		return binary.BigEndian.Uint64(k[len(k)-8:])
-	}
-	var prev []byte
-	var prevOK bool
-	if !desc && lo > 0 {
-		var err error
-		if prev, prevOK, err = s.get(obj, lo-1); err != nil {
-			return err
-		}
-	}
-	// checkpoint and patch rounds never coincide: checkpoints are multiples of N
-	for valid[0] || valid[1] {
-		i := 0
-		if !valid[0] || (valid[1] && (round(1) < round(0)) != desc) {
-			i = 1
-		}
-		rnd := round(i)
-		if desc {
-			valid[i] = its[i].Prev()
-		} else {
-			valid[i] = its[i].Next()
-		}
-		v, ok, err := s.get(obj, rnd)
-		if err != nil {
-			return err
-		}
-		if desc {
-			prev, prevOK = nil, false
-			if rnd > 0 {
-				if prev, prevOK, err = s.get(obj, rnd-1); err != nil {
-					return err
-				}
-			}
-		}
-		if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok) {
-			return nil
-		}
-		prev, prevOK = v, ok
-	}
-	if err := its[0].Error(); err != nil {
-		return err
-	}
-	return its[1].Error()
-}
-
-// objIter yields the distinct objects of one versioned keyspace.
+// objIter yields the distinct objects of the versioned keyspace.
 type objIter struct {
 	it  *pebble.Iterator
-	pfx byte
 	obj []byte
 	err error
 }
 
-func (s *Store) objects(pfx byte, prefix, after []byte) (*objIter, error) {
-	lo := append([]byte{pfx}, prefix...)
+func (s *Store) objects(prefix, after []byte) (*objIter, error) {
+	lo := append([]byte{pfxRecord}, prefix...)
 	hi := prefixEnd(lo)
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 	if err != nil {
 		return nil, err
 	}
-	oi := &objIter{it: it, pfx: pfx}
+	oi := &objIter{it: it}
 	if after != nil {
-		it.SeekGE(prefixEnd(append([]byte{pfx}, after...)))
+		it.SeekGE(prefixEnd(append([]byte{pfxRecord}, after...)))
 	} else {
 		it.First()
 	}
@@ -1552,7 +1238,7 @@ func (oi *objIter) load() {
 
 func (oi *objIter) next() {
 	// skip the remaining versions of the current object
-	oi.it.SeekGE(prefixEnd(append([]byte{oi.pfx}, oi.obj...)))
+	oi.it.SeekGE(prefixEnd(append([]byte{pfxRecord}, oi.obj...)))
 	oi.load()
 }
 
