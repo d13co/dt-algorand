@@ -625,10 +625,10 @@ type Local struct {
 	// SimulateParallelism is the most simulations that run at once across the node: one for each simulate
 	// request, whose "rounds" run one after another in its slot, and one for each running worker of a POST
 	// /v2/query request. A request that can't get a slot within 250 ms is refused with 503 and Retry-After, so
-	// a load balancer can send it to another node. 0 or less means GOMAXPROCS, the CPUs the process may use.
-	// This applies whether or not EnableEffortHeader is set, and is new: upstream and earlier builds of this
-	// fork queue simulate requests without limit, so a node that should keep queuing bursts needs a large
-	// value. Non-standard fork feature.
+	// a load balancer can send it to another node. 0 means GOMAXPROCS, the CPUs the process may use, and a
+	// negative value no limit. This applies whether or not EnableEffortHeader is set, and is new: upstream
+	// and earlier builds of this fork queue simulate requests without limit, which -1 restores. Non-standard
+	// fork feature.
 	SimulateParallelism int `version[39]:"0"`
 
 	// MaxAPIQueryCalls is the most calls one POST /v2/query request may hold; each runs at every round of the

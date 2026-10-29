@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 	"time"
 
@@ -190,6 +191,18 @@ func TestSimulateBusy(t *testing.T) {
 			// Every slot the request took was given back.
 			limiter.Release(1)
 			require.True(t, limiter.TryAcquire(2))
+
+			// An invalid request is refused at once, busy or not.
+			invalid := request
+			invalid.ExtraOpcodeBudget = 1 << 40
+			ran := n.calls.Load()
+			start = time.Now()
+			rec, err = simulateRoundsDirect(context.Background(), t, handler, invalid)
+			require.NoError(t, err)
+			require.Less(t, time.Since(start), 250*time.Millisecond)
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "extra budget")
+			require.Equal(t, ran, n.calls.Load())
 		})
 	}
 }
@@ -323,4 +336,18 @@ func TestStateDeltaLimits(t *testing.T) {
 	rec = get(deltaLedger{LedgerForAPI: env.Ledger, slow: true}, ctx, nil)
 	require.Zero(t, rec.Body.Len())
 	require.False(t, rec.Flushed)
+}
+
+// TestNewSimulateLimiter checks the limiter for each kind of SimulateParallelism value: GOMAXPROCS
+// slots for 0, that many for a positive value, and none (no limit) for a negative one.
+func TestNewSimulateLimiter(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	require.Nil(t, v2.NewSimulateLimiter(-1))
+	for p, slots := range map[int]int64{0: int64(runtime.GOMAXPROCS(0)), 3: 3} {
+		l := v2.NewSimulateLimiter(p)
+		require.True(t, l.TryAcquire(slots), "SimulateParallelism %d", p)
+		require.False(t, l.TryAcquire(1), "SimulateParallelism %d", p)
+	}
 }
