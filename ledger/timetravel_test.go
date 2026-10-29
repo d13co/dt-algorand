@@ -99,18 +99,14 @@ func TestTimeTravelLookups(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	for _, tc := range []struct {
-		n        uint64
-		archival bool
-	}{{1, false}, {7, false}, {1, true}} {
-		t.Run(fmt.Sprintf("N=%d,archival=%v", tc.n, tc.archival), func(t *testing.T) {
+	for _, archival := range []bool{false, true} {
+		t.Run(fmt.Sprintf("archival=%v", archival), func(t *testing.T) {
 			genBalances, addrs, _ := ledgertesting.NewTestGenesis()
 			cfg := config.GetDefaultLocal()
 			cfg.EnableTimeTravel = true
-			cfg.TimeTravelCheckpointInterval = tc.n
 			cfg.MaxAcctLookback = 4 // the window checks below count on it
 			var opts []simpleLedgerOption
-			if !tc.archival {
+			if !archival {
 				opts = append(opts, simpleLedgerNotArchival())
 			}
 			dl := NewDoubleLedger(t, genBalances, protocol.ConsensusFuture, cfg, opts...)
@@ -151,7 +147,7 @@ func TestTimeTravelLookups(t *testing.T) {
 			require.GreaterOrEqual(t, basics.Round(last), l.trackers.getDbRound())
 
 			_, err := l.Block(first)
-			if tc.archival {
+			if archival {
 				require.NoError(t, err, "archival keeps old blocks")
 			} else {
 				require.Error(t, err, "old blocks are pruned")
@@ -742,102 +738,100 @@ func TestHistViewModel(t *testing.T) {
 		v   []byte
 		del bool
 	}
-	for _, n := range []uint64{1, 7} {
-		for seed := int64(0); seed < 30; seed++ {
-			t.Run(fmt.Sprintf("n=%d/seed=%d", n, seed), func(t *testing.T) {
-				rng := rand.New(rand.NewSource(seed))
-				s, err := timetravel.Open(t.TempDir(), timetravel.Options{CheckpointInterval: n})
-				require.NoError(t, err)
-				defer s.Close()
-				keys := make([][]byte, 12)
-				for i := range keys {
-					keys[i] = []byte{'h', byte(i / 4), byte(i % 4)}
-				}
-				var rounds [][]timetravel.Change
-				total := 20 + rng.Intn(20)
-				for r := 0; r < total; r++ {
-					var chs []timetravel.Change
-					seen := map[int]bool{}
-					for j := rng.Intn(4); j > 0; j-- {
-						k := rng.Intn(len(keys))
-						if seen[k] {
-							continue
-						}
-						seen[k] = true
-						if rng.Intn(3) == 0 {
-							chs = append(chs, timetravel.Change{Key: keys[k], Deleted: true})
-						} else {
-							chs = append(chs, timetravel.Change{Key: keys[k], Value: []byte{byte(r), byte(k), byte(rng.Intn(256))}})
-						}
+	for seed := int64(0); seed < 30; seed++ {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewSource(seed))
+			s, err := timetravel.Open(t.TempDir(), timetravel.Options{})
+			require.NoError(t, err)
+			defer s.Close()
+			keys := make([][]byte, 12)
+			for i := range keys {
+				keys[i] = []byte{'h', byte(i / 4), byte(i % 4)}
+			}
+			var rounds [][]timetravel.Change
+			total := 20 + rng.Intn(20)
+			for r := 0; r < total; r++ {
+				var chs []timetravel.Change
+				seen := map[int]bool{}
+				for j := rng.Intn(4); j > 0; j-- {
+					k := rng.Intn(len(keys))
+					if seen[k] {
+						continue
 					}
-					rounds = append(rounds, chs)
-				}
-				last := uint64(total/2 + rng.Intn(total/2))
-				for r := 0; r <= int(last); r++ {
-					require.NoError(t, s.AddRound(uint64(r), rounds[r], nil, nil))
-				}
-				// pending: some rounds <= last still present, plus (last, total)
-				var pending []historyRound
-				for r := max(int(last)-rng.Intn(3), 1); r < total; r++ {
-					hr := historyRound{rnd: basics.Round(r), changes: rounds[r], idx: map[string]int{}}
-					for i, ch := range rounds[r] {
-						hr.idx[string(ch.Key)] = i
+					seen[k] = true
+					if rng.Intn(3) == 0 {
+						chs = append(chs, timetravel.Change{Key: keys[k], Deleted: true})
+					} else {
+						chs = append(chs, timetravel.Change{Key: keys[k], Value: []byte{byte(r), byte(k), byte(rng.Intn(256))}})
 					}
-					pending = append(pending, hr)
 				}
-				v := &histView{store: s, pending: pending, last: basics.Round(last)}
-				state := func(rnd int) map[string]mval {
-					m := map[string]mval{}
-					for r := 0; r <= rnd; r++ {
-						for _, ch := range rounds[r] {
-							m[string(ch.Key)] = mval{ch.Value, ch.Deleted}
-						}
-					}
-					return m
+				rounds = append(rounds, chs)
+			}
+			last := uint64(total/2 + rng.Intn(total/2))
+			for r := 0; r <= int(last); r++ {
+				require.NoError(t, s.AddRound(uint64(r), rounds[r], nil, nil))
+			}
+			// pending: some rounds <= last still present, plus (last, total)
+			var pending []historyRound
+			for r := max(int(last)-rng.Intn(3), 1); r < total; r++ {
+				hr := historyRound{rnd: basics.Round(r), changes: rounds[r], idx: map[string]int{}}
+				for i, ch := range rounds[r] {
+					hr.idx[string(ch.Key)] = i
 				}
-				for rnd := 0; rnd < total; rnd++ {
-					m := state(rnd)
-					for _, k := range keys {
-						got, ok, err := v.Get(k, uint64(rnd))
-						require.NoError(t, err)
-						want, wok := m[string(k)]
-						require.Equal(t, wok && !want.del, ok, "get %x@%d", k, rnd)
-						if ok {
-							require.Equal(t, want.v, got, "get %x@%d", k, rnd)
-						}
+				pending = append(pending, hr)
+			}
+			v := &histView{store: s, pending: pending, last: basics.Round(last)}
+			state := func(rnd int) map[string]mval {
+				m := map[string]mval{}
+				for r := 0; r <= rnd; r++ {
+					for _, ch := range rounds[r] {
+						m[string(ch.Key)] = mval{ch.Value, ch.Deleted}
 					}
-					digest, ok, err := v.Digest(uint64(rnd))
+				}
+				return m
+			}
+			for rnd := 0; rnd < total; rnd++ {
+				m := state(rnd)
+				for _, k := range keys {
+					got, ok, err := v.Get(k, uint64(rnd))
 					require.NoError(t, err)
-					require.True(t, ok)
-					require.Equal(t, timetravel.ChangesDigest(rounds[rnd]), digest)
-					for _, prefix := range [][]byte{{'h'}, {'h', 1}, {'h', 2}} {
-						for _, after := range [][]byte{nil, {'h', 0, 1}, {'h', 1, 2}, {'h', 2, 0}} {
-							var exp []string
-							for k, mv := range m {
-								if !mv.del && bytes.HasPrefix([]byte(k), prefix) && (after == nil || k > string(after)) {
-									exp = append(exp, k)
-								}
+					want, wok := m[string(k)]
+					require.Equal(t, wok && !want.del, ok, "get %x@%d", k, rnd)
+					if ok {
+						require.Equal(t, want.v, got, "get %x@%d", k, rnd)
+					}
+				}
+				digest, ok, err := v.Digest(uint64(rnd))
+				require.NoError(t, err)
+				require.True(t, ok)
+				require.Equal(t, timetravel.ChangesDigest(rounds[rnd]), digest)
+				for _, prefix := range [][]byte{{'h'}, {'h', 1}, {'h', 2}} {
+					for _, after := range [][]byte{nil, {'h', 0, 1}, {'h', 1, 2}, {'h', 2, 0}} {
+						var exp []string
+						for k, mv := range m {
+							if !mv.del && bytes.HasPrefix([]byte(k), prefix) && (after == nil || k > string(after)) {
+								exp = append(exp, k)
 							}
-							sort.Strings(exp)
-							for stop := 1; stop <= len(exp)+1; stop++ {
-								var got []string
-								err := v.Scan(prefix, after, uint64(rnd), func(obj, val []byte) bool {
-									require.Equal(t, m[string(obj)].v, val, "scan val %x@%d", obj, rnd)
-									got = append(got, string(obj))
-									return len(got) < stop
-								})
-								require.NoError(t, err)
-								want := exp[:min(stop, len(exp))]
-								if len(want) == 0 {
-									want = nil
-								}
-								require.Equal(t, want, got, "scan prefix %x after %x rnd %d stop %d last %d", prefix, after, rnd, stop, last)
+						}
+						sort.Strings(exp)
+						for stop := 1; stop <= len(exp)+1; stop++ {
+							var got []string
+							err := v.Scan(prefix, after, uint64(rnd), func(obj, val []byte) bool {
+								require.Equal(t, m[string(obj)].v, val, "scan val %x@%d", obj, rnd)
+								got = append(got, string(obj))
+								return len(got) < stop
+							})
+							require.NoError(t, err)
+							want := exp[:min(stop, len(exp))]
+							if len(want) == 0 {
+								want = nil
 							}
+							require.Equal(t, want, got, "scan prefix %x after %x rnd %d stop %d last %d", prefix, after, rnd, stop, last)
 						}
 					}
 				}
-			})
-		}
+			}
+		})
 	}
 }
 

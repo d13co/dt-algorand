@@ -17,11 +17,16 @@
 package test
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,9 +38,12 @@ import (
 	"github.com/algorand/go-algorand/config"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
+	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/timetravel"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
+	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
@@ -131,18 +139,18 @@ func TestVersionsParams(t *testing.T) {
 		// rounds: sorted and deduplicated in page order, bounded by Min and
 		// Max, which the response reports
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{30, 5, 30, 7, 1000}},
-			ledger.VersionRange{Min: 5, Max: 1000, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{5, 7, 30, 1000}}, ledger.AccountVersionsExclude{}, 1000},
+			ledger.VersionRange{Min: 5, Max: 1000, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5, 7, 30, 1000}}, ledger.AccountVersionsExclude{}, 1000},
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{30, 5, 7}, Order: order(model.AccountVersionsParamsOrderDesc), Include: values},
-			ledger.VersionRange{Min: 5, Max: 30, Desc: true, Limit: 100, Values: true, MaxBytes: 1_000_000, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{30, 7, 5}}, ledger.AccountVersionsExclude{}, 30},
+			ledger.VersionRange{Min: 5, Max: 30, Desc: true, Limit: 100, Values: true, MaxBytes: 1_000_000, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{30, 7, 5}}, ledger.AccountVersionsExclude{}, 30},
 		{model.AccountVersionsParams{Rounds: func() *[]basics.Round { rs := make([]basics.Round, 10_001); return &rs }()},
-			ledger.VersionRange{Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{0}}, ledger.AccountVersionsExclude{}, 0},
+			ledger.VersionRange{Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{0}}, ledger.AccountVersionsExclude{}, 0},
 		// next drops the rounds before the token, in page order
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Next: str("7")},
-			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
+			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Next: str("6")},
-			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
+			ledger.VersionRange{Min: 7, Max: 30, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{7, 30}}, ledger.AccountVersionsExclude{}, 30},
 		{model.AccountVersionsParams{Rounds: &[]basics.Round{5, 7, 30}, Order: order(model.AccountVersionsParamsOrderDesc), Next: str("7")},
-			ledger.VersionRange{Min: 5, Max: 7, Desc: true, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, Rounds: []basics.Round{7, 5}}, ledger.AccountVersionsExclude{}, 7},
+			ledger.VersionRange{Min: 5, Max: 7, Desc: true, Limit: 100, MaxObjects: 77, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{7, 5}}, ledger.AccountVersionsExclude{}, 7},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeAll}},
 			ledger.VersionRange{Max: 1000, Limit: 100, MaxObjects: 77}, ledger.AccountVersionsExclude{All: true}, 1000},
 		{model.AccountVersionsParams{Exclude: &[]model.AccountVersionsParamsExclude{model.AccountVersionsParamsExcludeCreatedAppsParams, model.AccountVersionsParamsExcludeCreatedAssetsParams}},
@@ -240,6 +248,102 @@ func TestVersionsParams(t *testing.T) {
 		}
 	}
 
+	// key is for the app state endpoints, prefix for an app's boxes; both
+	// are parsed as app args and bound the scan
+	key64, key65 := "b64:"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 64)), "b64:"+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 65))
+	for name, tc := range map[string]struct {
+		fn   func(echo.Context) error
+		want ledger.VersionRange // zero: 400
+		msg  string
+	}{
+		"key on app": {func(ctx echo.Context) error {
+			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str("str:count")})
+		}, ledger.VersionRange{Max: 1000, Limit: 100, Key: []byte("count"), MaxScanned: 100_000, MaxReadBytes: 64_000_000}, ""},
+		"empty key": {func(ctx echo.Context) error {
+			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str("str:")})
+		}, ledger.VersionRange{Max: 1000, Limit: 100, Key: []byte{}, MaxScanned: 100_000, MaxReadBytes: 64_000_000}, ""},
+		"64-byte key with values": {func(ctx echo.Context) error {
+			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str(key64),
+				Include: &[]model.ApplicationVersionsParamsInclude{model.ApplicationVersionsParamsIncludeValues}})
+		}, ledger.VersionRange{Max: 1000, Limit: 100, Values: true, MaxBytes: 1_000_000, Key: bytes.Repeat([]byte{1}, 64), MaxScanned: 100_000, MaxReadBytes: 64_000_000}, ""},
+		"key on local state": {func(ctx echo.Context) error {
+			return h.AccountApplicationVersions(ctx, addr, 9, model.AccountApplicationVersionsParams{Key: str("int:7")})
+		}, ledger.VersionRange{Max: 1000, Limit: 100, Key: []byte{0, 0, 0, 0, 0, 0, 0, 7}, MaxScanned: 100_000, MaxReadBytes: 64_000_000}, ""},
+		"prefix on boxes": {func(ctx echo.Context) error {
+			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str("str:u")})
+		}, ledger.VersionRange{Max: 1000, Limit: 100, Prefix: []byte("u"), MaxScanned: 1_000_000}, ""},
+		"prefix on boxes as of rounds": {func(ctx echo.Context) error {
+			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str("str:u"), Rounds: &[]basics.Round{5}})
+		}, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, Prefix: []byte("u"), MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5},
+			MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, ""},
+		"key on account": {func(ctx echo.Context) error {
+			return h.AccountVersions(ctx, addr, model.AccountVersionsParams{Key: str("str:a")})
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
+		"key on holding": {func(ctx echo.Context) error {
+			return h.AccountAssetVersions(ctx, addr, 7, model.AccountAssetVersionsParams{Key: str("str:a")})
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
+		"key on asset": {func(ctx echo.Context) error {
+			return h.AssetVersions(ctx, 7, model.AssetVersionsParams{Key: str("str:a")})
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
+		"key on box": {func(ctx echo.Context) error {
+			return h.ApplicationBoxVersions(ctx, 9, model.ApplicationBoxVersionsParams{Name: "str:b", Key: str("str:a")})
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
+		"key on boxes": {func(ctx echo.Context) error {
+			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Key: str("str:a")})
+		}, ledger.VersionRange{}, "key applies to the versions of an application or"},
+		"prefix on app": {func(ctx echo.Context) error {
+			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Prefix: str("str:a")})
+		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},
+		"prefix on local state": {func(ctx echo.Context) error {
+			return h.AccountApplicationVersions(ctx, addr, 9, model.AccountApplicationVersionsParams{Prefix: str("str:a")})
+		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},
+		"prefix on account": {func(ctx echo.Context) error {
+			return h.AccountVersions(ctx, addr, model.AccountVersionsParams{Prefix: str("str:a")})
+		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},
+		"prefix on holding": {func(ctx echo.Context) error {
+			return h.AccountAssetVersions(ctx, addr, 7, model.AccountAssetVersionsParams{Prefix: str("str:a")})
+		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},
+		"prefix on asset": {func(ctx echo.Context) error {
+			return h.AssetVersions(ctx, 7, model.AssetVersionsParams{Prefix: str("str:a")})
+		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},
+		"prefix on box": {func(ctx echo.Context) error {
+			return h.ApplicationBoxVersions(ctx, 9, model.ApplicationBoxVersionsParams{Name: "str:b", Prefix: str("str:a")})
+		}, ledger.VersionRange{}, "prefix applies to an application's boxes"},
+		"key with rounds": {func(ctx echo.Context) error {
+			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str("str:a"), Rounds: &[]basics.Round{5}})
+		}, ledger.VersionRange{}, "key cannot be combined with rounds"},
+		"bad key": {func(ctx echo.Context) error {
+			return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str("nope")})
+		}, ledger.VersionRange{}, "key:"},
+		"long key": {func(ctx echo.Context) error {
+			return h.AccountApplicationVersions(ctx, addr, 9, model.AccountApplicationVersionsParams{Key: str(key65)})
+		}, ledger.VersionRange{}, "key is longer than 64 bytes"},
+		"bad prefix": {func(ctx echo.Context) error {
+			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str("b64:!")})
+		}, ledger.VersionRange{}, "prefix:"},
+		"long prefix": {func(ctx echo.Context) error {
+			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str(key65)})
+		}, ledger.VersionRange{}, "prefix is longer than 64 bytes"},
+		"empty prefix": {func(ctx echo.Context) error {
+			return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str("str:")})
+		}, ledger.VersionRange{}, "prefix is empty"},
+	} {
+		vl.r = ledger.VersionRange{}
+		rec := httptest.NewRecorder()
+		ctx := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+		require.NoError(t, tc.fn(ctx))
+		if tc.msg != "" {
+			require.Equal(t, http.StatusBadRequest, rec.Code, name)
+			require.Contains(t, rec.Body.String(), tc.msg, name)
+			continue
+		}
+		require.Equal(t, http.StatusOK, rec.Code, "%s: %s", name, rec.Body.String())
+		r := vl.r
+		require.NotNil(t, r.Ctx, name)
+		r.Ctx, r.Deadline = nil, time.Time{}
+		require.Equal(t, tc.want, r, name)
+	}
+
 	// as of rounds, the boxes endpoint merges every box: bounded by
 	// MaxAPIBoxPerApplication, and pages by a box count
 	boxesAt := func(include *[]model.ApplicationBoxesVersionsParamsInclude) *httptest.ResponseRecorder {
@@ -251,14 +355,14 @@ func TestVersionsParams(t *testing.T) {
 	require.Equal(t, http.StatusOK, boxesAt(nil).Code)
 	r := vl.r
 	r.Ctx, r.Deadline = nil, time.Time{}
-	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, r)
+	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, r)
 	require.Equal(t, http.StatusOK, boxesAt(&[]model.ApplicationBoxesVersionsParamsInclude{model.ApplicationBoxesVersionsParamsIncludeValues}).Code)
 	require.EqualValues(t, 1_000, vl.r.MaxEntries)
 	for _, err := range []error{ledger.ErrTooManyVersionObjects, ledger.ErrRoundTooLarge} {
 		vl.err = fmt.Errorf("%w: app 9", err)
 		rec := boxesAt(nil)
 		require.Equal(t, http.StatusBadRequest, rec.Code)
-		require.Contains(t, rec.Body.String(), "use GET /v2/applications/9/boxes?round=")
+		require.Contains(t, rec.Body.String(), "use prefix, or GET /v2/applications/9/boxes?round=")
 	}
 	vl.err = nil
 	rec := httptest.NewRecorder()
@@ -279,6 +383,7 @@ func TestVersionsResponses(t *testing.T) {
 	addr := ledgertesting.RandomAddress()
 	cfg := config.GetDefaultLocal()
 	cfg.EnableTimeTravel = true
+	str := func(s string) *string { return &s }
 	vl := &versionsLedger{mockLedger: &mockLedger{latest: 1000}}
 	h := v2.Handlers{Node: makeMockNodeWithConfig(vl, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
 	call := func(fn func(echo.Context) error, resp any) {
@@ -398,6 +503,39 @@ func TestVersionsResponses(t *testing.T) {
 	require.Contains(t, body, `{"changed-keys":[],"deleted":false,"round":11,"timestamp":2}`)
 	require.Contains(t, body, `{"deleted":true,"round":12,"timestamp":3}`)
 
+	// key-value: the key's new value, absent when removed or deleted
+	vl.page = ledger.VersionPage{More: true, Next: 31, Versions: []ledger.Version{
+		{Round: 10, Timestamp: 1, Apps: []ledger.AppVersion{{App: 9, KeyValue: &basics.TealValue{Type: basics.TealUintType, Uint: 5}}}},
+		{Round: 11, Timestamp: 2, Apps: []ledger.AppVersion{{App: 9, KeyValue: &basics.TealValue{Type: basics.TealBytesType, Bytes: "hi"}}}},
+		{Round: 12, Timestamp: 3, Apps: []ledger.AppVersion{{App: 9}}},
+		{Round: 30, Timestamp: 4, Apps: []ledger.AppVersion{{App: 9, Deleted: true}}},
+	}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str("str:n")})
+	})
+	require.Contains(t, body, `{"deleted":false,"key-value":{"bytes":"","type":2,"uint":5},"round":10,"timestamp":1}`)
+	require.Contains(t, body, `{"deleted":false,"key-value":{"bytes":"aGk=","type":1,"uint":0},"round":11,"timestamp":2}`)
+	require.Contains(t, body, `{"deleted":false,"round":12,"timestamp":3}`, "removed")
+	require.Contains(t, body, `{"deleted":true,"round":30,"timestamp":4}`)
+	require.Contains(t, body, `"next-token":"31"`)
+	vl.page = ledger.VersionPage{Versions: []ledger.Version{
+		{Round: 10, Timestamp: 1, LocalStates: []ledger.LocalStateVersion{{App: 9, KeyValue: &basics.TealValue{Type: basics.TealUintType, Uint: 1}}}},
+	}}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.AccountApplicationVersions(ctx, addr, 9, model.AccountApplicationVersionsParams{Key: str("str:n")})
+	})
+	require.Contains(t, body, `"apps-local-state":[{"app-id":9,"deleted":false,"key-value":{"bytes":"","type":2,"uint":1}}]`)
+	// a page with a key or prefix can be empty and still have more
+	vl.page = ledger.VersionPage{More: true, Next: 500}
+	body = keysRec(func(ctx echo.Context) error {
+		return h.ApplicationVersions(ctx, 9, model.ApplicationVersionsParams{Key: str("str:n")})
+	})
+	require.JSONEq(t, `{"round":1000,"versions":[],"next-token":"500"}`, body)
+	body = keysRec(func(ctx echo.Context) error {
+		return h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str("str:u")})
+	})
+	require.JSONEq(t, `{"round":1000,"versions":[],"next-token":"500"}`, body)
+
 	vl.page = ledger.VersionPage{Versions: []ledger.Version{
 		{Round: 10, Timestamp: 1, Box: &ledger.BoxVersion{Value: []byte("v1")}},
 		{Round: 11, Timestamp: 2, Box: &ledger.BoxVersion{Deleted: true}},
@@ -491,4 +629,164 @@ func TestVersionsResponses(t *testing.T) {
 	require.NoError(t, h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{}))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.Contains(t, rec.Body.String(), "ttimport -index-boxes")
+	rec = httptest.NewRecorder()
+	ctx = echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), rec)
+	require.NoError(t, h.ApplicationBoxesVersions(ctx, 9, model.ApplicationBoxesVersionsParams{Prefix: str("str:u")}))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "a prefix reads the box index too")
+}
+
+// globalPutsApp sets global key arg i to arg i+1 for each pair of args. The
+// unreachable constants make each version of its params about 15 KB.
+var globalPutsApp = "#pragma version 10\n" + `
+	txn ApplicationID; bz done
+	int 0; store 0
+loop:
+	load 0; txn NumAppArgs; >=; bnz done
+	load 0; txnas ApplicationArgs
+	load 0; int 1; +; txnas ApplicationArgs
+	app_global_put
+	load 0; int 2; +; store 0
+	b loop
+done:
+	int 1; return
+` + strings.Repeat("pushbytes 0x"+strings.Repeat("ab", 1000)+"\n", 7)
+
+// TestVersionsKeysPaging pages through include=keys on a real ledger by
+// limit, by the 1 MB budget (which counts each version's previous value),
+// and in rounds mode, and checks every version's changed keys.
+func TestVersionsKeysPaging(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	env := simulationtesting.PrepareSimulatorTest(t, func(cfg *config.Local) {
+		cfg.Archival = false
+		cfg.EnableTimeTravel = true
+	})
+	defer env.Close()
+	sender := env.Accounts[0].Addr
+	app := env.CreateApp(sender, simulationtesting.AppParams{
+		ApprovalProgram:   globalPutsApp,
+		ClearStateProgram: "#pragma version 10\nint 1",
+		GlobalStateSchema: basics.StateSchema{NumByteSlice: 64},
+		ExtraProgramPages: 3,
+	})
+	// the changed keys of each version, in round order
+	wantRounds := []basics.Round{env.Ledger.Latest()}
+	wantKeys := [][][]byte{{}}
+	put := func(kv ...[]byte) {
+		env.Txn(env.TxnInfo.NewTxn(txntest.Txn{Type: protocol.ApplicationCallTx, Sender: sender, ApplicationID: app, ApplicationArgs: kv}).SignedTxn())
+		var keys [][]byte
+		for i := 0; i < len(kv); i += 2 {
+			keys = append(keys, kv[i])
+		}
+		slices.SortFunc(keys, bytes.Compare)
+		wantRounds = append(wantRounds, env.Ledger.Latest())
+		wantKeys = append(wantKeys, keys)
+	}
+	key := func(i int) []byte { return fmt.Appendf(nil, "key%029d", i) }   // 32 bytes
+	val := func(i int) []byte { return fmt.Appendf(nil, "value%091d", i) } // 96 bytes
+	for i := 0; i < 64; i += 8 {                                           // fill the global state, 8 keys a call
+		var kv [][]byte
+		for j := i; j < i+8; j++ {
+			kv = append(kv, key(j), val(j))
+		}
+		put(kv...)
+	}
+	for i := range 80 {
+		put(key(i*7%64), val(1000+i))
+	}
+
+	cfg := config.GetDefaultLocal()
+	cfg.EnableTimeTravel = true
+	h := &v2.Handlers{Node: makeMockNodeWithConfig(env.Ledger, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
+	e := echo.New()
+	timetravel.RegisterHandlers(e, h)
+	// pages returns every version of the query's pages, and the page sizes
+	pages := func(query string) (vs []model.ApplicationVersion, sizes []int) {
+		t.Helper()
+		next := ""
+		for {
+			target := fmt.Sprintf("/v2/applications/%d/versions?%s%s", app, query, next)
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			var resp model.ApplicationVersionsResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			require.NotEmpty(t, resp.Versions, target)
+			vs = append(vs, resp.Versions...)
+			sizes = append(sizes, len(resp.Versions))
+			if resp.NextToken == nil {
+				return vs, sizes
+			}
+			next = "&next=" + *resp.NextToken
+		}
+	}
+	check := func(name string, vs []model.ApplicationVersion, values, asOf bool) {
+		t.Helper()
+		require.Len(t, vs, len(wantRounds), name)
+		for i, v := range vs {
+			require.Equal(t, wantRounds[i], v.Round, name)
+			require.NotNil(t, v.ChangedKeys, "%s: round %d", name, v.Round)
+			require.Equal(t, wantKeys[i], *v.ChangedKeys, "%s: round %d", name, v.Round)
+			require.Equal(t, values, v.Application != nil, name)
+			if asOf {
+				require.Equal(t, &v.Round, v.ChangedRound, name)
+			}
+		}
+	}
+
+	vs, sizes := pages("include=keys&limit=10")
+	check("limit", vs, false, false)
+	require.Len(t, sizes, (len(wantRounds)+9)/10)
+
+	// a version reads its params and the ones before, about 30 KB: the
+	// budget ends pages long before the limit
+	vs, sizes = pages("include=keys&limit=1000")
+	check("budget", vs, false, false)
+	require.Greater(t, len(sizes), 1, "the 1 MB budget ends pages")
+	require.Less(t, sizes[0], 60)
+	byBudget := sizes
+
+	vs, sizes = pages("include=values,keys&limit=1000")
+	check("values", vs, true, false)
+	require.Equal(t, byBudget, sizes, "values are read with keys anyway")
+
+	// rounds mode: each requested round is a version, so as of it the
+	// version in effect is its own, with the same keys
+	rounds := make([]string, len(wantRounds))
+	for i, r := range wantRounds {
+		rounds[i] = fmt.Sprint(r)
+	}
+	vs, sizes = pages("include=keys&limit=1000&rounds=" + strings.Join(rounds, ","))
+	check("rounds", vs, false, true)
+	require.Equal(t, byBudget, sizes, "rounds mode counts the same values")
+	vs, _ = pages("include=keys&limit=7&rounds=" + strings.Join(rounds, ","))
+	check("rounds limit", vs, false, true)
+
+	// key: one key through the 80 single-key updates. key(0) is set by the
+	// first fill call and by updates 0 and 64; each sets a new value
+	keyArg := func(k []byte) string { return "key=b64:" + url.QueryEscape(base64.StdEncoding.EncodeToString(k)) }
+	wantK := map[basics.Round]string{wantRounds[1]: string(val(0)), wantRounds[1+8]: string(val(1000)), wantRounds[1+8+64]: string(val(1064))}
+	for _, q := range []string{"limit=1", "limit=2&order=desc", "limit=1000&include=values,keys"} {
+		vs, sizes := pages(keyArg(key(0)) + "&" + q)
+		got := map[basics.Round]string{}
+		for _, v := range vs {
+			require.NotNil(t, v.KeyValue, q)
+			b, err := base64.StdEncoding.DecodeString(v.KeyValue.Bytes)
+			require.NoError(t, err)
+			got[v.Round] = string(b)
+			if strings.Contains(q, "keys") {
+				require.Contains(t, *v.ChangedKeys, key(0), q)
+			}
+		}
+		require.Equal(t, wantK, got, q)
+		require.Len(t, vs, 3, q)
+		if q == "limit=1" {
+			require.Equal(t, []int{1, 1, 1}, sizes)
+		}
+	}
+	// a key that was never set: one page, no versions
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v2/applications/%d/versions?key=str:nope", app), nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, fmt.Sprintf(`{"round":%d,"versions":[]}`, env.Ledger.Latest()), rec.Body.String())
 }

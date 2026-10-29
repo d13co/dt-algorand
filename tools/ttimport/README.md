@@ -2,7 +2,7 @@
 
 `ttimport` builds a non-archival [time travel](../../ledger/timetravel/README.md) node (`EnableTimeTravel: true`, `Archival: false`) from an archival node's block database instead of the network. It writes the account DB and the history of every round into a new data directory, then copies over the last blocks algod needs. algod started on that directory continues from the network.
 
-A time travel node must be built from genesis, since the history comes from every round's state delta and fast catchup is refused. Syncing from genesis over the network takes weeks on mainnet. On fnet's first 40k rounds, `ttimport` replayed ~8,700 rounds/s, ~35× a network sync and 1.6× applying the blocks one by one with `AddBlock`, and produced a byte-identical history.
+A time travel node's history comes from every round's state delta since genesis: a node either builds it, or installs another node's with [ttsnap](../ttsnap/README.md) and catches up from a catchpoint. Syncing from genesis over the network takes weeks on mainnet. On fnet's first 40k rounds, `ttimport` replayed ~8,700 rounds/s, ~35× a network sync and 1.6× applying the blocks one by one with `AddBlock`, and produced a byte-identical history.
 
 ## How it works
 
@@ -37,7 +37,7 @@ A time travel node must be built from genesis, since the history comes from ever
    EOF
    ```
 
-   Set anything that decides where the ledger's files go **now**: `TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`. `ttimport` writes to the directories they resolve to, and algod later looks for its files there. None of them may resolve to the archive's directory. `TimeTravelCheckpointInterval` is also fixed once the history exists; keep the default of 1.
+   Set anything that decides where the ledger's files go **now**: `TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`. `ttimport` writes to the directories they resolve to, and algod later looks for its files there. None of them may resolve to the archive's directory.
 
 2. Run the import:
 
@@ -76,6 +76,19 @@ A time travel node must be built from genesis, since the history comes from ever
    ```
 
    algod catches up the rounds after the archive's last one from the network, verifying certificates as usual. The node no longer needs the archive.
+
+### Into a package's data directory
+
+The examples build `~/tt` and start it with `goal`. To build the node of a dtalgorand package instead, import into the package's data directory before the node's first start, then start it as the package does. The package's `config.json` already sets `EnableTimeTravel` and `TimeTravelHoldersIndex`, so build the [holders index](#building-the-asset-holders-index) after the import.
+
+- **Debian:** `/var/lib/dtalgorand`, as root, then hand the result to the `dtalgorand` user (see [Starting the node](../../installer/dtalgorand/README.md#starting-the-node)): an algod's ledger directory is private to its user.
+- **macOS (Homebrew):** `$(brew --prefix)/var/dtalgorand`, as yourself, with no `chown`: the node runs as you (see [macOS](../../installer/dtalgorand/README.md#running-the-node)). The archive is wherever that archival node's data directory is: `/var/lib/algorand/...` in the examples is the Linux package's.
+
+  ```sh
+  ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d $(brew --prefix)/var/dtalgorand
+  ttimport -holders-index -d $(brew --prefix)/var/dtalgorand
+  brew services start dtalgorand
+  ```
 
 ## Removing no-op records
 
@@ -126,6 +139,18 @@ ttimport -fill https://mainnet-api.4160.nodely.dev -blocks /var/lib/algorand/mai
 
 It first rebuilds the last 10 stored rounds from their deltas and adds nothing unless their changes, headers and expired stake match the store. The expired stake comes from the account DB's online account history, which reaches back `MaxBalLookback` (320) rounds, so the gap must be shorter than ~310 rounds: past that, only an import from genesis rebuilds the store. Then rerun the import, or start the node.
 
+## Building the asset holders index
+
+`/v2/assets/{id}/holders` reads the store's [asset holders index](../../ledger/timetravel/README.md#holders-index), which exists only once built. Set `"TimeTravelHoldersIndex": true` in the data directory's `config.json` (the dtalgorand packages set it on a new install) (`-holders-index` refuses otherwise, since algod deletes the index at launch when the option is off), then with the node stopped:
+
+```sh
+goal node stop -d ~/tt
+ttimport -holders-index -d ~/tt
+goal node start -d ~/tt
+```
+
+It scans the holding records once and writes an entry per holding that ever existed, then compacts the index; a rerun rebuilds it again. On a mainnet store (61.7 GiB, 115 M holdings ever) the index is ~3.6 GiB, and the build should take about 5 minutes, writes and compaction. From then on every round algod or a `ttimport` import adds keeps it up to date, so it can be built at any point of an import (stop it, build, rerun it to resume). An import that creates the store (starts from genesis) with `TimeTravelHoldersIndex` set in the data directory's `config.json` keeps the index from round 0 and needs no `-holders-index`; so does algod syncing from genesis. ttimport has no flag to override the option. For a full import from a block DB, importing with the option off and then building the index once (set the option, then `-holders-index`) may be faster, so set it in `config.json` only after the import: keeping the index up to date costs an index read for every holding a round creates or deletes that the dedup cache doesn't cover (~115 M over mainnet's history), on the import's write path, while the build is a single ~5-minute pass. Not measured yet. Ctrl-C is safe: it leaves no index (the endpoint answers 503), until a rerun. A build without the index that adds rounds to the store (an older algod) leaves it stale, and it needs `-holders-index` again. An older build that truncates the store (catchpoint catchup, replay repair) leaves entries of the deleted rounds that nothing detects once the store is back at the index's round, so rebuild after running one. Turning `TimeTravelHoldersIndex` off and on also needs `-holders-index` again. `ttdump info` shows the index's state.
+
 ## Flags
 
 | flag | |
@@ -134,6 +159,7 @@ It first rebuilds the last 10 stored rounds from their deltas and adds nothing u
 | `-d` | the data directory to build: `genesis.json`, and `config.json` with `EnableTimeTravel` and without `Archival` |
 | `-dedup` | instead of importing, remove the no-op records from the time travel store of `-d` (no `-blocks`), and rebuild its box index |
 | `-index-boxes` | instead of importing, build the box index of the time travel store of `-d` (no `-blocks`) |
+| `-holders-index` | instead of importing, build the asset holders index of the time travel store of `-d` (no `-blocks`), whose `config.json` sets `TimeTravelHoldersIndex` |
 | `-fill <algod API URL>` | instead of importing, add to the time travel store of `-d` the rounds its account DB is ahead by, with deltas from the API and headers from `-blocks` |
 | `-v` | also print the ledger's info log |
 | `-cpuprofile <file>` | CPU profile of the run, kept on Ctrl-C |

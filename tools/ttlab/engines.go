@@ -41,12 +41,12 @@ type version struct {
 	val []byte // record as stored: tag byte + payload
 }
 
-// engines loads the versions of an N=1 store (built by ingest -keep) into
+// engines loads the versions of a store (built by ingest -keep) into
 // SQLite and DuckDB, in round order like a syncing node would, and runs the
 // same latest-version-at-or-before-R lookups against every engine.
 func engines(args []string) error {
 	fs := flag.NewFlagSet("engines", flag.ExitOnError)
-	src := fs.String("store", "", "N=1 timetravel store")
+	src := fs.String("store", "", "timetravel store")
 	out := fs.String("out", "", "scratch directory")
 	nq := fs.Int("q", 5000, "queries")
 	batch := fs.Uint64("batch", 100, "rounds per write transaction")
@@ -55,9 +55,6 @@ func engines(args []string) error {
 	s, err := timetravel.Open(*src, timetravel.Options{})
 	if err != nil {
 		return err
-	}
-	if s.CheckpointInterval() != 1 {
-		return fmt.Errorf("need an N=1 store")
 	}
 	last, _ := s.Last()
 	var vs []version

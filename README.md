@@ -1,10 +1,11 @@
 # dt-algorand
 
-An experimental fork of [go-algorand](https://github.com/algorand/go-algorand) that adds **time travel**: a node that keeps the value of every account, asset, app and box at every round since genesis, and serves the REST API and transaction simulation **at any past round**. It is meant to replace an archival node for historical state queries: on mainnet the history takes ≈65 GB, against ≈3.5 TB of archived blocks.
+An experimental fork of [go-algorand](https://github.com/algorand/go-algorand) that adds **time travel**: a node that keeps the value of every account, asset, app and box at every round since genesis, and serves the REST API and transaction simulation **at any past round**. On mainnet the history takes ≈65 GB, against ≈3.5 TB of archived blocks.
 
 It changes no consensus rule, but it is not an official Algorand release: the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](ledger/timetravel/README.md#limitations)). Releases follow upstream's stable releases: `v5.0.3-dt1` is upstream `5.0.3` plus fork revision 1. Development happens on the `dtalgorand` branch.
 
-- **Install**: the `dtalgorand` Debian package, from apt.d13.co, installs alongside the stock `algorand` package. See [Installing](installer/dtalgorand/README.md#installing), then [Starting the node](installer/dtalgorand/README.md#starting-the-node): a time travel node syncs from genesis, and fast catchup is refused. Builds are on the [releases page](https://github.com/d13co/dt-algorand/releases).
+- **Install**: the `dtalgorand` Debian package, from apt.d13.co, installs alongside the stock `algorand` package; on macOS (Apple silicon, macOS 14 or later), `brew install d13co/tap/dtalgorand` installs the same binaries. See [Installing](installer/dtalgorand/README.md#installing), then [Starting the node](installer/dtalgorand/README.md#starting-the-node) (on macOS, [macOS](installer/dtalgorand/README.md#macos)): a time travel node syncs from genesis, or installs another node's history with [ttsnap](tools/ttsnap/README.md) and catches up from a catchpoint. Builds are on the [releases page](https://github.com/d13co/dt-algorand/releases).
+- **Not for validators**: the fork is not audited for running validators, so on mainnet, testnet and betanet the node refuses participation keys unless its config sets `"DangerouslyEnableParticipation": true`. See [Participation](installer/dtalgorand/README.md#participation).
 - **Use**: [ledger/timetravel/README.md](ledger/timetravel/README.md) covers the configuration (`EnableTimeTravel`), the REST endpoints that take `?round=`, simulation at a past round, the design, and the mainnet size estimates. [VERSIONS.md](ledger/timetravel/VERSIONS.md) describes the API that lists the rounds at which an object changed.
 - **goal**: read commands take `--round`, and `versions` subcommands list an object's changes. See [cmd/goal/README.md](cmd/goal/README.md#past-rounds-and-versions-time-travel).
 - **Simulate limits**: `SimulateResourceLimitMultiplier` lets an operator raise the limits simulate puts on unnamed resources, for read-only calls that touch many accounts or boxes. See [Unnamed-resource limits in simulation](ledger/timetravel/README.md#unnamed-resource-limits-in-simulation).
@@ -14,6 +15,7 @@ It changes no consensus rule, but it is not an official Algorand release: the no
 - **Simulate protocol**: `protocol` simulates a round under a later consensus protocol, as if an upgrade to it took effect right after that round (e.g. AVM 13 against 2022 state), and reports where the old chain lacks data the new protocol reads. See [A later protocol at a past round](ledger/timetravel/README.md#a-later-protocol-at-a-past-round).
 - **Tools**:
   - [ttimport](tools/ttimport/README.md) builds a time travel node from an archival node's blocks instead of syncing from the network, which takes weeks on mainnet.
+  - [ttsnap](tools/ttsnap/README.md) publishes snapshots of a node's history and installs them on new nodes, which then catch up from a catchpoint instead of syncing from genesis.
   - [ttdump](tools/ttdump/README.md) explores the history store of a stopped node.
   - [ttlab](tools/ttlab/README.md) benchmarks storage designs against mainnet state deltas.
 

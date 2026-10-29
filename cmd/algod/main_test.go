@@ -17,6 +17,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/node"
+	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
 func BenchmarkAlgodStartup(b *testing.B) {
@@ -44,4 +47,14 @@ func BenchmarkAlgodStartup(b *testing.B) {
 		os.RemoveAll(tmpDir)
 		os.Mkdir(tmpDir, 0766)
 	}
+}
+
+func TestInitErrorExitCode(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	// wrapped as MakeFull and the server's Initialize wrap it
+	refused := fmt.Errorf("couldn't initialize the node: %w", fmt.Errorf("%w. The node is on testnet-v1.0", node.ErrParticipationRefused))
+	require.Equal(t, 78, initErrorExitCode(refused))
+	require.Equal(t, 1, initErrorExitCode(errors.New("couldn't initialize the node: other")))
 }

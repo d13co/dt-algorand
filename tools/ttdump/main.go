@@ -61,7 +61,7 @@ commands:
   header R [R2]                the block header of round R, or a table of R..R2
   raw [-prefix P] [-after HEX] [-n N]
                                the raw records in key order; P is an object, a
-                               keyspace (b c p r H E m) or hex:PREFIX
+                               keyspace (a b c H E m) or hex:PREFIX
 
 ` + specHelp + `
 

@@ -1,0 +1,113 @@
+name: darwin
+
+# Check that the macOS packaging still works, without waiting for a release tag:
+# installer/dtalgorand/build_darwin.sh produces a tarball, the Homebrew formula
+# installs it, and the node it installs starts under launchd. The full build is
+# slow, so only run it on the paths it packages.
+on:
+  pull_request:
+    paths:
+      - 'installer/dtalgorand/**'
+      # what build_darwin.sh also packages
+      - 'installer/genesis/**'
+      - 'installer/system.json'
+      - 'installer/config.json.example'
+      - 'COPYING'
+      # what builds them
+      - 'Makefile'
+      - 'installer/external/**' # node_exporter
+      - 'scripts/*.sh' # build number, Go version, configure_dev.sh's brew installs
+      - 'scripts/buildnumber.py'
+      - 'crypto/libsodium-fork/**'
+      - '.github/actions/**'
+      # algod's file descriptor limits, which differ on macOS
+      - 'util/util*.go'
+      - 'daemon/algod/server.go'
+      - 'ledger/timetravel/store.go'
+      # ttsnap, which the workflow checks finds the keys the tarball ships
+      - 'tools/ttsnap/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/darwin.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-darwin:
+    if: github.repository == 'd13co/dt-algorand'
+    runs-on: macos-15 # arm64; the release builds here too
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0" # for libsodium too, which setup-test builds
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-darwin
+      - name: Check the scripts parse
+        run: |
+          bash -n installer/dtalgorand/build_darwin.sh
+          sh -n installer/dtalgorand/homebrew/render.sh
+          ruby -c installer/dtalgorand/homebrew/dtalgorand.rb.in
+      - name: Show the file descriptor limits
+        run: |
+          sysctl kern.maxfiles kern.maxfilesperproc
+          launchctl limit maxfiles
+          echo "shell: soft $(ulimit -Sn), hard $(ulimit -Hn)"
+      - name: Test the file descriptor limits
+        run: go test ./util -run 'Fd' -count=1 -v
+      - name: Build the tarball
+        run: |
+          # x.y.0-dt0, so that version.sh doesn't need upstream's tags and the
+          # formula's test finds x.y.0 in algod -v
+          export BUILDNUMBER=0
+          PKG_VERSION=$(BUILD_NUMBER=0 ./scripts/compute_build_number.sh -f)-dt0
+          export PKG_VERSION
+          echo "PKG_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
+          installer/dtalgorand/build_darwin.sh dist
+      - name: Check the tarball
+        run: |
+          f=dist/dtalgorand_${PKG_VERSION}_darwin-arm64.tar.gz
+          tar -tzf "$f" > "$RUNNER_TEMP/list"
+          for p in bin/algod bin/goal bin/kmd bin/ttimport bin/ttsnap bin/node_exporter share/system.json share/ttsnap/keys share/genesis/mainnet/genesis.json VERSION; do
+            grep -qx "dtalgorand-$PKG_VERSION/$p" "$RUNNER_TEMP/list" || { echo "missing $p"; exit 1; }
+          done
+          ! grep '/\._' "$RUNNER_TEMP/list" || { echo "AppleDouble files in the tarball"; exit 1; }
+      - name: Install with Homebrew
+        run: |
+          f=$PWD/dist/dtalgorand_${PKG_VERSION}_darwin-arm64.tar.gz
+          brew tap-new --no-git d13co/local
+          installer/dtalgorand/homebrew/render.sh "$PKG_VERSION" "file://$f" "$(shasum -a 256 "$f" | cut -d' ' -f1)" \
+            > "$(brew --repository d13co/local)/Formula/dtalgorand.rb"
+          brew install --formula d13co/local/dtalgorand
+          brew test d13co/local/dtalgorand
+          d=$(brew --prefix)/var/dtalgorand
+          ls "$d"
+          grep -q '"EnableTimeTravel": true' "$d/config.json"
+          grep -q '"TimeTravelHoldersIndex": true' "$d/config.json"
+          # ttsnap finds the formula's keys: fetch reads them, then fails to reach the (closed) port
+          out=$(ttsnap fetch -url http://127.0.0.1:9 -d "$d" 2>&1) && { echo "fetch succeeded: $out"; exit 1; }
+          echo "$out"
+          keg=$(cd "$(brew --prefix d13co/local/dtalgorand)" && pwd -P)
+          grep -qxF "keys: $keg/share/dtalgorand/ttsnap/keys" <<<"$out" || { echo "ttsnap didn't use the formula's keys"; exit 1; }
+          grep -qF '127.0.0.1:9' <<<"$out" || { echo "fetch failed before the download"; exit 1; }
+      - name: Run the node under launchd
+        run: |
+          d=$(brew --prefix)/var/dtalgorand
+          brew services start d13co/local/dtalgorand
+          ok=
+          for _ in $(seq 60); do
+            if dtgoal node status -d "$d" >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          dtgoal node status -d "$d" || true
+          brew services stop d13co/local/dtalgorand
+          cat "$(brew --prefix)/var/log/dtalgorand.log" # launchd opened it, or the formula's log_path is wrong
+          # algod logs JSON lines; show the file descriptor ones
+          grep -i 'rlimit\|file descriptor' "$d/node.log" || true
+          [ -n "$ok" ] || { tail -n 50 "$d/node.log"; echo "the node didn't come up"; exit 1; }

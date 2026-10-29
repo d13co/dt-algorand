@@ -19,6 +19,7 @@ package timetravel
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
@@ -36,34 +37,54 @@ import (
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-func TestPatchRoundTrip(t *testing.T) {
+// TestStoreRefusesCheckpointInterval checks that a store created by a build
+// with a checkpoint interval above 1 does not open, and that one with N = 1
+// does, whatever its incremental flag.
+func TestStoreRefusesCheckpointInterval(t *testing.T) {
 	partitiontest.PartitionTest(t)
-	rng := rand.New(rand.NewSource(1))
-	for i := 0; i < 5000; i++ {
-		base := make([]byte, rng.Intn(3000))
-		rng.Read(base)
-		target := append([]byte(nil), base...)
-		for e := rng.Intn(6); e > 0 && len(target) > 0; e-- {
-			at := rng.Intn(len(target))
-			ins := make([]byte, rng.Intn(20))
-			rng.Read(ins)
-			cut := min(at+rng.Intn(20), len(target))
-			target = append(target[:at], append(ins, target[cut:]...)...)
-		}
-		if rng.Intn(10) == 0 {
-			target = make([]byte, rng.Intn(100))
-			rng.Read(target)
-		}
-		p := Diff(base, target)
-		got, err := Apply(base, p)
+	for _, c := range []struct {
+		n   uint64
+		inc byte
+	}{{4, 0}, {3, 1}} {
+		dir := t.TempDir()
+		s, err := Open(dir, Options{})
 		require.NoError(t, err)
-		require.Equal(t, target, got)
-		if len(base) > 1000 && len(target) == len(base) {
-			require.Less(t, len(p), 200, "single-region edits must patch small")
+		require.NoError(t, s.AddRound(0, []Change{{Key: KvKey("x"), Value: []byte("v")}}, []byte("hdr"), nil))
+		meta := binary.BigEndian.AppendUint64(nil, 0)
+		meta = binary.BigEndian.AppendUint64(meta, c.n)
+		require.NoError(t, s.DB().Set(keyMeta, append(meta, c.inc), pebble.Sync))
+		require.NoError(t, s.Close())
+		for _, ro := range []bool{false, true} {
+			_, err = Open(dir, Options{ReadOnly: ro})
+			require.ErrorContains(t, err, "no longer supported", "N %d, incremental %d, read-only %v", c.n, c.inc, ro)
 		}
 	}
-	_, err := Apply([]byte("abc"), []byte{3, 7, 9})
-	require.Error(t, err)
+	// N = 1 with the incremental flag (ttlab ingest -n 1 -inc) holds full
+	// records only
+	dir := t.TempDir()
+	s, err := Open(dir, Options{})
+	require.NoError(t, err)
+	require.NoError(t, s.AddRound(0, []Change{{Key: KvKey("x"), Value: []byte("v")}}, []byte("hdr"), nil))
+	require.NoError(t, s.DB().Set(keyMeta, append(binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(nil, 0), 1), 1), pebble.Sync))
+	require.NoError(t, s.Close())
+	s, err = Open(dir, Options{})
+	require.NoError(t, err)
+	v, ok, err := s.Get(KvKey("x"), 0)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "v", string(v))
+	require.NoError(t, s.AddRound(1, nil, []byte("hdr"), nil))
+	require.NoError(t, s.Close())
+
+	// an N = 1 store's meta record is as those builds wrote it
+	s, err = Open(t.TempDir(), Options{})
+	require.NoError(t, err)
+	defer s.Close()
+	require.NoError(t, s.AddRound(0, nil, []byte("hdr"), nil))
+	meta, closer, err := s.DB().Get(keyMeta)
+	require.NoError(t, err)
+	defer closer.Close()
+	require.Equal(t, []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0}, meta)
 }
 
 func TestKvKeyOrder(t *testing.T) {
@@ -108,9 +129,15 @@ type boxChange struct {
 // modelBoxChanges returns the changes of the boxes of app in [lo, hi]: the
 // rounds at which a box's state differs from the round before.
 func modelBoxChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uint64, desc bool) []boxChange {
+	return modelPrefixChanges(objs, history, app, lo, hi, desc, nil)
+}
+
+// modelPrefixChanges is modelBoxChanges for the boxes whose names start with
+// prefix.
+func modelPrefixChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uint64, desc bool, prefix []byte) []boxChange {
 	var names []string
 	for _, obj := range objs {
-		if a, name, ok := BoxOf(obj); ok && a == app {
+		if a, name, ok := BoxOf(obj); ok && a == app && bytes.HasPrefix(name, prefix) {
 			names = append(names, string(name))
 		}
 	}
@@ -140,11 +167,77 @@ func modelBoxChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uin
 // boxChanges returns what BoxChanges reports, up to limit changes (0: all).
 func boxChanges(t *testing.T, s *Store, app, lo, hi uint64, desc bool, limit int) []boxChange {
 	var out []boxChange
-	require.NoError(t, s.BoxChanges(app, lo, hi, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+	end, err := s.BoxChanges(app, lo, hi, desc, BoxChangesOpts{}, func(rnd uint64, name, val []byte, ok bool) bool {
 		out = append(out, boxChange{rnd, string(name), val, ok})
 		return limit == 0 || len(out) < limit
-	}))
+	})
+	require.NoError(t, err)
+	require.False(t, end.More)
 	return out
+}
+
+// pagedBoxChanges reads BoxChanges with o, resuming from each stop, and
+// returns every change and the error that ended the last scan. With
+// MaxScanned 1, a scan reads a single round.
+func pagedBoxChanges(t *testing.T, s *Store, app, lo, hi uint64, desc bool, o BoxChangesOpts) ([]boxChange, error) {
+	var out []boxChange
+	for {
+		n := len(out)
+		end, err := s.BoxChanges(app, lo, hi, desc, o, func(rnd uint64, name, val []byte, ok bool) bool {
+			out = append(out, boxChange{rnd, string(name), val, ok})
+			return true
+		})
+		if err != nil || !end.More {
+			return out, err
+		}
+		require.Positive(t, end.Scanned)
+		require.GreaterOrEqual(t, end.Scanned, o.MaxScanned, "a scan stops once the budget is spent")
+		if o.MaxScanned == 1 {
+			for _, c := range out[n:] {
+				require.Equal(t, out[n].rnd, c.rnd, "one round a scan")
+			}
+		}
+		if len(out) > n {
+			last := out[len(out)-1].rnd
+			if desc {
+				require.Less(t, end.Next, last)
+			} else {
+				require.Greater(t, end.Next, last)
+			}
+		}
+		if desc {
+			require.Less(t, end.Next, hi)
+			hi = end.Next
+		} else {
+			require.Greater(t, end.Next, lo)
+			lo = end.Next
+		}
+	}
+}
+
+// boxPrefixes are name prefixes of the model's boxes: names that share
+// prefixes, contain 0x00, and one ("a") that is also a whole name.
+var boxPrefixes = [][]byte{[]byte("\x00"), []byte("a"), []byte("a\x00"), []byte("a\x00b"), []byte("b"), []byte("zz")}
+
+// checkBoxPrefixes compares BoxChanges with a name prefix and a scan budget
+// with the model over the ranges.
+func checkBoxPrefixes(t *testing.T, s *Store, objs [][]byte, history []map[string][]byte, app uint64, ranges [][2]uint64) {
+	for _, rg := range ranges {
+		for _, desc := range []bool{false, true} {
+			for _, budget := range []uint64{0, 1, 2} {
+				want := modelBoxChanges(objs, history, app, rg[0], rg[1], desc)
+				got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, BoxChangesOpts{MaxScanned: budget})
+				require.NoError(t, err)
+				require.Equal(t, want, got, "app %d range %v desc %v budget %d", app, rg, desc, budget)
+				for _, pfx := range boxPrefixes {
+					want := modelPrefixChanges(objs, history, app, rg[0], rg[1], desc, pfx)
+					got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, BoxChangesOpts{Prefix: pfx, MaxScanned: budget})
+					require.NoError(t, err)
+					require.Equal(t, want, got, "app %d range %v desc %v prefix %q budget %d", app, rg, desc, pfx, budget)
+				}
+			}
+		}
+	}
 }
 
 // checkBoxChanges compares BoxChanges with the model over random ranges.
@@ -168,6 +261,10 @@ func checkBoxChanges(t *testing.T, s *Store, objs [][]byte, history []map[string
 		if app != modelApps[2] {
 			require.NotEmpty(t, modelBoxChanges(objs, history, app, 0, rounds, false))
 		}
+		checkBoxPrefixes(t, s, objs, history, app, ranges[:6])
+	}
+	for _, pfx := range boxPrefixes[:5] {
+		require.NotEmpty(t, modelPrefixChanges(objs, history, modelApps[0], 0, rounds, false, pfx), "prefix %q", pfx)
 	}
 }
 
@@ -249,9 +346,9 @@ func cloneChanges(chs []Change) []Change {
 	return out
 }
 
-// rawRecords returns the store's checkpoint records in key order.
+// rawRecords returns the store's version records in key order.
 func rawRecords(t *testing.T, s *Store) (keys, vals [][]byte) {
-	it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: []byte{pfxCheckpoint}, UpperBound: []byte{pfxCheckpoint + 1}})
+	it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: []byte{pfxRecord}, UpperBound: []byte{pfxRecord + 1}})
 	require.NoError(t, err)
 	defer it.Close()
 	for it.First(); it.Valid(); it.Next() {
@@ -298,16 +395,13 @@ func TestStoreModel(t *testing.T) {
 	}
 	require.Less(t, kept, total)
 	var variants []Options
-	for _, o := range []Options{{CheckpointInterval: 1}, {CheckpointInterval: 4}, {CheckpointInterval: 4, Incremental: true}, {CheckpointInterval: 7}} {
-		// the default cache; one that turns over every round or two, and is
-		// lost halfway by a reopen; none
-		for _, dedup := range []int{0, 24, -1} {
-			o.DedupEntries = dedup
-			variants = append(variants, o)
-		}
+	// the default cache; one that turns over every round or two, and is lost
+	// halfway by a reopen; none
+	for _, dedup := range []int{0, 24, -1} {
+		variants = append(variants, Options{DedupEntries: dedup})
 	}
 	for _, o := range variants {
-		t.Run(fmt.Sprintf("N=%d/inc=%v/dedup=%d", o.CheckpointInterval, o.Incremental, o.DedupEntries), func(t *testing.T) {
+		t.Run(fmt.Sprintf("dedup=%d", o.DedupEntries), func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := Open(dir, o)
 			require.NoError(t, err)
@@ -329,26 +423,23 @@ func TestStoreModel(t *testing.T) {
 			}
 			require.NoError(t, s.AddRound(5, nil, nil, nil)) // replay is skipped
 			require.Error(t, s.AddRound(rounds+1, nil, nil, nil))
-			if o.CheckpointInterval == 1 {
-				keys, vals := rawRecords(t, s)
-				switch o.DedupEntries {
-				case -1:
-					require.Len(t, keys, total)
-				case 0:
-					require.Len(t, keys, kept)
-					for i := 1; i < len(keys); i++ {
-						if recordObject(keys[i]) == recordObject(keys[i-1]) {
-							require.NotEqual(t, vals[i-1], vals[i], "record %x repeats the one before", keys[i])
-						}
+			keys, vals := rawRecords(t, s)
+			switch o.DedupEntries {
+			case -1:
+				require.Len(t, keys, total)
+			case 0:
+				require.Len(t, keys, kept)
+				for i := 1; i < len(keys); i++ {
+					if recordObject(keys[i]) == recordObject(keys[i-1]) {
+						require.NotEqual(t, vals[i-1], vals[i], "record %x repeats the one before", keys[i])
 					}
 				}
 			}
 			require.NoError(t, s.Close())
 
-			s, err = Open(dir, Options{CheckpointInterval: 99})
+			s, err = Open(dir, Options{})
 			require.NoError(t, err)
 			defer s.Close()
-			require.Equal(t, o.CheckpointInterval, s.CheckpointInterval())
 			last, ok := s.Last()
 			require.True(t, ok)
 			require.EqualValues(t, rounds-1, last)
@@ -413,9 +504,11 @@ func TestStoreModel(t *testing.T) {
 
 			// versions: the rounds at which an object's state differs from the round before
 			type version struct {
-				rnd uint64
-				val []byte
-				ok  bool
+				rnd    uint64
+				val    []byte
+				ok     bool
+				prev   []byte // VersionsPrev: the state at rnd-1
+				prevOK bool
 			}
 			for _, obj := range objs {
 				var all []version
@@ -424,7 +517,7 @@ func TestStoreModel(t *testing.T) {
 				for r := uint64(0); r < rounds; r++ {
 					v, ok := history[r][string(obj)]
 					if ok != prevOK || (ok && !bytes.Equal(v, prev)) {
-						all = append(all, version{r, v, ok})
+						all = append(all, version{r, v, ok, prev, prevOK})
 					}
 					prev, prevOK = v, ok
 				}
@@ -435,24 +528,36 @@ func TestStoreModel(t *testing.T) {
 				}
 				for _, rg := range ranges {
 					for _, desc := range []bool{false, true} {
-						var want, got []version
+						var want, wantPrev, got []version
 						for _, v := range all {
 							if v.rnd >= rg[0] && v.rnd <= rg[1] {
+								wantPrev = append(wantPrev, v)
+								v.prev, v.prevOK = nil, false
 								want = append(want, v)
 							}
 						}
 						if desc {
 							slices.Reverse(want)
+							slices.Reverse(wantPrev)
 						}
 						require.NoError(t, s.Versions(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool) bool {
-							got = append(got, version{rnd, val, ok})
+							got = append(got, version{rnd: rnd, val: val, ok: ok})
 							return true
 						}))
 						require.Equal(t, want, got, "obj %q range %v desc %v", obj, rg, desc)
+						got = got[:0]
+						require.NoError(t, s.VersionsPrev(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
+							if !prevOK {
+								prev = nil
+							}
+							got = append(got, version{rnd, val, ok, prev, prevOK})
+							return true
+						}))
+						require.Equal(t, wantPrev, got, "VersionsPrev: obj %q range %v desc %v", obj, rg, desc)
 						if len(want) > 2 {
 							got = got[:0]
 							require.NoError(t, s.Versions(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool) bool {
-								got = append(got, version{rnd, val, ok})
+								got = append(got, version{rnd: rnd, val: val, ok: ok})
 								return len(got) < 2
 							}))
 							require.Equal(t, want[:2], got)
@@ -480,8 +585,8 @@ func TestStoreIndexBoxes(t *testing.T) {
 	objs := modelObjects()
 	const rounds = 40
 	changes, history := modelRounds(4, objs, rounds)
-	for _, o := range []Options{{CheckpointInterval: 1}, {CheckpointInterval: 1, DedupEntries: -1}, {CheckpointInterval: 4}, {CheckpointInterval: 4, Incremental: true}} {
-		t.Run(fmt.Sprintf("N=%d/inc=%v/dedup=%d", o.CheckpointInterval, o.Incremental, o.DedupEntries), func(t *testing.T) {
+	for _, o := range []Options{{}, {DedupEntries: -1}} {
+		t.Run(fmt.Sprintf("dedup=%d", o.DedupEntries), func(t *testing.T) {
 			dir := t.TempDir()
 			s, err := Open(dir, o)
 			require.NoError(t, err)
@@ -510,7 +615,7 @@ func TestStoreIndexBoxes(t *testing.T) {
 					require.EqualValues(t, r+1, from, "rounds a build without the index added are not indexed")
 				}
 			}
-			err = s.BoxChanges(modelApps[0], from-1, rounds, false, func(uint64, []byte, []byte, bool) bool { return true })
+			_, err = s.BoxChanges(modelApps[0], from-1, rounds, false, BoxChangesOpts{}, func(uint64, []byte, []byte, bool) bool { return true })
 			require.ErrorIs(t, err, ErrNoBoxIndex)
 			for _, desc := range []bool{false, true} {
 				require.Equal(t, modelBoxChanges(objs, history, modelApps[0], from, rounds, desc), boxChanges(t, s, modelApps[0], from, rounds, desc, 0))
@@ -519,12 +624,20 @@ func TestStoreIndexBoxes(t *testing.T) {
 			want := modelBoxChanges(objs, history, modelApps[0], from, rounds, true)
 			require.NotEmpty(t, want)
 			var got []boxChange
-			err = s.BoxChanges(modelApps[0], 0, rounds, true, func(rnd uint64, name, val []byte, ok bool) bool {
+			_, err = s.BoxChanges(modelApps[0], 0, rounds, true, BoxChangesOpts{}, func(rnd uint64, name, val []byte, ok bool) bool {
 				got = append(got, boxChange{rnd, string(name), val, ok})
 				return true
 			})
 			require.ErrorIs(t, err, ErrNoBoxIndex)
 			require.Equal(t, want, got)
+			// so do scans with a prefix and a budget: they reach the start
+			// after the later changes
+			for _, budget := range []uint64{0, 1, 2} {
+				pfx := []byte("a")
+				got, err := pagedBoxChanges(t, s, modelApps[0], 0, rounds, true, BoxChangesOpts{Prefix: pfx, MaxScanned: budget})
+				require.ErrorIs(t, err, ErrNoBoxIndex)
+				require.Equal(t, modelPrefixChanges(objs, history, modelApps[0], from, rounds, true, pfx), got, "budget %d", budget)
+			}
 			require.Equal(t, want[:1], boxChanges(t, s, modelApps[0], 0, rounds, true, 1), "a page that stops before the start needs no more")
 			// read-only, the start is the same and nothing is written
 			require.NoError(t, s.Close())
@@ -714,7 +827,7 @@ func TestStoreCompactInSteps(t *testing.T) {
 	for i := 0; i < tables; i++ {
 		b := s.db.NewBatch()
 		for j := 0; j < objs; j++ {
-			require.NoError(t, b.Set(verKey(pfxCheckpoint, obj(i, j), 0), []byte("v"), nil))
+			require.NoError(t, b.Set(verKey(pfxRecord, obj(i, j), 0), []byte("v"), nil))
 		}
 		require.NoError(t, b.Commit(pebble.NoSync))
 		require.NoError(t, s.db.Flush())
@@ -722,19 +835,19 @@ func TestStoreCompactInSteps(t *testing.T) {
 	b := s.db.NewBatch()
 	for i := 0; i < tables; i++ {
 		for j := 0; j < objs; j += 2 {
-			require.NoError(t, b.Delete(verKey(pfxCheckpoint, obj(i, j), 0), nil))
+			require.NoError(t, b.Delete(verKey(pfxRecord, obj(i, j), 0), nil))
 		}
 	}
 	require.NoError(t, b.Commit(pebble.NoSync))
 	require.NoError(t, s.db.Flush())
 
-	require.NoError(t, s.CompactCheckpoints(context.Background()))
+	require.NoError(t, s.CompactRecords(context.Background()))
 	require.Greater(t, len(steps), 1)
 	require.Equal(t, []byte{pfxBoxIndex}, steps[0][0])
 	for i := 1; i < len(steps); i++ {
 		require.Equal(t, steps[i-1][1], steps[i][0], "step %d starts where step %d ends", i, i-1)
 	}
-	require.Equal(t, []byte{pfxCheckpoint + 1}, steps[len(steps)-1][1])
+	require.Equal(t, []byte{pfxRecord + 1}, steps[len(steps)-1][1])
 	levels, err := s.db.SSTables(pebble.WithProperties())
 	require.NoError(t, err)
 	var entries uint64
@@ -834,7 +947,7 @@ func TestStoreRemoveNoops(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, len(before)-versions, removed)
 	require.Greater(t, calls, 1)
-	require.NoError(t, s.CompactCheckpoints(context.Background()))
+	require.NoError(t, s.CompactRecords(context.Background()))
 	require.NoError(t, s.Close())
 
 	s, err = Open(dir, Options{})
@@ -859,12 +972,6 @@ func TestStoreRemoveNoops(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, ChangesDigest(changes[r]), d)
 	}
-
-	p, err := Open(t.TempDir(), Options{CheckpointInterval: 4})
-	require.NoError(t, err)
-	defer p.Close()
-	_, err = p.RemoveNoops(context.Background(), nil)
-	require.Error(t, err)
 }
 
 // TestStoreReadOnly checks that a read-only store sees every added round,
@@ -879,7 +986,7 @@ func TestStoreReadOnly(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "a read-only open must not create a store")
 
 	path := filepath.Join(dir, "store")
-	s, err := Open(path, Options{CheckpointInterval: 3, Incremental: true})
+	s, err := Open(path, Options{})
 	require.NoError(t, err)
 	x := KvKey("x")
 	for rnd := uint64(0); rnd < 5; rnd++ {
@@ -895,8 +1002,6 @@ func TestStoreReadOnly(t *testing.T) {
 	last, ok := ro.Last()
 	require.True(t, ok)
 	require.EqualValues(t, 4, last)
-	require.EqualValues(t, 3, ro.CheckpointInterval())
-	require.True(t, ro.Incremental())
 	for rnd := uint64(0); rnd < 5; rnd++ {
 		v, ok, err := ro.Get(x, rnd)
 		require.NoError(t, err)
@@ -911,7 +1016,7 @@ func TestStoreReadOnly(t *testing.T) {
 	require.ErrorIs(t, ro.AddRound(5, nil, nil, nil), ErrReadOnly)
 	_, err = ro.RemoveNoops(context.Background(), nil)
 	require.ErrorIs(t, err, ErrReadOnly)
-	require.ErrorIs(t, ro.CompactCheckpoints(context.Background()), ErrReadOnly)
+	require.ErrorIs(t, ro.CompactRecords(context.Background()), ErrReadOnly)
 	require.ErrorIs(t, ro.Sync(), ErrReadOnly)
 
 	_, err = Open(path, Options{ReadOnly: true})
@@ -964,7 +1069,7 @@ func TestStoreIndexBoxesConcurrent(t *testing.T) {
 		}
 		desc := (answered+refused)%2 == 1
 		var got []boxChange
-		err := s.BoxChanges(modelApps[0], 0, rounds, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		_, err := s.BoxChanges(modelApps[0], 0, rounds, desc, BoxChangesOpts{}, func(rnd uint64, name, val []byte, ok bool) bool {
 			got = append(got, boxChange{rnd, string(name), val, ok})
 			return true
 		})
@@ -1005,7 +1110,7 @@ func TestStoreIndexBoxesConcurrent(t *testing.T) {
 		close(finished)
 	}()
 	<-started
-	err = s.BoxChanges(modelApps[0], 0, rounds, false, func(uint64, []byte, []byte, bool) bool { return true })
+	_, err = s.BoxChanges(modelApps[0], 0, rounds, false, BoxChangesOpts{}, func(uint64, []byte, []byte, bool) bool { return true })
 	require.ErrorIs(t, err, ErrNoBoxIndex, "the iterators may lack the rebuild's last entries")
 	require.NoError(t, <-errc)
 	boxChangesOpened = nil

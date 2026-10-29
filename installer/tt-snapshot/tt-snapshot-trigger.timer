@@ -1,0 +1,9 @@
+[Unit]
+Description=Check every 2 minutes whether a ttsnap snapshot (once per catchpoint) or upload is due
+
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

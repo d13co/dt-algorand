@@ -98,6 +98,17 @@ func (c *Client) ApplicationBoxesVersions(appID basics.AppIndex, p algodclient.V
 	return
 }
 
+// AssetHolders gets a page of the holders of an asset at round, or if round
+// is 0 at the client's AtRound round, if any, else the latest
+// (algodclient.RestClient.AssetHolders; time travel).
+func (c *Client) AssetHolders(assetID basics.AssetIndex, round basics.Round, limit uint64, next string) (resp model.AssetHoldersResponse, err error) {
+	algod, err := c.ensureAlgodClient()
+	if err == nil {
+		resp, err = algod.AssetHolders(assetID, round, limit, next)
+	}
+	return
+}
+
 // ApplicationBoxVersions lists the versions of a box, name in goal's app call
 // argument form (time travel).
 func (c *Client) ApplicationBoxVersions(appID basics.AppIndex, name string, p algodclient.VersionsParams) (resp model.BoxVersionsResponse, err error) {

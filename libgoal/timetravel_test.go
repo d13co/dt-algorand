@@ -42,7 +42,7 @@ func TestAtRound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got[r.URL.Path] = r.URL.Query()
 		w.Header().Set("Content-Type", "application/json")
-		if strings.HasPrefix(r.URL.Path, "/v2/assets/") {
+		if r.URL.Path == "/v2/assets/5" {
 			w.Write([]byte(`{"index":5,"params":{"creator":"","decimals":0,"total":0}}`))
 			return
 		}
@@ -77,6 +77,7 @@ func TestAtRound(t *testing.T) {
 		}},
 		{"/v2/applications/6/box", func(c Client) error { _, err := c.GetApplicationBoxByName(6, "str:b"); return err }},
 		{"/v2/ledger/supply", func(c Client) error { _, err := c.LedgerSupply(); return err }},
+		{"/v2/assets/5/holders", func(c Client) error { _, err := c.AssetHolders(5, 0, 0, ""); return err }},
 	}
 	for _, l := range lookups {
 		require.NoError(t, l.call(at), l.path)

@@ -17,6 +17,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -654,16 +655,29 @@ type Local struct {
 	// Combine with Archival=false to drop old block bodies and certificates, which the history does not need.
 	EnableTimeTravel bool `version[39]:"false"`
 
-	// TimeTravelCheckpointInterval is the number of rounds between sparse checkpoints in the time travel store.
-	// 1 stores every object version in full and relies on block compression; larger values store the versions between
-	// checkpoints as patches against the checkpoint. It is fixed when the store is created.
-	TimeTravelCheckpointInterval uint64 `version[39]:"1"`
-
 	// TimeTravelDBDir is an optional directory to store the time travel store (EnableTimeTravel).
 	// For isolation, the node will create a subdirectory in this location, named by the genesis-id of the network.
 	// If not specified, the node will use the BlockDBDir. Queries at past rounds read it at random: point it at a fast
 	// disk to keep their latency down. To move an existing store, stop the node and move its ledger.timetravel directory.
 	TimeTravelDBDir string `version[39]:""`
+
+	// TimeTravelHoldersIndex enables GET /v2/assets/{asset-id}/holders, which lists the accounts that held an asset
+	// at any round, from an index of the time travel store (EnableTimeTravel) of every holding by asset: ~3.6 GiB on
+	// mainnet, +6% of the store. A store created with it on (a node or ttimport import starting from genesis) has the
+	// index from its first round, kept up to date with every round. For an existing store, build the index with
+	// ttimport -holders-index while the node is stopped (~5 minutes on mainnet); until then the endpoint answers 503.
+	// ttimport reads it from config.json too: a full import from genesis with it on maintains the index on every
+	// round, which may be slower than importing with it off and building the index after. Turning it off deletes the
+	// index at launch; turning it on again needs ttimport -holders-index.
+	TimeTravelHoldersIndex bool `version[39]:"false"`
+
+	// DangerouslyEnableParticipation lets the node participate in consensus (vote, propose, sign state proofs and
+	// heartbeats) on mainnet, testnet and betanet. This fork changes the ledger, evaluator and REST layers to serve
+	// historical queries and is not audited for running validators. While it is false, a node on those networks
+	// refuses to start if it holds participation keys (partkey files in the data directory or keys in its
+	// participation registry), and refuses to install or generate new ones. Other networks are not affected.
+	// Non-standard fork feature.
+	DangerouslyEnableParticipation bool `version[39]:"false"`
 
 	// EnableTxnEvalTracer turns on features in the BlockEvaluator which collect data on transactions, exposing them via algod APIs.
 	// It will store txn deltas created during block evaluation, potentially consuming much larger amounts of memory,
@@ -889,6 +903,23 @@ type P2PHybridConfigError struct {
 
 func (e P2PHybridConfigError) Error() string {
 	return e.msg
+}
+
+// ErrParticipationRefused is the error for refused participation keys (Local.ParticipationRefused).
+var ErrParticipationRefused = errors.New("participation in consensus is disabled: this fork (dtalgorand) is not audited for running validators; set \"DangerouslyEnableParticipation\": true in config.json to override")
+
+// ParticipationRefused reports whether the node must refuse participation keys on the network genesisID:
+// mainnet, testnet and betanet, unless DangerouslyEnableParticipation is set.
+func (cfg Local) ParticipationRefused(genesisID string) bool {
+	if cfg.DangerouslyEnableParticipation {
+		return false
+	}
+	for _, network := range []protocol.NetworkID{Mainnet, Testnet, Betanet} {
+		if genesisID == string(network)+"-v1.0" {
+			return true
+		}
+	}
+	return false
 }
 
 // TimeTravelGenesisDir returns the directory of the time travel store as

@@ -19,7 +19,7 @@ go build -o ttlab .    # or: go run . <command> ...
 |---|---|---|
 | [`stats`](#stats) | sizes of each sampled round's changes, block, header and certificate | CSV |
 | [`ingest`](#ingest) | builds a store from a contiguous run of rounds, then times point-in-time reads | one JSON line |
-| [`engines`](#engines) | loads an N=1 store into SQLite and DuckDB and runs the same lookups on all three engines | one JSON line per engine |
+| [`engines`](#engines) | loads a store into SQLite and DuckDB and runs the same lookups on all three engines | one JSON line per engine |
 | [`catchpoint`](#catchpoint) | reads (a prefix of) a catchpoint file: header, average account and KV sizes | JSON |
 | [`demo`](#demo) | REST checks against a dev-mode time travel node | `[ok  ]` / `[FAIL]` lines |
 
@@ -58,7 +58,7 @@ One CSV row per round in `-deltas`: for each object kind the number of changes (
 
 ```sh
 ./ttlab ingest -data run-2026 -from 65700000 -to 65749999 -warm 10000 \
-  -db /tmp/s -n 1 -comp zstd -block 131072 >> m2026.jsonl
+  -db /tmp/s -comp zstd -block 131072 >> m2026.jsonl
 ```
 
 Adds rounds `-from` to `-to` to a new store one at a time, as a syncing node does, and compacts it. Then it runs `-q` point-in-time reads in two classes, each at a random round between the object's version and `-to`: `hot` picks objects in proportion to how often they change, `uniform` picks each distinct object with equal chance.
@@ -68,8 +68,6 @@ Adds rounds `-from` to `-to` to a new store one at a time, as a syncing node doe
 | `-data` | | delta directory |
 | `-from`, `-to` | | rounds to load, inclusive |
 | `-db` | | store directory. **Deleted before the run, and again after it unless `-keep` is set.** |
-| `-n` | 1 | checkpoint interval (`TimeTravelCheckpointInterval`) |
-| `-inc` | false | incremental patches |
 | `-comp` | zstd | `zstd`, `snappy`, `minlz` or `none` |
 | `-block` | 32768 | sstable block size in bytes (algod's store uses 131072) |
 | `-hdr` | false | also store block headers |
@@ -85,16 +83,15 @@ The output's main fields:
 - `disk_mib`: live sstables after a full compaction. `compression_ratio`: logical bytes over that.
 - `steady_logical_bytes_per_round`, `steady_disk_bytes_per_round`: bytes per round after `-warm`, overall and by keyspace in `steady_by_class`.
 - `read_hot`, `read_uniform`: latency percentiles in µs, and `found_frac`.
-- `ckpt_depth_*`, `patches_in_window_mean`: how far reads walk, meaningful only with `-n` above 1.
 
 ## engines
 
 ```sh
-./ttlab ingest -data run-2026 -from 65700000 -to 65749999 -warm 10000 -db /tmp/s -n 1 -keep > /dev/null
+./ttlab ingest -data run-2026 -from 65700000 -to 65749999 -warm 10000 -db /tmp/s -keep > /dev/null
 ./ttlab engines -store /tmp/s -out /tmp/eng
 ```
 
-Copies every version in an N=1 store (made with `ingest -n 1 -keep`) into SQLite (clustered `(obj, rnd)` primary key) and DuckDB under `-out`, in round order with `-batch` (100) rounds per write transaction. Then it runs the same `-q` (5000) lookups of the latest version at or before a round on Pebble, SQLite and DuckDB, and fails if an engine's answer differs from Pebble's. DuckDB reports reads without an index (`read_noindex`), with an ART index (`read_art`), with an equality lookup on that index and the round filtered client-side (`read_art_eq`), and its size after sorting the table (`disk_sorted_mib`).
+Copies every version in a store (made with `ingest -keep`) into SQLite (clustered `(obj, rnd)` primary key) and DuckDB under `-out`, in round order with `-batch` (100) rounds per write transaction. Then it runs the same `-q` (5000) lookups of the latest version at or before a round on Pebble, SQLite and DuckDB, and fails if an engine's answer differs from Pebble's. DuckDB reports reads without an index (`read_noindex`), with an ART index (`read_art`), with an equality lookup on that index and the round filtered client-side (`read_art_eq`), and its size after sorting the table (`disk_sorted_mib`).
 
 ## estimate.py
 
@@ -102,11 +99,11 @@ Copies every version in an N=1 store (made with `ingest -n 1 -keep`) into SQLite
 python3 estimate.py stats.csv 2022=m2022.jsonl 2024=m2024.jsonl 2026=m2026.jsonl
 ```
 
-Scales the `ingest` results up to mainnet's whole history. Each era's run stands for a span of rounds (`ERAS`: 2022 for rounds below 35M, 2024 for 35M to 55M, 2026 above). For each configuration it takes the run's disk bytes per round relative to that era's `-n 1 -comp none` run, and applies that ratio to the logical bytes `stats.csv` sampled for those rounds. It also prints the size of an archival block database from the sampled blocks.
+Scales the `ingest` results up to mainnet's whole history. Each era's run stands for a span of rounds (`ERAS`: 2022 for rounds below 35M, 2024 for 35M to 55M, 2026 above). For each configuration it takes the run's disk bytes per round relative to that era's `-comp none` run, and applies that ratio to the logical bytes `stats.csv` sampled for those rounds. It also prints the size of an archival block database from the sampled blocks.
 
 - `stats.csv` must sample every 20,000 rounds (`SAMPLE`); any other spacing gives wrong totals.
-- Every era file needs a `-n 1 -comp none` run (any `-block`), the baseline for the others.
-- A configuration (N, patches, compression, block size) is listed only if every era file has it, and the totals cover only the eras passed.
+- Every era file needs a `-comp none` run (any `-block`), the baseline for the others.
+- A configuration (compression, block size; N and patches for runs from before their removal) is listed only if every era file has it, and the totals cover only the eras passed.
 - Era names must be the ones in `ERAS`.
 
 ## catchpoint
@@ -138,6 +135,6 @@ The demo uses no kmd (hence `-K`, which skips importing the root keys): it signs
 - `?round=` on accounts, apps, boxes and `/v2/ledger/supply`;
 - simulate at a past round;
 - block headers of old rounds (200) and their pruned bodies (404);
-- the `/versions` endpoints, ascending and descending, with paging, the app's `changed-keys` with `include=keys`, and the app, box, boxes and account as of a list of rounds (`rounds=`) with their `changed-round`.
+- the `/versions` endpoints, ascending and descending, with paging, the app's `changed-keys` with `include=keys`, the app's versions of its key `n` with their values (`key=`), the boxes under a name prefix (`prefix=`) in range and `rounds` pages, and the app, box, boxes and account as of a list of rounds (`rounds=`) with their `changed-round`.
 
 The 404 checks reach 101 rounds past the first, and a node without `Archival` keeps the last ~1000 block bodies, so keep `-rounds` above ~1100. If any check fails, the demo exits with status 1.
