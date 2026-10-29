@@ -625,17 +625,20 @@ type Local struct {
 	// SimulateParallelism is the most simulate requests that run at once across the node; the rounds of a
 	// "rounds" request run one after another in its slot. A request that can't get a slot within 250 ms is
 	// refused with 503 and Retry-After, so a load balancer can send it to another node. 0 or less means
-	// GOMAXPROCS, the CPUs the process may use. Non-standard fork feature.
+	// GOMAXPROCS, the CPUs the process may use. This applies whether or not EnableEffortHeader is set, and
+	// is new: upstream and earlier builds of this fork queue simulate requests without limit, so a node
+	// that should keep queuing bursts needs a large value. Non-standard fork feature.
 	SimulateParallelism int `version[39]:"0"`
 
 	// EnableEffortHeader adds an X-Algod-Effort response header, the work the request did, to simulate
-	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=). It is
-	// an RFC 9651 dictionary of integers: opcodes (app and logicsig budget consumed), lookups (ledger
-	// objects read), history (of those, read from the time travel history), scanned (entries read by
-	// scans), response-bytes (the answer's size before compression) and eval-us (time spent). Answers
-	// given before any work (503 when busy, most 400s) don't carry it; a 400 from the simulator's checks
-	// of a request without rounds carries what was counted so far. Meant for a load balancer that bills
-	// on it and removes it before answering clients. Non-standard fork feature.
+	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=), except
+	// the asset holders listing, which counts nothing. It is an RFC 9651 dictionary of integers: opcodes (app
+	// and logicsig budget consumed), lookups (ledger objects read), history (of those, read from the time
+	// travel history), scanned (entries read by scans), response-bytes (the answer's size before compression;
+	// 0 for reads at a past round, which are billed on lookups) and eval-us (time spent). Answers given
+	// before any work (503 when busy, most 400s) don't carry it; a 400 from the simulator's checks of a
+	// request without rounds carries what was counted so far. Meant for a load balancer that bills on it and
+	// removes it before answering clients. Non-standard fork feature.
 	EnableEffortHeader bool `version[39]:"false"`
 
 	// DisableLedgerLRUCache disables LRU caches in ledger.
