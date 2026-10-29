@@ -9506,7 +9506,7 @@
     },
     "/v2/query": {
       "post": {
-        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/transactions/simulate/limits; a node without it does not have this endpoint. Non-standard fork feature.",
+        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/transactions/simulate/limits; a node without it does not serve this endpoint: a stock algod answers 404, and a node with queries disabled (node config MaxAPIQueryCalls 0) answers 400. Non-standard fork feature.",
         "operationId": "Query",
         "parameters": [
           {
@@ -9605,7 +9605,7 @@
                 }
               }
             },
-            "description": "Bad Request: the request is invalid, names a round after the latest one, or its results are over max-response-bytes."
+            "description": "Bad Request: the request is invalid, names a round after the latest one, or its results are over max-response-bytes, or the node has queries disabled."
           },
           "401": {
             "content": {

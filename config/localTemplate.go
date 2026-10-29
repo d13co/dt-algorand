@@ -646,7 +646,9 @@ type Local struct {
 
 	// MaxAPIQueryResponseBytes is the most bytes of logs and errors one POST /v2/query request may return,
 	// across all of its calls and rounds, a round listed twice counting twice, and each log counting 48 bytes
-	// more; a request that goes over fails with 400. 0 means no limit. Non-standard fork feature.
+	// more; a request that goes over fails with 400. 0 means no limit. The answer is built and encoded in
+	// memory while the request holds its slot of SimulateParallelism, so each running request can take two
+	// to three times this much memory. Non-standard fork feature.
 	MaxAPIQueryResponseBytes uint64 `version[39]:"67108864"`
 
 	// MaxAPIQueryRounds is the most rounds one POST /v2/query request may list; duplicates count against the
@@ -655,8 +657,11 @@ type Local struct {
 
 	// QueryParallelism is the most workers that run the calls of one POST /v2/query request at once. The
 	// first runs in the request's slot of SimulateParallelism, the limit of the whole node; each other worker
-	// takes a free slot before each piece of work and stops when none is free, never waiting for one. Values
-	// below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
+	// takes a free slot before each piece of work, gives it back after, and stops when none is free, never
+	// waiting for one. A round's calls are split into only as many pieces as keep the workers busy (one per
+	// round once the request lists as many rounds as there are workers), so with fewer rounds than workers
+	// each extra worker keeps its slot for most of the request. Values below 1 count as 1; values above 256
+	// count as 256. Non-standard fork feature.
 	QueryParallelism int `version[39]:"4"`
 
 	// EnableEffortHeader adds an X-Algod-Effort response header, the work the request did, to simulate
