@@ -469,6 +469,37 @@
         },
         "description": "Versions of an application."
       },
+      "AssetHoldersResponse": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "properties": {
+                "holders": {
+                  "items": {
+                    "$ref": "#/components/schemas/AssetHolder"
+                  },
+                  "type": "array"
+                },
+                "next-token": {
+                  "description": "Present if more holders may remain: provide it as the next parameter, with the same round, to get them.",
+                  "type": "string"
+                },
+                "round": {
+                  "description": "The round of the holdings: `round`, or the latest round.",
+                  "type": "integer",
+                  "x-go-type": "basics.Round"
+                }
+              },
+              "required": [
+                "holders",
+                "round"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "description": "Holders of an asset at a round."
+      },
       "AssetResponse": {
         "content": {
           "application/json": {
@@ -2056,6 +2087,32 @@
         },
         "required": [
           "index"
+        ],
+        "type": "object"
+      },
+      "AssetHolder": {
+        "description": "An account that holds an asset, and its holding.",
+        "properties": {
+          "address": {
+            "description": "The holder's address.",
+            "type": "string",
+            "x-algorand-format": "Address"
+          },
+          "amount": {
+            "description": "\\[a\\] number of units held.",
+            "format": "uint64",
+            "type": "integer",
+            "x-algorand-format": "uint64"
+          },
+          "is-frozen": {
+            "description": "\\[f\\] whether or not the holding is frozen.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "address",
+          "amount",
+          "is-frozen"
         ],
         "type": "object"
       },
@@ -6449,6 +6506,147 @@
         "tags": [
           "public",
           "nonparticipating"
+        ]
+      }
+    },
+    "/v2/assets/{asset-id}/holders": {
+      "get": {
+        "description": "Lists the accounts that hold an asset at a round, in address order, with their balance and frozen flag. Accounts opted in with a zero balance are listed. Requires EnableTimeTravel. It also needs TimeTravelHoldersIndex (400 otherwise). The node answers 503 until its asset holders index is built: a store created from genesis with TimeTravelHoldersIndex on has it from the start; otherwise build it with `ttimport -holders-index` while the node is stopped.\n\nTo paginate: use the next-token from a previous response as the next parameter in the following request, and pin the round parameter to the round of the first page's response. Results at a fixed round never change, so the token stays valid. The next-token is the last address the page examined, which may not be a holder's: the next page starts after it. A page stops at `limit` holders or after examining 100,000 accounts that ever held the asset, so it can be short, or even empty, while more holders remain; the presence of next-token is the only reliable signal that more remain. A page that reaches `limit` looks ahead for one more holder, so the last page has no next-token even when it is full (unless the look-ahead reaches the 100,000 accounts).",
+        "operationId": "GetAssetHolders",
+        "parameters": [
+          {
+            "description": "An asset identifier.",
+            "in": "path",
+            "name": "asset-id",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.AssetIndex"
+            },
+            "x-go-type": "basics.AssetIndex"
+          },
+          {
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "in": "query",
+            "name": "round",
+            "schema": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "x-go-type": "basics.Round"
+          },
+          {
+            "description": "Maximum number of holders to return, from 1 to 10,000. Defaults to 1,000.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "x-go-type": "uint64"
+            },
+            "x-go-type": "uint64"
+          },
+          {
+            "description": "The next-token of the previous page: an address, after which the page starts.",
+            "in": "query",
+            "name": "next",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "holders": {
+                      "items": {
+                        "$ref": "#/components/schemas/AssetHolder"
+                      },
+                      "type": "array"
+                    },
+                    "next-token": {
+                      "description": "Present if more holders may remain: provide it as the next parameter, with the same round, to get them.",
+                      "type": "string"
+                    },
+                    "round": {
+                      "description": "The round of the holdings: `round`, or the latest round.",
+                      "type": "integer",
+                      "x-go-type": "basics.Round"
+                    }
+                  },
+                  "required": [
+                    "holders",
+                    "round"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Holders of an asset at a round."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid API Token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Asset Not Found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The asset holders index is missing or stale"
+          },
+          "default": {
+            "content": {},
+            "description": "Unknown Error"
+          }
+        },
+        "summary": "Get the holders of an asset.",
+        "tags": [
+          "timetravel"
         ]
       }
     },

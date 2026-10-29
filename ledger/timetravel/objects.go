@@ -51,6 +51,16 @@ func HoldingKey(addr basics.Address, aidx basics.AssetIndex) []byte {
 	return binary.BigEndian.AppendUint64(append([]byte{KindHolding}, addr[:]...), uint64(aidx))
 }
 
+// HoldingOf returns the account and asset of a holding's object key; ok is
+// false if obj is not a holding's.
+func HoldingOf(obj []byte) (addr basics.Address, asset uint64, ok bool) {
+	if len(obj) != 1+len(addr)+8 || obj[0] != KindHolding {
+		return addr, 0, false
+	}
+	copy(addr[:], obj[1:])
+	return addr, binary.BigEndian.Uint64(obj[1+len(addr):]), true
+}
+
 // LocalKey is the object key of an app local state.
 func LocalKey(addr basics.Address, aidx basics.AppIndex) []byte {
 	return binary.BigEndian.AppendUint64(append([]byte{KindLocal}, addr[:]...), uint64(aidx))
@@ -92,6 +102,49 @@ func KvPrefix(prefix string) []byte {
 		}
 	}
 	return out
+}
+
+// ValidObjectKey reports whether obj is an object key of one of the kinds
+// above, as the functions above make them. No valid key starts with another:
+// those of a kind have one length, or for kv keys end at their terminator.
+// A store holds no other keys, and a read of an object whose key another
+// starts with could take the other's records for its own.
+func ValidObjectKey(obj []byte) bool {
+	if len(obj) == 0 {
+		return false
+	}
+	switch obj[0] {
+	case KindTotals:
+		return len(obj) == 1
+	case KindAccount:
+		return len(obj) == 1+32
+	case KindHolding, KindLocal:
+		return len(obj) == 1+32+8
+	case KindAssetParams, KindAppParams:
+		return len(obj) == 1+8
+	case KindCreated:
+		return len(obj) == 1+32+1+8
+	case KindKv:
+		// escaped bytes, then 0x00 0x00 and nothing after
+		for i := 1; i < len(obj); i++ {
+			if obj[i] != 0 {
+				continue
+			}
+			if i+1 >= len(obj) {
+				return false
+			}
+			switch obj[i+1] {
+			case 0xff:
+				i++
+			case 0:
+				return i+2 == len(obj)
+			default:
+				return false
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // KvKeyString reverses KvKey.

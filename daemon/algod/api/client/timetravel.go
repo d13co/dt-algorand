@@ -130,6 +130,25 @@ func (client RestClient) ApplicationBoxesVersions(appID basics.AppIndex, p Versi
 	return
 }
 
+type assetHoldersParams struct {
+	Limit uint64       `url:"limit,omitempty"`
+	Next  string       `url:"next,omitempty"`
+	Round basics.Round `url:"round,omitempty"`
+}
+
+// AssetHolders gets a page of the accounts that hold an asset, at round, or
+// if round is 0 at the client's AtRound round, if any, else the latest
+// (EnableTimeTravel and TimeTravelHoldersIndex). limit 0 is the node's
+// default; next is the previous page's next-token. Pin the round of the first
+// page's response for the next ones.
+func (client RestClient) AssetHolders(assetID basics.AssetIndex, round basics.Round, limit uint64, next string) (response model.AssetHoldersResponse, err error) {
+	if round == 0 {
+		client = client.pinned()
+	}
+	err = client.get(&response, fmt.Sprintf("/v2/assets/%d/holders", assetID), assetHoldersParams{Limit: limit, Next: next, Round: round})
+	return
+}
+
 // ApplicationBoxVersions lists the versions of a box. name is in goal's app
 // call argument form, e.g. "b64:..." or "str:...".
 func (client RestClient) ApplicationBoxVersions(appID basics.AppIndex, name string, p VersionsParams) (response model.BoxVersionsResponse, err error) {

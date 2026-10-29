@@ -72,6 +72,7 @@ var lookups = []struct {
 	{"GetApplicationBoxByName", func(c RestClient) { c.GetApplicationBoxByName(6, "str:b") }, true, "/v2/applications/6/box"},
 	{"ApplicationBoxes", func(c RestClient) { c.ApplicationBoxes(6, 10) }, true, "/v2/applications/6/boxes"},
 	{"ApplicationBoxesPage", func(c RestClient) { c.ApplicationBoxesPage(6, 10, "", "", false, 0) }, true, "/v2/applications/6/boxes"},
+	{"AssetHolders", func(c RestClient) { c.AssetHolders(5, 0, 0, "") }, true, "/v2/assets/5/holders"},
 	{"LedgerSupply", func(c RestClient) { c.LedgerSupply() }, true, "/v2/ledger/supply"},
 	{"Status", func(c RestClient) { c.Status() }, false, "/v2/status"},
 	{"SuggestedParams", func(c RestClient) { c.SuggestedParams() }, false, "/v2/transactions/params"},
@@ -115,6 +116,10 @@ func TestAtRound(t *testing.T) {
 	c.AtRound(7).AssetInformation(5)
 	require.Equal(t, "1", (*got)[2].query.Get("x"))
 	require.Equal(t, "7", (*got)[2].query.Get("round"))
+	c.serverURL.RawQuery = ""
+	// so does a holders page's
+	c.AtRound(7).AssetHolders(5, 9, 3, testAddr)
+	require.Equal(t, request{"/v2/assets/5/holders", url.Values{"round": {"9"}, "limit": {"3"}, "next": {testAddr}}}, (*got)[3])
 }
 
 func TestVersionsParams(t *testing.T) {

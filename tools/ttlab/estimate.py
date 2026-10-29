@@ -22,7 +22,9 @@ ERAS = [(0, 35_000_000, '2022'), (35_000_000, 55_000_000, '2024'), (55_000_000, 
 
 
 def cfg_name(r):
-    return f"N={r['n']}{' inc' if r['inc'] else ''} {r['comp']} {r['block'] // 1024}K"
+    # runs from before the checkpoint interval's removal carry n and inc
+    n = '' if r.get('n', 1) == 1 else f"N={r['n']}{' inc' if r.get('inc') else ''} "
+    return f"{n}{r['comp']} {r['block'] // 1024}K"
 
 
 def main():
@@ -54,7 +56,7 @@ def main():
     # per-config ratio to the era's N=1 uncompressed logical bytes per round
     configs = {}
     for era, rs in runs.items():
-        base = next(r for r in rs if r['n'] == 1 and r['comp'] == 'none')['steady_logical_bytes_per_round']
+        base = next(r for r in rs if r.get('n', 1) == 1 and r['comp'] == 'none')['steady_logical_bytes_per_round']
         for r in rs:
             configs.setdefault(cfg_name(r), {})[era] = (r['steady_disk_bytes_per_round'] / base, r)
     print(f"\n{'config':28} {'state history':>14} {'write h':>8}   per-era disk B/round")

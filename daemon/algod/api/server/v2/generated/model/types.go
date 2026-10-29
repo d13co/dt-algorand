@@ -654,6 +654,18 @@ type Asset struct {
 	Params *AssetParams `json:"params,omitempty"`
 }
 
+// AssetHolder An account that holds an asset, and its holding.
+type AssetHolder struct {
+	// Address The holder's address.
+	Address string `json:"address"`
+
+	// Amount \[a\] number of units held.
+	Amount uint64 `json:"amount"`
+
+	// IsFrozen \[f\] whether or not the holding is frozen.
+	IsFrozen bool `json:"is-frozen"`
+}
+
 // AssetHolding Describes an asset held by an account.
 //
 // Definition:
@@ -1601,6 +1613,17 @@ type ApplicationVersionsResponse struct {
 	Versions []ApplicationVersion `json:"versions"`
 }
 
+// AssetHoldersResponse defines model for AssetHoldersResponse.
+type AssetHoldersResponse struct {
+	Holders []AssetHolder `json:"holders"`
+
+	// NextToken Present if more holders may remain: provide it as the next parameter, with the same round, to get them.
+	NextToken *string `json:"next-token,omitempty"`
+
+	// Round The round of the holdings: `round`, or the latest round.
+	Round basics.Round `json:"round"`
+}
+
 // AssetResponse Specifies both the unique identifier and the parameters for an asset
 type AssetResponse = Asset
 
@@ -2296,6 +2319,18 @@ type ApplicationVersionsParamsInclude string
 type GetAssetByIDParams struct {
 	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
+}
+
+// GetAssetHoldersParams defines parameters for GetAssetHolders.
+type GetAssetHoldersParams struct {
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
+
+	// Limit Maximum number of holders to return, from 1 to 10,000. Defaults to 1,000.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next-token of the previous page: an address, after which the page starts.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
 }
 
 // AssetVersionsParams defines parameters for AssetVersions.
