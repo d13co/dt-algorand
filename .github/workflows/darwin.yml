@@ -24,6 +24,8 @@ on:
       - 'util/util*.go'
       - 'daemon/algod/server.go'
       - 'ledger/timetravel/store.go'
+      # ttsnap, which the workflow checks finds the keys the tarball ships
+      - 'tools/ttsnap/**'
       - '.github/workflows/release.yml'
       - '.github/workflows/darwin.yml'
   workflow_dispatch:
@@ -72,7 +74,7 @@ jobs:
         run: |
           f=dist/dtalgorand_${PKG_VERSION}_darwin-arm64.tar.gz
           tar -tzf "$f" > "$RUNNER_TEMP/list"
-          for p in bin/algod bin/goal bin/kmd bin/ttimport bin/node_exporter share/system.json share/genesis/mainnet/genesis.json VERSION; do
+          for p in bin/algod bin/goal bin/kmd bin/ttimport bin/ttsnap bin/node_exporter share/system.json share/ttsnap/keys share/genesis/mainnet/genesis.json VERSION; do
             grep -qx "dtalgorand-$PKG_VERSION/$p" "$RUNNER_TEMP/list" || { echo "missing $p"; exit 1; }
           done
           ! grep '/\._' "$RUNNER_TEMP/list" || { echo "AppleDouble files in the tarball"; exit 1; }
@@ -86,7 +88,14 @@ jobs:
           brew test d13co/local/dtalgorand
           d=$(brew --prefix)/var/dtalgorand
           ls "$d"
-          grep -q EnableTimeTravel "$d/config.json"
+          grep -q '"EnableTimeTravel": true' "$d/config.json"
+          grep -q '"TimeTravelHoldersIndex": true' "$d/config.json"
+          # ttsnap finds the formula's keys: fetch reads them, then fails to reach the (closed) port
+          out=$(ttsnap fetch -url http://127.0.0.1:9 -d "$d" 2>&1) && { echo "fetch succeeded: $out"; exit 1; }
+          echo "$out"
+          keg=$(cd "$(brew --prefix d13co/local/dtalgorand)" && pwd -P)
+          grep -qxF "keys: $keg/share/dtalgorand/ttsnap/keys" <<<"$out" || { echo "ttsnap didn't use the formula's keys"; exit 1; }
+          grep -qF '127.0.0.1:9' <<<"$out" || { echo "fetch failed before the download"; exit 1; }
       - name: Run the node under launchd
         run: |
           d=$(brew --prefix)/var/dtalgorand

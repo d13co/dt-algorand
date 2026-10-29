@@ -18,8 +18,14 @@ class Dtalgorand < Formula
     %w[algocfg algod algoh algokey diagcfg goal kmd].each do |b|
       bin.install_symlink libexec/b => "dt#{b}"
     end
-    bin.install_symlink libexec/"ttimport"
+    bin.install_symlink libexec/"ttimport", libexec/"ttsnap"
+    # share/ttsnap/keys lands in pkgshare/ttsnap/keys, which ttsnap finds from libexec
     pkgshare.install Dir["share/*"]
+    # ttsnap trusts its keys only where no other user can write: whatever the umask, keep them
+    # and the directories above them, up to the keg, writable by their owner alone (the levels
+    # that tools/ttsnap's openOwned checks; a missing one fails the install, as it should)
+    [prefix, share, pkgshare, pkgshare/"ttsnap"].each { |d| d.chmod 0755 }
+    (pkgshare/"ttsnap/keys").chmod 0644
   end
 
   def post_install
@@ -32,16 +38,31 @@ class Dtalgorand < Formula
     # yours to change, so only when missing
     cp pkgshare/"system.json", data unless (data/"system.json").exist?
     cp pkgshare/"genesis/mainnet/genesis.json", data unless (data/"genesis.json").exist?
-    # A node that synced without time travel cannot turn it on later, so a new node starts with it on.
+    # A node that synced without time travel cannot turn it on later, so a new node starts with it
+    # on, and with the asset holders index (kept from round 0 by a sync from genesis or an import;
+    # a snapshot needs ttimport -holders-index, which refuses unless the config sets it).
     synced = data.children.any? { |d| d.directory? && (d/"ledger.block.sqlite").exist? }
-    (data/"config.json").write "{\n    \"EnableTimeTravel\": true\n}\n" if !synced && !(data/"config.json").exist?
+    if !synced && !(data/"config.json").exist?
+      (data/"config.json").write "{\n    \"EnableTimeTravel\": true,\n    \"TimeTravelHoldersIndex\": true\n}\n"
+    end
   end
 
   def caveats
     <<~EOS
       The node's data directory is #{var}/dtalgorand, for mainnet. A new node starts with time
-      travel on (config.json), and syncs from genesis. To keep the history on another disk first:
+      travel and the asset holders index on (config.json), and syncs from genesis (weeks on
+      mainnet). To keep the history on another disk, before the first start:
         dtalgocfg set -d #{var}/dtalgorand -p TimeTravelDBDir -v /Volumes/<disk>/dtalgorand
+
+      To start from a history snapshot instead (about 70 GB on mainnet), before the first start:
+        ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d #{var}/dtalgorand
+        ttimport -holders-index -d #{var}/dtalgorand
+      then start the node and run
+        ttsnap catchup -d #{var}/dtalgorand
+
+      A sync from genesis keeps the holders index from round 0. After a snapshot,
+      GET /v2/assets/<id>/holders answers 503 until ttimport -holders-index has built it, with
+      the node stopped (about 5 minutes on mainnet).
 
       Start the node, and have it start at login:
         brew services start dtalgorand
@@ -64,6 +85,7 @@ class Dtalgorand < Formula
   end
 
   test do
+    assert_path_exists pkgshare/"ttsnap/keys"
     # algod -v prints <major>.<minor>.<build number>.<channel> on its second line
     assert_match(/^#{Regexp.escape(version.to_s.sub(/-dt.*/, ""))}\./, shell_output("#{bin}/dtalgod -v").lines[1])
   end

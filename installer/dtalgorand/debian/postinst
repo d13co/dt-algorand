@@ -7,9 +7,11 @@ adduser --system --group --home /var/lib/dtalgorand --no-create-home dtalgorand 
 
 if [ "$1" = "configure" ]; then
     # A node that synced without time travel cannot turn it on later, so a new
-    # install starts with it on.
+    # install starts with it on, and with the asset holders index (kept from
+    # round 0 by a sync from genesis or an import; a snapshot needs
+    # ttimport -holders-index, which refuses unless the config sets it).
     if [ -z "$2" ] && [ ! -e /var/lib/dtalgorand/config.json ]; then
-        printf '{\n    "EnableTimeTravel": true\n}\n' > /var/lib/dtalgorand/config.json
+        printf '{\n    "EnableTimeTravel": true,\n    "TimeTravelHoldersIndex": true\n}\n' > /var/lib/dtalgorand/config.json
     fi
     chown -R dtalgorand:dtalgorand /var/lib/dtalgorand
 fi

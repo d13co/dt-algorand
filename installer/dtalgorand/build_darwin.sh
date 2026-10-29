@@ -6,8 +6,10 @@
 # The tarball holds what the .deb does, for the formula to lay out: the binaries under their stock
 # names in bin/ (goal and algoh run algod and kmd from their own directory), and in share/ the
 # files the .deb puts in the data directory (config.json.example, system.json, and the networks'
-# genesis files under genesis/). The formula links the binaries with a dt prefix (dtalgod,
-# dtgoal, ...) and seeds the data directory from share/.
+# genesis files under genesis/), and ttsnap/keys, the snapshot keys ttsnap trusts. The formula
+# links the binaries with a dt prefix (dtalgod, dtgoal, ...; ttimport and ttsnap keep their
+# names), seeds the data directory from share/, and installs share/ as share/dtalgorand, where
+# ttsnap looks for its keys.
 #
 # Syntax:   installer/dtalgorand/build_darwin.sh [output directory]
 #
@@ -59,10 +61,12 @@ TOP="${PKG_NAME}-${VER}"
 DIR="${PKG_ROOT}/${TOP}"
 
 mkdir -p "${DIR}/bin" "${DIR}/share"
-for bin in algocfg algod algoh algokey diagcfg goal kmd node_exporter ttimport; do
+for bin in algocfg algod algoh algokey diagcfg goal kmd node_exporter ttimport ttsnap; do
     install -m 755 "${GOBIN}/${bin}" "${DIR}/bin/${bin}"
 done
 cp installer/config.json.example installer/system.json "${DIR}/share"
+mkdir -p "${DIR}/share/ttsnap" # BSD install has no -D
+install -m 644 "${SRC_DIR}/ttsnap_keys" "${DIR}/share/ttsnap/keys"
 for dir in installer/genesis/*/; do
     net=$(basename "${dir}")
     mkdir -p "${DIR}/share/genesis/${net}"

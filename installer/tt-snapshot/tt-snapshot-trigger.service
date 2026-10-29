@@ -1,0 +1,9 @@
+[Unit]
+Description=Start a ttsnap snapshot after each catchpoint's balances round, or an upload when the bucket lags
+After=network-online.target dtalgorand.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/tt-snapshot/trigger.sh
+# runs every 2 minutes: keep its routine start/finish lines out of the journal
+LogLevelMax=notice

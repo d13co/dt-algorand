@@ -50,10 +50,6 @@ import (
 	"github.com/algorand/go-algorand/util/db"
 )
 
-// The dtalgorand package installs the public keys of its snapshot producers
-// and attesters here (see readKeys).
-const defaultKeys = "/usr/share/dtalgorand/ttsnap/keys"
-
 // installedFile records, in the genesis directory, the manifest of the
 // snapshot that fetch installed; catchup reads it.
 const installedFile = "ttsnap.json"
@@ -69,8 +65,9 @@ type fetchOpts struct {
 	base        string // base URL of the snapshot tree
 	manifest    string // manifest path in the tree; empty: the latest
 	keys        string
-	minAttest   int // attester signatures of the statement required
-	workers     int // goroutines that compute the commitment
+	trusted     []Key // the keys to check against; nil: read keys
+	minAttest   int   // attester signatures of the statement required
+	workers     int   // goroutines that compute the commitment
 	full        bool
 	parallel    int
 	stallLimit  time.Duration
@@ -85,7 +82,7 @@ func cmdFetch(args []string) error {
 	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree")
 	fs.StringVar(&o.dataDir, "d", "", "data directory of the new node: genesis.json, and config.json with EnableTimeTravel")
 	fs.StringVar(&o.manifest, "manifest", "", "path of a manifest in the tree to install instead of the latest, e.g. snapshots/mainnet-v1.0/history-123.json")
-	fs.StringVar(&o.keys, "keys", defaultKeys, "keys file with the producers' and attesters' public keys")
+	fs.StringVar(&o.keys, "keys", "", "keys file with the producers' and attesters' public keys (default: the package's, "+keysPath+" beside ttsnap's directory, or "+debKeys+")")
 	fs.IntVar(&o.minAttest, "min-attest", 0, "attesters of the keys file that must have signed the snapshot's statement")
 	fs.IntVar(&o.workers, "workers", 0, "goroutines that compute the downloaded history's commitment; 0: one per CPU")
 	fs.BoolVar(&o.full, "full", false, "install the whole ledger instead of the history alone; needs -trust-producer")
@@ -103,6 +100,18 @@ func cmdFetch(args []string) error {
 	}
 	if o.full && !*trust {
 		return errors.New("a full snapshot's account state is the producer's and is not checked against the chain: pass -trust-producer to install one, or install the history alone and catch up from a catchpoint")
+	}
+	if o.keys == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("find the installed keys: %w: pass -keys <keys file>", err)
+		}
+		keys, path, err := installedKeysFor(exe)
+		if err != nil {
+			return err
+		}
+		o.keys, o.trusted = path, keys
+		fmt.Fprintf(o.progressLog, "keys: %s\n", path)
 	}
 	m, gdir, err := fetch(o)
 	if err != nil {
@@ -156,9 +165,12 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 		}
 	}
 
-	keys, err := readKeys(o.keys)
-	if err != nil {
-		return nil, "", err
+	keys := o.trusted
+	if keys == nil {
+		keys, err = readKeys(o.keys)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	ctx := context.Background()
 	mpath, err := resolveManifest(ctx, o.client, o.base, genesis.ID(), kind, o.manifest)
