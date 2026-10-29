@@ -87,9 +87,11 @@ type VersionRange struct {
 	// MaxReadBytes ends a Rounds page early, before a round whose lookups
 	// would take the values they read past it, whether or not the page
 	// returns them (0: no limit). A lookup counts the value of the object's
-	// version and the value before it (for a deletion, the value deleted):
-	// at least what it reads. A page always has at least one round,
-	// except that a round of an app's boxes that reads more fails with
+	// version and the value before it (for a deletion, the value deleted).
+	// That can be less than it reads: the repeated writes a descending step
+	// passes, and the stored value an object had before its rounds still in
+	// memory, are not counted. A page always has at least one round, except
+	// that a round of an app's boxes that reads more fails with
 	// ErrRoundTooLarge. A Key page counts each version it examines likewise.
 	MaxReadBytes uint64
 }

@@ -39,8 +39,8 @@ class Dtalgorand < Formula
     cp pkgshare/"system.json", data unless (data/"system.json").exist?
     cp pkgshare/"genesis/mainnet/genesis.json", data unless (data/"genesis.json").exist?
     # A node that synced without time travel cannot turn it on later, so a new node starts with it
-    # on, and with the asset holders index (built with ttimport -holders-index, which refuses
-    # unless the config sets it).
+    # on, and with the asset holders index (kept from round 0 by a sync from genesis or an import;
+    # a snapshot needs ttimport -holders-index, which refuses unless the config sets it).
     synced = data.children.any? { |d| d.directory? && (d/"ledger.block.sqlite").exist? }
     if !synced && !(data/"config.json").exist?
       (data/"config.json").write "{\n    \"EnableTimeTravel\": true,\n    \"TimeTravelHoldersIndex\": true\n}\n"
@@ -51,8 +51,7 @@ class Dtalgorand < Formula
     <<~EOS
       The node's data directory is #{var}/dtalgorand, for mainnet. A new node starts with time
       travel and the asset holders index on (config.json), and syncs from genesis (weeks on
-      mainnet). To keep the history on
-      another disk, before the first start:
+      mainnet). To keep the history on another disk, before the first start:
         dtalgocfg set -d #{var}/dtalgorand -p TimeTravelDBDir -v /Volumes/<disk>/dtalgorand
 
       To start from a history snapshot instead (about 70 GB on mainnet), before the first start:
@@ -61,8 +60,9 @@ class Dtalgorand < Formula
       then start the node and run
         ttsnap catchup -d #{var}/dtalgorand
 
-      GET /v2/assets/<id>/holders answers 503 until the holders index is built: with the node
-      stopped, ttimport -holders-index -d #{var}/dtalgorand (about 5 minutes on mainnet).
+      A sync from genesis keeps the holders index from round 0. After a snapshot,
+      GET /v2/assets/<id>/holders answers 503 until ttimport -holders-index has built it, with
+      the node stopped (about 5 minutes on mainnet).
 
       Start the node, and have it start at login:
         brew services start dtalgorand
