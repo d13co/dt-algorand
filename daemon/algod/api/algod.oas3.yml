@@ -230,7 +230,7 @@
         "style": "form"
       },
       "versions-key": {
-        "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+        "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
         "in": "query",
         "name": "key",
         "schema": {
@@ -258,7 +258,7 @@
         }
       },
       "versions-rounds": {
-        "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+        "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
         "explode": false,
         "in": "query",
         "name": "rounds",
@@ -407,7 +407,7 @@
                   "type": "string"
                 },
                 "round": {
-                  "description": "The last round of the range: `max-round`, or the latest round.",
+                  "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                   "type": "integer",
                   "x-go-type": "basics.Round"
                 },
@@ -448,7 +448,7 @@
                   "type": "string"
                 },
                 "round": {
-                  "description": "The last round of the range: `max-round`, or the latest round.",
+                  "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                   "type": "integer",
                   "x-go-type": "basics.Round"
                 },
@@ -520,7 +520,7 @@
                   "type": "string"
                 },
                 "round": {
-                  "description": "The last round of the range: `max-round`, or the latest round.",
+                  "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                   "type": "integer",
                   "x-go-type": "basics.Round"
                 },
@@ -650,7 +650,7 @@
                   "type": "string"
                 },
                 "round": {
-                  "description": "The last round of the range: `max-round`, or the latest round.",
+                  "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                   "type": "integer",
                   "x-go-type": "basics.Round"
                 },
@@ -711,7 +711,7 @@
                   "type": "string"
                 },
                 "round": {
-                  "description": "The last round of the range: `max-round`, or the latest round.",
+                  "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                   "type": "integer",
                   "x-go-type": "basics.Round"
                 },
@@ -4441,7 +4441,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -4504,7 +4504,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -4531,7 +4531,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
@@ -4942,7 +4942,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -5004,7 +5004,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -5031,7 +5031,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
@@ -5322,7 +5322,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -5385,7 +5385,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -5412,7 +5412,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
@@ -5720,7 +5720,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -5782,7 +5782,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -5809,7 +5809,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
@@ -6067,7 +6067,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -6129,7 +6129,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -6156,7 +6156,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
@@ -6270,7 +6270,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -6333,7 +6333,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -6360,7 +6360,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
@@ -6698,7 +6698,7 @@
             "x-go-type": "basics.Round"
           },
           {
-            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
+            "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
             "explode": false,
             "in": "query",
             "name": "rounds",
@@ -6760,7 +6760,7 @@
             "style": "form"
           },
           {
-            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each version's value and the one before it, so for an application or local state larger than about 320 bytes the read limit ends a page first (about 4,500 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
             "in": "query",
             "name": "key",
             "schema": {
@@ -6787,7 +6787,7 @@
                       "type": "string"
                     },
                     "round": {
-                      "description": "The last round of the range: `max-round`, or the latest round.",
+                      "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
                       "type": "integer",
                       "x-go-type": "basics.Round"
                     },
