@@ -1408,3 +1408,25 @@ func TestEncodedAccountAllocationBounds(t *testing.T) {
 		// There is no protocol limit to the number of Boxes per account, so that allocbound is not checked.
 	}
 }
+
+func TestLocal_DangerouslyEnableParticipation(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := require.New(t)
+	a.False(GetDefaultLocal().DangerouslyEnableParticipation)
+
+	gated := map[string]bool{"mainnet-v1.0": true, "testnet-v1.0": true, "betanet-v1.0": true}
+	for _, id := range []string{"mainnet-v1.0", "testnet-v1.0", "betanet-v1.0", "fnet-v1", "devnet-v1.0", "alphanet-v1", "tbd-v1", "mainnet", ""} {
+		cfg := GetDefaultLocal()
+		a.Equal(gated[id], cfg.ParticipationRefused(id), id)
+		cfg.DangerouslyEnableParticipation = true
+		a.False(cfg.ParticipationRefused(id), id)
+	}
+
+	name := filepath.Join(t.TempDir(), ConfigFilename)
+	a.NoError(os.WriteFile(name, []byte(`{"Version": 39, "DangerouslyEnableParticipation": true}`), 0o600))
+	c, _, err := loadConfigFromFile(name)
+	a.NoError(err)
+	a.False(c.ParticipationRefused("mainnet-v1.0"))
+}

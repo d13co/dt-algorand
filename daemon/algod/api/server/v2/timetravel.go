@@ -163,9 +163,29 @@ func (v2 *Handlers) ledgerFor(ctx echo.Context, rnd *basics.Round) (LedgerForAPI
 	if !ok || !v2.Node.Config().EnableTimeTravel {
 		return nil, errors.New("looking up past rounds requires EnableTimeTravel")
 	}
+	if hu, ok := l.(historyTrust); ok {
+		if err := hu.HistoryUntrusted(); err != nil {
+			return nil, err
+		}
+	}
 	view := roundView{countedView: v2.countedLedgerFor(ctx, l), h: h, rnd: *rnd}
 	if view.counted != nil {
 		view.h = *view.counted
 	}
 	return view, nil
+}
+
+// historyTrust is implemented by the node's ledger: a history found to differ
+// from the chain is not served.
+type historyTrust interface {
+	HistoryUntrusted() error
+}
+
+// historyError answers a request whose ledgerFor or versionsRange failed: 503
+// for an untrusted history, 400 otherwise.
+func (v2 *Handlers) historyError(ctx echo.Context, err error) error {
+	if errors.Is(err, ledger.ErrHistoryUntrusted) {
+		return serviceUnavailable(ctx, err, err.Error(), v2.Log)
+	}
+	return badRequest(ctx, err, err.Error(), v2.Log)
 }

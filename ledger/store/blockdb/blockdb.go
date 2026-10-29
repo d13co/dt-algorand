@@ -103,8 +103,21 @@ func BlockGet(tx *sql.Tx, rnd basics.Round) (blk bookkeeping.Block, err error) {
 
 // BlockGetHdr retrieves a block header by a round number
 func BlockGetHdr(tx *sql.Tx, rnd basics.Round) (hdr bookkeeping.BlockHeader, err error) {
+	return blockGetHdrFrom(tx, "blocks", rnd)
+}
+
+// BlockGetStagingHdr retrieves a block header from the catchpoint catchup's
+// staging table, which holds the blocks a catchup downloaded before it
+// completes.
+func BlockGetStagingHdr(tx *sql.Tx, rnd basics.Round) (hdr bookkeeping.BlockHeader, err error) {
+	return blockGetHdrFrom(tx, "catchpointblocks", rnd)
+}
+
+// blockGetHdrFrom retrieves a block header by a round number from table,
+// which has the blocks table's columns.
+func blockGetHdrFrom(tx *sql.Tx, table string, rnd basics.Round) (hdr bookkeeping.BlockHeader, err error) {
 	var buf []byte
-	err = tx.QueryRow("SELECT hdrdata FROM blocks WHERE rnd=?", rnd).Scan(&buf)
+	err = tx.QueryRow("SELECT hdrdata FROM "+table+" WHERE rnd=?", rnd).Scan(&buf)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			err = ledgercore.ErrNoEntry{Round: rnd}

@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -40,6 +41,7 @@ import (
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/logging/telemetryspec"
 	"github.com/algorand/go-algorand/network/addr"
+	"github.com/algorand/go-algorand/node"
 	"github.com/algorand/go-algorand/protocol"
 	toolsnet "github.com/algorand/go-algorand/tools/network"
 	"github.com/algorand/go-algorand/util"
@@ -379,7 +381,7 @@ func run() int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		log.Error(err)
-		return 1
+		return initErrorExitCode(err)
 	}
 
 	if *initAndExit {
@@ -515,4 +517,16 @@ func loadGenesis(dataDir string, genesisPath string) (bookkeeping.Genesis, strin
 		return bookkeeping.Genesis{}, "", err
 	}
 	return genesis, string(genesisText), nil
+}
+
+// exitParticipationRefused is algod's exit code when it refuses to start because it holds participation keys
+// (node.ErrParticipationRefused): EX_CONFIG, which the dtalgorand systemd units list in RestartPreventExitStatus.
+const exitParticipationRefused = 78
+
+// initErrorExitCode is algod's exit code for an error from the server's Initialize.
+func initErrorExitCode(err error) int {
+	if errors.Is(err, node.ErrParticipationRefused) {
+		return exitParticipationRefused
+	}
+	return 1
 }

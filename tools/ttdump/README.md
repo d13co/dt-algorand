@@ -51,20 +51,21 @@ Rounds default to the store's last round. A round past it, or before the store's
 $ ttdump -d ~/tt info
 store        /home/me/tt/fnet-v1/ledger.timetravel
 rounds       0..25314401 (2019-...  .. 2026-...)
-checkpoints  every 1 rounds
 disk         3.21 GiB
 box index    complete
+holders      no index (TimeTravelHoldersIndex, ttimport -holders-index)
 
 estimated disk use (sstables only, not the WAL or memtables):
 KEYSPACE  KIND  CONTENTS              DISK
 E               expired online stake  ...
 H               headers and digests   ...
+a               asset holders index   ...
 b               box index             ...
 c         A     asset params          ...
 ...
 ```
 
-Fast: the per-keyspace figures are Pebble's estimates, no scan. `box index` says from which round the [box index](../../ledger/timetravel/README.md#box-index) is complete, when it does not cover the whole store (`ttimport -index-boxes` builds the rest).
+Fast: the per-keyspace figures are Pebble's estimates, no scan. `box index` says from which round the [box index](../../ledger/timetravel/README.md#box-index) is complete, when it does not cover the whole store (`ttimport -index-boxes` builds the rest). `holders` is the state of the [asset holders index](../../ledger/timetravel/README.md#holders-index): complete, stale (a build without it added rounds, or its meta record is bad) or missing (`ttimport -holders-index` builds it); the JSON field `holders-index` says which.
 
 ### get OBJECT [-r R]
 
@@ -110,7 +111,7 @@ $ ttdump -d ~/tt versions acct:AIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
 `accounts`, `assets`, `apps`, `boxes APP`, `kv [PREFIX]`, `holdings ADDR`, `locals ADDR` or `created ADDR`: the objects that exist at round R, a table with a few columns per kind. At most `-n` (1000; 0 for all); a truncated listing ends with the `-after` that continues it, on stderr.
 
-`-ever` lists every object with a record at any round, deleted ones included, with the rounds of its first and last records, the number of records, and whether it exists at the last round. With a checkpoint interval above 1, checkpoint copies count as records.
+`-ever` lists every object with a record at any round, deleted ones included, with the rounds of its first and last records, the number of records, and whether it exists at the last round.
 
 ### header R [R2]
 
@@ -118,8 +119,8 @@ One round: the header, the digest of the round's changes, and the expired online
 
 ### stats [-kind K] [-top N]
 
-Scans every versioned record (`-kind` limits it to one kind: `a h l A P k T C`) and prints, per keyspace and kind: records, objects, tombstones, no-op records (a record equal to the object's previous one; with a checkpoint interval of 1 only), key and value bytes, and the most records of one object. Then the `-top` (10) objects with the most records. A progress line goes to stderr every 10 seconds; on mainnet, expect it to take a while.
+Scans every versioned record (`-kind` limits it to one kind: `a h l A P k T C`) and prints, per kind: records, objects, tombstones, no-op records (a record equal to the object's previous one), key and value bytes, and the most records of one object. Then the `-top` (10) objects with the most records. A progress line goes to stderr every 10 seconds; on mainnet, expect it to take a while.
 
 ### raw [-prefix P] [-after HEX] [-n N]
 
-The records in key order, at most `-n` (100): key, keyspace, object, round, tag (`F` full value, `D` deleted, `X` patch), value length and its first bytes. `-prefix` is an object (its records in both versioned keyspaces), a keyspace (`b` box index, `c` checkpoints, `p` patches, `r` round index, `H` headers, `E` expired stake, `m` meta) or `hex:` a raw key prefix. The store's layout is in [ledger/timetravel/store.go](../../ledger/timetravel/store.go).
+The records in key order, at most `-n` (100): key, keyspace, object, round, tag (`F` full value, `D` deleted), value length and its first bytes, or for an asset holders index entry the rounds at which its holding was created and deleted. `-prefix` is an object (its records), a keyspace (`a` asset holders index, `b` box index, `c` versions, `H` headers, `E` expired stake, `m` meta) or `hex:` a raw key prefix. The store's layout is in [ledger/timetravel/store.go](../../ledger/timetravel/store.go).

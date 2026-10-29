@@ -29,3 +29,8 @@ func getTotalMemory() uint64 {
 	// support 32-bit systems where Totalram is uint32
 	return uint64(si.Totalram) * uint64(si.Unit)
 }
+
+// maxFdLimit is the highest soft RLIMIT_NOFILE that Linux accepts: the hard limit.
+func maxFdLimit(hard uint64) uint64 {
+	return hard
+}

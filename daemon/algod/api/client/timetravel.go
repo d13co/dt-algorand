@@ -40,6 +40,15 @@ type VersionsParams struct {
 	// Rounds asks for the objects as of each of these rounds instead of
 	// their versions; it excludes MinRound and MaxRound
 	Rounds []basics.Round
+	// Key keeps the versions that change this global or local state key,
+	// in goal's app call argument form ("str:...", "b64:..."); only the app
+	// and account app endpoints take it. Pages can then be empty and still
+	// have a next token.
+	Key string
+	// Prefix keeps the changes of the boxes whose names start with it, in
+	// the same form; only ApplicationBoxesVersions takes it. Pages can be
+	// empty as with Key.
+	Prefix string
 }
 
 type versionsQuery struct {
@@ -52,10 +61,12 @@ type versionsQuery struct {
 	Exclude  string        `url:"exclude,omitempty"`
 	Name     string        `url:"name,omitempty"`
 	Rounds   string        `url:"rounds,omitempty"`
+	Key      string        `url:"key,omitempty"`
+	Prefix   string        `url:"prefix,omitempty"`
 }
 
 func (p VersionsParams) query() versionsQuery {
-	q := versionsQuery{MinRound: p.MinRound, MaxRound: p.MaxRound, Limit: p.Limit, Next: p.Next}
+	q := versionsQuery{MinRound: p.MinRound, MaxRound: p.MaxRound, Limit: p.Limit, Next: p.Next, Key: p.Key, Prefix: p.Prefix}
 	if p.Desc {
 		q.Order = "desc"
 	}
@@ -117,6 +128,25 @@ func (client RestClient) ApplicationVersions(appID basics.AppIndex, p VersionsPa
 // application changed, with the boxes that did.
 func (client RestClient) ApplicationBoxesVersions(appID basics.AppIndex, p VersionsParams) (response model.BoxesVersionsResponse, err error) {
 	err = client.get(&response, fmt.Sprintf("/v2/applications/%d/boxes/versions", appID), p.query())
+	return
+}
+
+type assetHoldersParams struct {
+	Limit uint64       `url:"limit,omitempty"`
+	Next  string       `url:"next,omitempty"`
+	Round basics.Round `url:"round,omitempty"`
+}
+
+// AssetHolders gets a page of the accounts that hold an asset, at round, or
+// if round is 0 at the client's AtRound round, if any, else the latest
+// (EnableTimeTravel and TimeTravelHoldersIndex). limit 0 is the node's
+// default; next is the previous page's next-token. Pin the round of the first
+// page's response for the next ones.
+func (client RestClient) AssetHolders(assetID basics.AssetIndex, round basics.Round, limit uint64, next string) (response model.AssetHoldersResponse, err error) {
+	if round == 0 {
+		client = client.pinned()
+	}
+	err = client.get(&response, fmt.Sprintf("/v2/assets/%d/holders", assetID), assetHoldersParams{Limit: limit, Next: next, Round: round})
 	return
 }
 

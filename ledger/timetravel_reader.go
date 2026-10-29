@@ -165,6 +165,16 @@ func (r *HistoryReader) LookupKvPairsAt(rnd basics.Round, keyPrefix, cursor stri
 	return histKvPairs(r.h, rnd, keyPrefix, cursor, limit, maxBytes, includeValues)
 }
 
+// AssetHoldersAt is Ledger.AssetHoldersAt. It needs the store's asset holders
+// index (ErrNoHoldersIndex), whose state a read-only store takes from the
+// store as it is.
+func (r *HistoryReader) AssetHoldersAt(rnd basics.Round, aidx basics.AssetIndex, after *basics.Address, limit uint64) (AssetHoldersPage, error) {
+	if err := r.check(rnd); err != nil {
+		return AssetHoldersPage{}, err
+	}
+	return histAssetHolders(r.h, rnd, aidx, after, limit)
+}
+
 // AccountVersions is Ledger.AccountVersions.
 func (r *HistoryReader) AccountVersions(addr basics.Address, ex AccountVersionsExclude, vr VersionRange) (VersionPage, error) {
 	if err := r.checkRange(vr); err != nil {

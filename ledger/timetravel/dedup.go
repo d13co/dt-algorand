@@ -119,3 +119,12 @@ func (lw *lastWritten) update(round map[string]roundState) {
 		lw.cur, lw.old = make(map[string]recSum, lw.half), lw.cur
 	}
 }
+
+// reset forgets every object, for a store whose latest records changed other
+// than through AddRound.
+func (lw *lastWritten) reset() {
+	if lw == nil {
+		return
+	}
+	lw.cur, lw.old = make(map[string]recSum, lw.half), nil
+}

@@ -310,6 +310,49 @@ done: int 1`)
 	}
 	check(fmt.Sprintf("GET /v2/applications/%d/boxes/versions?include=values, %d pages -> %d versions", app, n, len(vs)),
 		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+	// prefix: b is the box's whole name, so the same changes; x matches none
+	vs, n = pages(fmt.Sprintf("/v2/applications/%d/boxes/versions?%s&limit=3&include=values&prefix=str:b", app, span))
+	valuesOK = len(vs) == len(want)
+	for _, v := range vs {
+		boxes := asSlice(v["boxes"])
+		valuesOK = valuesOK && len(boxes) == 1 && fmt.Sprint(boxes[0].(map[string]any)["value"]) == history[uint64(v["round"].(float64))].box
+	}
+	check(fmt.Sprintf("GET /v2/applications/%d/boxes/versions?prefix=str:b&include=values, %d pages -> %d versions", app, n, len(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && valuesOK)
+	code, none := get(fmt.Sprintf("/v2/applications/%d/boxes/versions?%s&prefix=str:x", app, span))
+	check(fmt.Sprintf("GET /v2/applications/%d/boxes/versions?prefix=str:x -> %d, %d versions", app, code, len(asSlice(none["versions"]))),
+		code == http.StatusOK && len(asSlice(none["versions"])) == 0 && none["next-token"] == nil)
+	vs, n, ok := func() ([]map[string]any, int, bool) { // as of rounds, the box under b at each
+		var rs []string
+		for r := lo; r <= hi; r += 4 {
+			rs = append(rs, fmt.Sprint(r))
+		}
+		vs, n := pages(fmt.Sprintf("/v2/applications/%d/boxes/versions?rounds=%s&limit=3&include=values&prefix=str:b", app, strings.Join(rs, ",")))
+		ok := len(vs) == len(rs)
+		for _, v := range vs {
+			boxes := asSlice(v["boxes"])
+			ok = ok && len(boxes) == 1 && fmt.Sprint(boxes[0].(map[string]any)["value"]) == history[uint64(v["round"].(float64))].box
+		}
+		return vs, n, ok
+	}()
+	check(fmt.Sprintf("GET /v2/applications/%d/boxes/versions?rounds=...&prefix=str:b&include=values, %d pages -> %d entries", app, n, len(vs)), ok)
+
+	// key: the versions that change n, each with its value then
+	want = changed(func(l live) any { return l.n })
+	vs, n = pages(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=7&key=str:n", app, span))
+	keyOK := len(vs) == len(want)
+	for _, v := range vs {
+		kv, _ := v["key-value"].(map[string]any)
+		_, hasValue := v["application"]
+		keyOK = keyOK && !hasValue && kv["uint"] == history[uint64(v["round"].(float64))].n
+	}
+	check(fmt.Sprintf("GET /v2/applications/%d/versions?key=str:n, %d pages -> key-value at rounds %v", app, n, roundsOf(vs)),
+		fmt.Sprint(roundsOf(vs)) == fmt.Sprint(want) && keyOK)
+	code, none = get(fmt.Sprintf("/v2/applications/%d/versions?%s&key=str:nope", app, span))
+	check(fmt.Sprintf("GET /v2/applications/%d/versions?key=str:nope -> %d, %d versions", app, code, len(asSlice(none["versions"]))),
+		code == http.StatusOK && len(asSlice(none["versions"])) == 0 && none["next-token"] == nil)
+	code, _ = get(fmt.Sprintf("/v2/applications/%d/boxes/versions?%s&key=str:n", app, span))
+	check(fmt.Sprintf("GET /v2/applications/%d/boxes/versions?key=str:n -> %d", app, code), code == http.StatusBadRequest)
 
 	// pending rewards move amount every round; versions follow the record
 	want = changed(func(l live) any { return l.raw })
@@ -366,7 +409,7 @@ done: int 1`)
 		}
 		return vs[1:], n, fmt.Sprint(roundsOf(vs[1:])) == fmt.Sprint(asOf)
 	}
-	vs, n, ok := asOfEntries(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=7&include=values", app, roundsQ))
+	vs, n, ok = asOfEntries(fmt.Sprintf("/v2/applications/%d/versions?%s&limit=7&include=values", app, roundsQ))
 	for _, v := range vs {
 		ok = ok && changedOK(v, uint64(v["round"].(float64)), func(l live) any { return l.n }) && globalUint(v["application"].(map[string]any)) == history[uint64(v["round"].(float64))].n
 	}

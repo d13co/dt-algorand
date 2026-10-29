@@ -167,6 +167,7 @@ type NodeInterface interface {
 	StartCatchup(catchpoint string) error
 	AbortCatchup(catchpoint string) error
 	Config() config.Local
+	ParticipationRefused() bool
 	InstallParticipationKey(partKeyBinary []byte) (account.ParticipationID, error)
 	ListParticipationKeys() ([]account.ParticipationRecord, error)
 	GetParticipationKey(account.ParticipationID) (account.ParticipationRecord, error)
@@ -309,6 +310,11 @@ func (v2 *Handlers) generateKeyHandler(address basics.Address, params model.Gene
 // GenerateParticipationKeys generates and installs participation keys to the node.
 // (POST /v2/participation/generate/{address})
 func (v2 *Handlers) GenerateParticipationKeys(ctx echo.Context, address basics.Address, params model.GenerateParticipationKeysParams) error {
+	// refuse before generating, which takes minutes, rather than when installing the keys
+	if v2.Node.ParticipationRefused() {
+		err := fmt.Errorf("%w (network %s)", node.ErrParticipationRefused, v2.Node.GenesisID())
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	if !v2.KeygenLimiter.TryAcquire(1) {
 		err := fmt.Errorf("participation key generation already in progress")
 		return badRequest(ctx, err, err.Error(), v2.Log)
@@ -486,7 +492,7 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 
 	myLedger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 
 	// count total # of resources, if max limit is set
@@ -547,7 +553,7 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Address, handle codec.Handle, contentType string, rnd *basics.Round) error {
 	myLedger, err := v2.ledgerFor(ctx, rnd)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	record, lastRound, amountWithoutPendingRewards, err := myLedger.LookupAccount(myLedger.Latest(), addr)
 	if err != nil {
@@ -638,7 +644,7 @@ func (v2 *Handlers) AccountAssetInformation(ctx echo.Context, address basics.Add
 
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 
 	lastRound := ledger.Latest()
@@ -689,7 +695,7 @@ func (v2 *Handlers) AccountApplicationInformation(ctx echo.Context, address basi
 
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 
 	lastRound := ledger.Latest()
@@ -1021,7 +1027,7 @@ func (v2 *Handlers) GetTransactionProof(ctx echo.Context, round basics.Round, tx
 func (v2 *Handlers) GetSupply(ctx echo.Context, params model.GetSupplyParams) error {
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	latest, totals, err := ledger.LatestTotals()
 	if err != nil {
@@ -1373,7 +1379,7 @@ func (v2 *Handlers) AccountAssetsInformation(ctx echo.Context, address basics.Ad
 
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 
 	// Logic
@@ -1471,7 +1477,7 @@ func (v2 *Handlers) AccountApplicationsInformation(ctx echo.Context, address bas
 
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 
 	// Logic
@@ -1966,7 +1972,7 @@ func (v2 *Handlers) GetPendingTransactions(ctx echo.Context, params model.GetPen
 func (v2 *Handlers) GetApplicationByID(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationByIDParams) error {
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	creator, ok, err := ledger.GetCreator(basics.CreatableIndex(applicationID), basics.AppCreatable)
 	if err != nil {
@@ -2154,7 +2160,7 @@ func encodeBoxNameAsAppCallBytes(name []byte) string {
 func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxByNameParams) error {
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	lastRound := ledger.Latest()
 
@@ -2189,7 +2195,7 @@ func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basi
 func (v2 *Handlers) GetAssetByID(ctx echo.Context, assetID basics.AssetIndex, params model.GetAssetByIDParams) error {
 	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
-		return badRequest(ctx, err, err.Error(), v2.Log)
+		return v2.historyError(ctx, err)
 	}
 	creator, ok, err := ledger.GetCreator(basics.CreatableIndex(assetID), basics.AssetCreatable)
 	if err != nil {

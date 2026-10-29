@@ -125,6 +125,11 @@ func MakeFollower(log logging.Logger, rootDir string, cfg config.Local, phoneboo
 		log.Errorf("Cannot initialize ledger (%v): %v", ledgerPaths, err)
 		return nil, err
 	}
+	// before any service reads the history: deleting the index needs that
+	if err = node.ledger.InitHoldersIndex(cfg.TimeTravelHoldersIndex); err != nil {
+		log.Errorf("Cannot initialize the asset holders index: %v", err)
+		return nil, err
+	}
 
 	node.ledger.RegisterBlockListeners([]ledgercore.BlockListener{node})
 
@@ -339,6 +344,12 @@ func (node *AlgorandFollowerNode) AppendParticipationKeys(_ account.Participatio
 	return fmt.Errorf("cannot append participation keys in follower mode")
 }
 
+// ParticipationRefused reports whether the node refuses participation keys: on mainnet, testnet and betanet unless
+// DangerouslyEnableParticipation is set (config.Local.ParticipationRefused). A follower can't install keys either way.
+func (node *AlgorandFollowerNode) ParticipationRefused() bool {
+	return node.config.ParticipationRefused(node.genesisID)
+}
+
 // InstallParticipationKey returns an error in follower mode
 func (node *AlgorandFollowerNode) InstallParticipationKey(_ []byte) (account.ParticipationID, error) {
 	return account.ParticipationID{}, fmt.Errorf("cannot install participation key in follower mode")
@@ -361,7 +372,15 @@ func (node *AlgorandFollowerNode) StartCatchup(catchpoint string) error {
 	node.mu.Lock()
 	defer node.mu.Unlock()
 	if node.config.EnableTimeTravel {
-		return fmt.Errorf("catching up using a catchpoint is not supported with EnableTimeTravel: the history must be built from genesis")
+		// the history comes from elsewhere (a snapshot); CompleteCatchup
+		// checks it against the catchpoint before applying it
+		rnd, _, err := ledgercore.ParseCatchpointLabel(catchpoint)
+		if err != nil {
+			return err
+		}
+		if err := node.ledger.CheckHistoryForCatchpoint(rnd); err != nil {
+			return fmt.Errorf("catching up using a catchpoint with EnableTimeTravel needs a history that reaches it: %w", err)
+		}
 	}
 	if node.catchpointCatchupService != nil {
 		stats := node.catchpointCatchupService.GetStatistics()

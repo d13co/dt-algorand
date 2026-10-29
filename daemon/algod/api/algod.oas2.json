@@ -2181,6 +2181,76 @@
         }
       }
     },
+    "/v2/assets/{asset-id}/holders": {
+      "get": {
+        "description": "Lists the accounts that hold an asset at a round, in address order, with their balance and frozen flag. Accounts opted in with a zero balance are listed. Requires EnableTimeTravel. It also needs TimeTravelHoldersIndex (400 otherwise). The node answers 503 until its asset holders index is built: a store created from genesis with TimeTravelHoldersIndex on has it from the start; otherwise build it with `ttimport -holders-index` while the node is stopped.\n\nTo paginate: use the next-token from a previous response as the next parameter in the following request, and pin the round parameter to the round of the first page's response. Results at a fixed round never change, so the token stays valid. The next-token is the last address the page examined, which may not be a holder's: the next page starts after it. A page stops at `limit` holders or after examining 100,000 accounts that ever held the asset, so it can be short, or even empty, while more holders remain; the presence of next-token is the only reliable signal that more remain. A page that reaches `limit` looks ahead for one more holder, so the last page has no next-token even when it is full (unless the look-ahead reaches the 100,000 accounts).",
+        "tags": ["timetravel"],
+        "produces": ["application/json"],
+        "schemes": ["http"],
+        "summary": "Get the holders of an asset.",
+        "operationId": "GetAssetHolders",
+        "parameters": [
+          {
+            "$ref": "#/parameters/asset-id"
+          },
+          {
+            "$ref": "#/parameters/at-round"
+          },
+          {
+            "type": "integer",
+            "x-go-type": "uint64",
+            "description": "Maximum number of holders to return, from 1 to 10,000. Defaults to 1,000.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "The next-token of the previous page: an address, after which the page starts.",
+            "name": "next",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "$ref": "#/responses/AssetHoldersResponse"
+          },
+          "400": {
+            "description": "Bad Request",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "Asset Not Found",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "503": {
+            "description": "The asset holders index is missing or stale",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
     "/v2/accounts/{address}/versions": {
       "get": {
         "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the account as of a requested round instead: its base record, and the asset holdings, application local states and created assets and applications that exist then, each with the round it last changed (`changed-round`). Requires EnableTimeTravel.",
@@ -2224,6 +2294,12 @@
           },
           {
             "$ref": "#/parameters/versions-include-state"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -2290,6 +2366,12 @@
           },
           {
             "$ref": "#/parameters/versions-include"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -2323,7 +2405,7 @@
     },
     "/v2/accounts/{address}/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the local state and the application's parameters as of a requested round instead, each with the round it last changed (`changed-round`); either is omitted if it does not exist then. Requires EnableTimeTravel.",
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `key`, only the versions of the local state at which that local state key's value changed are listed, each with its new value (`key-value`), and never the application's parameters; pages may then hold fewer than `limit` versions, or none, and still have a `next-token`. With `rounds`, each entry is the local state and the application's parameters as of a requested round instead, each with the round it last changed (`changed-round`); either is omitted if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2356,6 +2438,12 @@
           },
           {
             "$ref": "#/parameters/versions-include-state"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -2419,6 +2507,12 @@
           },
           {
             "$ref": "#/parameters/versions-include"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -2452,7 +2546,7 @@
     },
     "/v2/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version lists the global state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the application as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
+        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version lists the global state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `key`, only the versions at which that global state key's value changed are listed, each with its new value (`key-value`); pages may then hold fewer than `limit` versions, or none, and still have a `next-token`. With `rounds`, each entry is the application as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2482,6 +2576,12 @@
           },
           {
             "$ref": "#/parameters/versions-include-state"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -2515,7 +2615,7 @@
     },
     "/v2/applications/{application-id}/boxes/versions": {
       "get": {
-        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. A page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values; a single round with more fails with 400. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
+        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. Without `prefix`, a page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values, or have read 64 MB of values, deleted boxes included; a single round with more fails with 400. With `prefix`, only the boxes whose names start with it are listed: without `rounds`, pages then step through the application's whole box index in their rounds, and may hold fewer than `limit` versions, or none, and still have a `next-token`; with `rounds`, the MaxAPIBoxPerApplication bound counts only the boxes under the prefix. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2545,6 +2645,12 @@
           },
           {
             "$ref": "#/parameters/versions-include"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -2621,6 +2727,12 @@
           },
           {
             "$ref": "#/parameters/versions-include"
+          },
+          {
+            "$ref": "#/parameters/versions-key"
+          },
+          {
+            "$ref": "#/parameters/versions-prefix"
           }
         ],
         "responses": {
@@ -3199,6 +3311,10 @@
           "description": "With `include=values`, the new local state.",
           "$ref": "#/definitions/ApplicationLocalState"
         },
+        "key-value": {
+          "description": "With `key`, the key's new value. Absent when the version removed the key or deleted the local state.",
+          "$ref": "#/definitions/TealValue"
+        },
         "changed-keys": {
           "description": "With `include=keys`, the local state keys added, removed or changed in this round, sorted. On an opt-in after no local state, every key of the new state; on a clear and opt-in in the same round, the keys that differ. Absent on deletions.",
           "type": "array",
@@ -3324,6 +3440,10 @@
         "application": {
           "description": "With `include=values`, the new application parameters.",
           "$ref": "#/definitions/Application"
+        },
+        "key-value": {
+          "description": "With `key`, the key's new value. Absent when the version removed the key or deleted the application.",
+          "$ref": "#/definitions/TealValue"
         },
         "changed-keys": {
           "description": "With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions.",
@@ -3778,6 +3898,28 @@
         },
         "params": {
           "$ref": "#/definitions/AssetParams"
+        }
+      }
+    },
+    "AssetHolder": {
+      "description": "An account that holds an asset, and its holding.",
+      "type": "object",
+      "required": ["address", "amount", "is-frozen"],
+      "properties": {
+        "address": {
+          "description": "The holder's address.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "amount": {
+          "description": "\\[a\\] number of units held.",
+          "type": "integer",
+          "format": "uint64",
+          "x-algorand-format": "uint64"
+        },
+        "is-frozen": {
+          "description": "\\[f\\] whether or not the holding is frozen.",
+          "type": "boolean"
         }
       }
     },
@@ -5390,7 +5532,7 @@
         "minimum": 0
       },
       "collectionFormat": "csv",
-      "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round. Multiple values can be comma-separated.",
+      "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted). Multiple values can be comma-separated.",
       "name": "rounds",
       "in": "query"
     },
@@ -5412,8 +5554,20 @@
         "enum": ["values", "keys"]
       },
       "collectionFormat": "csv",
-      "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Multiple values can be comma-separated.",
+      "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.",
       "name": "include",
+      "in": "query"
+    },
+    "versions-key": {
+      "type": "string",
+      "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+      "name": "key",
+      "in": "query"
+    },
+    "versions-prefix": {
+      "type": "string",
+      "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+      "name": "prefix",
       "in": "query"
     },
     "catchpoint": {
@@ -6325,6 +6479,30 @@
       "description": "Application information",
       "schema": {
         "$ref": "#/definitions/Application"
+      }
+    },
+    "AssetHoldersResponse": {
+      "description": "Holders of an asset at a round.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "holders"],
+        "properties": {
+          "round": {
+            "description": "The round of the holdings: `round`, or the latest round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "next-token": {
+            "description": "Present if more holders may remain: provide it as the next parameter, with the same round, to get them.",
+            "type": "string"
+          },
+          "holders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/AssetHolder"
+            }
+          }
+        }
       }
     },
     "BoxesResponse": {
