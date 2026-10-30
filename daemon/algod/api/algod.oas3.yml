@@ -229,6 +229,14 @@
         },
         "style": "form"
       },
+      "versions-key": {
+        "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+        "in": "query",
+        "name": "key",
+        "schema": {
+          "type": "string"
+        }
+      },
       "versions-order": {
         "description": "List versions oldest first (`asc`, the default) or newest first (`desc`).",
         "in": "query",
@@ -238,6 +246,14 @@
             "asc",
             "desc"
           ],
+          "type": "string"
+        }
+      },
+      "versions-prefix": {
+        "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+        "in": "query",
+        "name": "prefix",
+        "schema": {
           "type": "string"
         }
       },
@@ -1886,6 +1902,9 @@
           "deleted": {
             "description": "Whether the version is the deletion of the local state (close out or clear).",
             "type": "boolean"
+          },
+          "key-value": {
+            "$ref": "#/components/schemas/TealValue"
           }
         },
         "required": [
@@ -2032,6 +2051,9 @@
           "deleted": {
             "description": "Whether the version is the deletion of the application.",
             "type": "boolean"
+          },
+          "key-value": {
+            "$ref": "#/components/schemas/TealValue"
           },
           "round": {
             "description": "The round of the version, or with `rounds` the requested round.",
@@ -4361,7 +4383,7 @@
     },
     "/v2/accounts/{address}/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the local state and the application's parameters as of a requested round instead, each with the round it last changed (`changed-round`); either is omitted if it does not exist then. Requires EnableTimeTravel.",
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `key`, only the versions of the local state at which that local state key's value changed are listed, each with its new value (`key-value`), and never the application's parameters; pages may then hold fewer than `limit` versions, or none, and still have a `next-token`. With `rounds`, each entry is the local state and the application's parameters as of a requested round instead, each with the round it last changed (`changed-round`); either is omitted if it does not exist then. Requires EnableTimeTravel.",
         "operationId": "AccountApplicationVersions",
         "parameters": [
           {
@@ -4474,6 +4496,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4958,6 +4996,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5323,6 +5377,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5704,6 +5774,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5935,7 +6021,7 @@
     },
     "/v2/applications/{application-id}/boxes/versions": {
       "get": {
-        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. A page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values, or have read 64 MB of values, deleted boxes included; a single round with more fails with 400. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
+        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. Without `prefix`, a page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values, or have read 64 MB of values, deleted boxes included; a single round with more fails with 400. With `prefix`, only the boxes whose names start with it are listed: without `rounds`, pages then step through the application's whole box index in their rounds, and may hold fewer than `limit` versions, or none, and still have a `next-token`; with `rounds`, the MaxAPIBoxPerApplication bound counts only the boxes under the prefix. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
         "operationId": "ApplicationBoxesVersions",
         "parameters": [
           {
@@ -6035,6 +6121,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6122,7 +6224,7 @@
     },
     "/v2/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version lists the global state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the application as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
+        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version lists the global state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `key`, only the versions at which that global state key's value changed are listed, each with its new value (`key-value`); pages may then hold fewer than `limit` versions, or none, and still have a `next-token`. With `rounds`, each entry is the application as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
         "operationId": "ApplicationVersions",
         "parameters": [
           {
@@ -6223,6 +6325,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -6634,6 +6752,22 @@
               "type": "array"
             },
             "style": "form"
+          },
+          {
+            "description": "A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.",
+            "in": "query",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.",
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

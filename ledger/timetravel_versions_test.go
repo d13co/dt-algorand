@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -271,6 +272,94 @@ func ttPages(t *testing.T, lookup func(VersionRange) (VersionPage, error), r Ver
 			r.Min = p.Next
 		}
 	}
+}
+
+// ttKeyVersions is the oracle of a Key lookup of o, an app's params or local
+// state: the rounds at which key's value differs from the round before, each
+// with o's entry and the key's new value.
+func ttKeyVersions(t *testing.T, l *Ledger, o ttObj, key string, inc ttInclude) []Version {
+	at := func(r basics.Round) (val any, ok bool, kv *basics.TealValue) {
+		val, ok = o.get(r)
+		if !ok {
+			return nil, false, nil
+		}
+		var state basics.TealKeyValue
+		switch s := val.(type) {
+		case *basics.AppParams:
+			state = s.GlobalState
+		case *basics.AppLocalState:
+			state = s.KeyValue
+		default:
+			require.Fail(t, "not app state", "%T", val)
+		}
+		if tv, has := state[key]; has {
+			kv = &tv
+		}
+		return val, true, kv
+	}
+	var out []Version
+	for r := basics.Round(0); r <= l.Latest(); r++ {
+		val, ok, kv := at(r)
+		var prev any
+		var prevKV *basics.TealValue
+		if r > 0 {
+			var pok bool
+			if prev, pok, prevKV = at(r - 1); !pok {
+				prev = nil
+			}
+		}
+		if reflect.DeepEqual(kv, prevKV) {
+			continue
+		}
+		hdr, err := l.BlockHdr(r)
+		require.NoError(t, err)
+		v := Version{Round: r, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol}
+		o.put(&v, val, prev, ok, inc)
+		if len(v.Apps) == 1 {
+			v.Apps[0].KeyValue = kv
+		} else {
+			require.Len(t, v.LocalStates, 1)
+			v.LocalStates[0].KeyValue = kv
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// ttKeyPages pages through a Key or Prefix lookup, whose pages can be short
+// or empty, and returns every version and the number of empty pages.
+func ttKeyPages(t *testing.T, lookup func(VersionRange) (VersionPage, error), r VersionRange) ([]Version, int) {
+	var all []Version
+	var empty int
+	for range 10_000 {
+		p, err := lookup(r)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(p.Versions), int(r.Limit))
+		all = append(all, p.Versions...)
+		if !p.More {
+			return all, empty
+		}
+		if len(p.Versions) == 0 {
+			empty++
+		}
+		// the next page starts past this one's versions, and past where
+		// this one started
+		if r.Desc {
+			if len(p.Versions) > 0 {
+				require.Less(t, p.Next, p.Versions[len(p.Versions)-1].Round)
+			}
+			require.Less(t, p.Next, r.Max)
+			r.Max = p.Next
+		} else {
+			if len(p.Versions) > 0 {
+				require.Greater(t, p.Next, p.Versions[len(p.Versions)-1].Round)
+			}
+			require.Greater(t, p.Next, r.Min)
+			r.Min = p.Next
+		}
+	}
+	require.Fail(t, "paging does not end")
+	return nil, 0
 }
 
 // ttChanges lists, for each of objs, the rounds at which it differs from the
@@ -522,9 +611,9 @@ func TestTimeTravelVersions(t *testing.T) {
 		case 19: // opted in empty
 			txs = append(txs, kvCall(kv, addrs[1], transactions.OptInOC))
 			local = []string{}
-		case 22:
-			txs = append(txs, g("g", "z", "1"))
-			global = []string{"z"}
+		case 22: // and the empty key, a valid one
+			txs = append(txs, g("g", "z", "1"), g("g", "", "e"))
+			global = []string{"", "z"}
 		case 23:
 			txs = append(txs, loc("l", "z", "1"))
 			local = []string{"z"}
@@ -731,6 +820,8 @@ func TestTimeTravelVersions(t *testing.T) {
 			require.Len(t, p.Versions, n, "%+v", inc)
 		}
 
+		checkKeyVersions(t, l, addrs, kv)
+
 		// as of rounds: every round, both ways, paged, and a sparse subset
 		var every, sparse []basics.Round
 		for R := basics.Round(0); R <= latest; R++ {
@@ -845,6 +936,173 @@ func TestTimeTravelVersions(t *testing.T) {
 	check()
 }
 
+// checkKeyVersions checks Key lookups of TestTimeTravelVersions's kv app,
+// its creator addrs[2], addrs[1]'s local state of it, and the genesis app
+// and local state against the oracle, whole and paged by every budget.
+func checkKeyVersions(t *testing.T, l *Ledger, addrs []basics.Address, kv basics.AppIndex) {
+	latest := l.Latest()
+	type keyCase struct {
+		name   string
+		obj    ttObj
+		keys   []string
+		lookup func(VersionRange) (VersionPage, error)
+	}
+	// a, n, m and z change a few times, c1 is deleted, c2 only created, t is
+	// set and deleted within a round and a set back to its value, "" is
+	// empty, nope never exists; g1 and l1 are the genesis states'
+	globalKeys := []string{"a", "n", "m", "c1", "c2", "t", "z", "", "nope"}
+	cases := []keyCase{
+		{"kv global", ttAppParams(t, l, addrs[2], kv), globalKeys,
+			func(r VersionRange) (VersionPage, error) { return l.AppVersions(kv, r) }},
+		{"kv local", ttLocal(t, l, addrs[1], kv), []string{"x", "y", "z", "nope"},
+			func(r VersionRange) (VersionPage, error) { return l.AccountAppVersions(addrs[1], kv, r) }},
+		{"genesis global", ttAppParams(t, l, addrs[5], genesisApp), []string{"g1", "g2", "nope"},
+			func(r VersionRange) (VersionPage, error) { return l.AppVersions(genesisApp, r) }},
+		{"genesis local", ttLocal(t, l, addrs[6], genesisApp), []string{"l1", "nope"},
+			func(r VersionRange) (VersionPage, error) { return l.AccountAppVersions(addrs[6], genesisApp, r) }},
+	}
+	var emptyPages int
+	for _, c := range cases {
+		for _, key := range c.keys {
+			for _, inc := range []ttInclude{{}, {values: true}, {keys: true}, {values: true, keys: true}} {
+				want := ttKeyVersions(t, l, c.obj, key, inc)
+				if key == "nope" || key == "t" { // t is set and deleted within a round
+					require.Empty(t, want)
+				} else {
+					require.NotEmpty(t, want, "%s %q", c.name, key)
+				}
+				all := VersionRange{Max: latest, Limit: 1000, Values: inc.values, Keys: inc.keys, Key: []byte(key)}
+				p, err := c.lookup(all)
+				require.NoError(t, err)
+				require.False(t, p.More)
+				require.Equal(t, want, p.Versions, "%s %q %+v", c.name, key, inc)
+
+				desc := slices.Clone(want)
+				slices.Reverse(desc)
+				for _, limit := range []uint64{1, 2, 3} {
+					r := all
+					r.Limit = limit
+					got, _ := ttKeyPages(t, c.lookup, r)
+					require.Equal(t, want, got, "%s %q limit %d", c.name, key, limit)
+					r.Desc = true
+					got, _ = ttKeyPages(t, c.lookup, r)
+					require.Equal(t, desc, got, "%s %q limit %d desc", c.name, key, limit)
+				}
+				// scan budgets: short and empty pages, the same versions
+				for _, b := range []VersionRange{{MaxScanned: 1}, {MaxScanned: 2}, {MaxReadBytes: 1}, {MaxBytes: 1}} {
+					for _, d := range []bool{false, true} {
+						r := all
+						r.Desc, r.MaxScanned, r.MaxReadBytes, r.MaxBytes = d, b.MaxScanned, b.MaxReadBytes, b.MaxBytes
+						got, empty := ttKeyPages(t, c.lookup, r)
+						w := want
+						if d {
+							w = desc
+						}
+						require.Equal(t, w, got, "%s %q budget %+v desc %v", c.name, key, b, d)
+						emptyPages += empty
+					}
+				}
+			}
+		}
+	}
+	require.Positive(t, emptyPages, "scan budgets leave pages empty")
+
+	// by hand: the rounds a and the empty key change at, with their values
+	p, err := l.AppVersions(kv, VersionRange{Max: latest, Limit: 100, Key: []byte("")})
+	require.NoError(t, err)
+	require.Len(t, p.Versions, 2, "set, then the app's deletion")
+	require.Equal(t, &basics.TealValue{Type: basics.TealBytesType, Bytes: "e"}, p.Versions[0].Apps[0].KeyValue)
+	require.True(t, p.Versions[1].Apps[0].Deleted)
+	require.Nil(t, p.Versions[1].Apps[0].KeyValue)
+	p, err = l.AppVersions(kv, VersionRange{Max: latest, Limit: 100, Key: []byte("n")})
+	require.NoError(t, err)
+	var ns []basics.TealValue
+	for _, v := range p.Versions {
+		if tv := v.Apps[0].KeyValue; tv != nil {
+			ns = append(ns, *tv)
+		}
+	}
+	require.Equal(t, []basics.TealValue{{Type: basics.TealUintType, Uint: 5}, {Type: basics.TealUintType, Uint: 6}, {Type: basics.TealBytesType, Bytes: "five"}}, ns)
+	// the creator's lookup with a key lists its local state only: it has none
+	p, err = l.AccountAppVersions(addrs[2], kv, VersionRange{Max: latest, Limit: 100, Key: []byte("a")})
+	require.NoError(t, err)
+	require.Empty(t, p.Versions)
+	require.False(t, p.More)
+
+	// a key elsewhere, or with rounds, is an error
+	for _, lookup := range []func(VersionRange) (VersionPage, error){
+		func(r VersionRange) (VersionPage, error) { return l.AssetVersions(1, r) },
+		func(r VersionRange) (VersionPage, error) {
+			return l.AccountVersions(addrs[1], AccountVersionsExclude{}, r)
+		},
+		func(r VersionRange) (VersionPage, error) { return l.AccountAssetVersions(addrs[1], 1, r) },
+		func(r VersionRange) (VersionPage, error) { return l.KvVersions("k", r) },
+	} {
+		_, err := lookup(VersionRange{Max: latest, Limit: 10, Key: []byte("a")})
+		require.Error(t, err)
+	}
+	_, err = l.AppVersions(kv, VersionRange{Max: latest, Limit: 10, Key: []byte("a"), Rounds: []basics.Round{latest}, Min: latest})
+	require.Error(t, err)
+}
+
+// TestStateKeyValue checks the partial decoder of state keys against a full
+// decode of app params and local states: keys present and absent, empty,
+// prefixes of others, uint and bytes values, no state, and records that are
+// not maps.
+func TestStateKeyValue(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	keys := []string{"", "a", "ab", "b", "\x00", "counter", "nope", string(make([]byte, 64))}
+	states := []basics.TealKeyValue{nil, {}, {"a": {Type: basics.TealUintType, Uint: 7}}}
+	big := basics.TealKeyValue{}
+	for i, k := range keys[:6] {
+		if i%2 == 0 {
+			big[k] = basics.TealValue{Type: basics.TealBytesType, Bytes: k + "!"}
+		} else {
+			big[k] = basics.TealValue{Type: basics.TealUintType, Uint: uint64(i)}
+		}
+	}
+	big[keys[7]] = basics.TealValue{Type: basics.TealBytesType} // empty bytes
+	states = append(states, big)
+	var creator basics.Address
+	creator[0] = 1
+	for _, st := range states {
+		recs := map[byte][]byte{
+			timetravel.KindAppParams: append(creator[:], protocol.Encode(&basics.AppParams{ApprovalProgram: []byte{1, 2}, GlobalState: st,
+				StateSchemas: basics.StateSchemas{GlobalStateSchema: basics.StateSchema{NumUint: 3}}, ExtraProgramPages: 1})...),
+			timetravel.KindLocal: protocol.Encode(&basics.AppLocalState{Schema: basics.StateSchema{NumByteSlice: 2}, KeyValue: st}),
+		}
+		for kind, rec := range recs {
+			obj := []byte{kind, 0, 0, 0, 0, 0, 0, 0, 1}
+			for _, k := range keys {
+				want, err := fullStateKeyValue(obj, rec, []byte(k))
+				require.NoError(t, err)
+				body := rec
+				if kind == timetravel.KindAppParams {
+					body = rec[len(creator):]
+				}
+				field := map[byte]string{timetravel.KindAppParams: "gs", timetravel.KindLocal: "tkv"}[kind]
+				got, ok := findStateKey(body, field, []byte(k))
+				require.True(t, ok, "the encoding is walked")
+				require.Equal(t, want, got, "kind %c key %q state %v", kind, k, st)
+				got, err = stateKeyValue(obj, rec, []byte(k))
+				require.NoError(t, err)
+				require.Equal(t, want, got)
+				_, has := st[k]
+				require.Equal(t, has, got != nil, "key %q", k)
+			}
+		}
+	}
+	// a record that is not a map: the full decode answers
+	_, ok := findStateKey([]byte{0x91, 0x01}, "gs", []byte("a"))
+	require.False(t, ok)
+	_, err := stateKeyValue([]byte{timetravel.KindLocal}, []byte{0xc1}, []byte("a"))
+	require.Error(t, err, "a bad record is an error, as for a full decode")
+	_, err = stateKeyValue(timetravel.AppParamsKey(1), []byte{1, 2}, []byte("a"))
+	require.Error(t, err, "short params record")
+}
+
 // boxChurnApp puts arg 1 in box arg 0 and, given arg 2, deletes that box.
 var boxChurnApp = main(`
 	txna ApplicationArgs 0; txna ApplicationArgs 1; box_put
@@ -897,6 +1155,9 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 		if i == 9 { // "s" deleted, recreated next round
 			txs = append(txs, put(i, "x", 9, "s"))
 		}
+		if i%3 == 1 { // maps that share a first byte, 0x00 in names, a name that prefixes others
+			txs = append(txs, put(i, []string{"a", "a\x00", "a\x00b", "ab", "b"}[(i/3)%5], uint64(i), ""))
+		}
 		if i%4 == 0 {
 			txs = append(txs, &txntest.Txn{Type: "appl", Sender: addrs[3], ApplicationID: other,
 				ApplicationArgs: [][]byte{binary.BigEndian.AppendUint64(nil, uint64(i))}, Boxes: []transactions.BoxRef{{Name: []byte("b")}}})
@@ -913,13 +1174,18 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 	}
 	sorted := slices.Sorted(maps.Keys(names))
 
-	// the oracle: the rounds at which any of the app's boxes differs from the round before
-	oracle := func(values bool) []Version {
+	// the oracle: the rounds at which any of the app's boxes (those has
+	// keeps) differs from the round before
+	everyBox := func(string) bool { return true }
+	oracle := func(values bool, has func(string) bool) []Version {
 		var out []Version
 		prev := map[string][]byte{}
 		for r := basics.Round(0); r <= l.Latest(); r++ {
 			var v *Version
 			for _, name := range sorted {
+				if !has(name) {
+					continue
+				}
 				b, err := l.LookupKv(r, apps.MakeBoxKey(uint64(app), name))
 				require.NoError(t, err)
 				p, had := prev[name]
@@ -951,7 +1217,7 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 	check := func() {
 		latest := l.Latest()
 		for _, values := range []bool{false, true} {
-			want := oracle(values)
+			want := oracle(values, everyBox)
 			require.Greater(t, len(want), 15)
 			var multi bool
 			for _, v := range want {
@@ -1008,7 +1274,9 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 		for R := basics.Round(0); R <= latest; R++ {
 			every = append(every, R)
 		}
-		for _, values := range []bool{false, true} {
+		// asOf is the oracle of a Rounds page of every round: the boxes
+		// has keeps that exist then, and the most at one round
+		asOf := func(values bool, has func(string) bool) ([]Version, int) {
 			var want []Version
 			var most int
 			for _, R := range every {
@@ -1016,6 +1284,9 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 				require.NoError(t, err)
 				v := Version{Round: R, Timestamp: hdr.TimeStamp, Proto: hdr.CurrentProtocol, Boxes: []BoxChange{}}
 				for _, name := range sorted {
+					if !has(name) {
+						continue
+					}
 					b, err := l.LookupKv(R, apps.MakeBoxKey(uint64(app), name))
 					require.NoError(t, err)
 					if b == nil {
@@ -1032,6 +1303,10 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 				most = max(most, len(v.Boxes))
 				want = append(want, v)
 			}
+			return want, most
+		}
+		for _, values := range []bool{false, true} {
+			want, most := asOf(values, everyBox)
 			require.Greater(t, most, 2, "some rounds have several boxes")
 			r := VersionRange{Max: latest, Limit: 1000, Values: values, Rounds: every}
 			p, err := lookup(r)
@@ -1145,6 +1420,8 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 			require.NoError(t, err)
 		}
 
+		checkBoxPrefixVersions(t, l, app, every, oracle, asOf)
+
 		p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
 		require.NoError(t, err)
 		require.Empty(t, p.Versions, "an app without boxes")
@@ -1163,6 +1440,88 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 	last, _ = l.history.store.Last()
 	require.Greater(t, basics.Round(last), l.Latest()-10, "the rounds reached the store")
 	check()
+}
+
+// checkBoxPrefixVersions checks AppBoxVersions with name prefixes against
+// TestTimeTravelAppBoxVersions's oracles, range and Rounds pages, paged by
+// every budget.
+func checkBoxPrefixVersions(t *testing.T, l *Ledger, app basics.AppIndex, every []basics.Round,
+	oracle func(values bool, has func(string) bool) []Version, asOf func(values bool, has func(string) bool) ([]Version, int)) {
+	latest := l.Latest()
+	lookup := func(r VersionRange) (VersionPage, error) { return l.AppBoxVersions(app, r) }
+	var emptyPages int
+	// maps that share a first byte, 0x00 in names, prefixes that are whole
+	// names (a, a\x00, and a\x00b, which prefixes no other), one that
+	// matches nothing
+	for _, pfx := range []string{"a", "a\x00", "a\x00b", "ab", "c", "c1", "s", "t", "zz"} {
+		has := func(name string) bool { return strings.HasPrefix(name, pfx) }
+		for _, values := range []bool{false, true} {
+			want := oracle(values, has)
+			if pfx == "zz" || pfx == "t" { // t boxes are created and deleted within a round
+				require.Empty(t, want)
+			} else {
+				require.NotEmpty(t, want, "prefix %q", pfx)
+			}
+			all := VersionRange{Max: latest, Limit: 1000, Values: values, Prefix: []byte(pfx)}
+			p, err := lookup(all)
+			require.NoError(t, err)
+			require.False(t, p.More)
+			require.Equal(t, want, p.Versions, "prefix %q values %v", pfx, values)
+			desc := slices.Clone(want)
+			slices.Reverse(desc)
+			for _, limit := range []uint64{1, 2, 3} {
+				r := all
+				r.Limit = limit
+				got, _ := ttKeyPages(t, lookup, r)
+				require.Equal(t, want, got, "prefix %q limit %d", pfx, limit)
+				r.Desc = true
+				got, _ = ttKeyPages(t, lookup, r)
+				require.Equal(t, desc, got, "prefix %q limit %d desc", pfx, limit)
+			}
+			budgets := []VersionRange{{MaxScanned: 1}, {MaxScanned: 2}}
+			if values {
+				budgets = append(budgets, VersionRange{MaxBytes: 1})
+			}
+			for _, b := range budgets {
+				for _, d := range []bool{false, true} {
+					r := all
+					r.Desc, r.MaxScanned, r.MaxBytes = d, b.MaxScanned, b.MaxBytes
+					got, empty := ttKeyPages(t, lookup, r)
+					w := want
+					if d {
+						w = desc
+					}
+					require.Equal(t, w, got, "prefix %q budget %+v desc %v", pfx, b, d)
+					emptyPages += empty
+				}
+			}
+
+			// as of rounds: the boxes under the prefix
+			wantAt, _ := asOf(values, has)
+			r := VersionRange{Min: every[0], Max: latest, Limit: 1000, Values: values, Rounds: every, Prefix: []byte(pfx)}
+			p, err = lookup(r)
+			require.NoError(t, err)
+			require.False(t, p.More)
+			require.Equal(t, wantAt, p.Versions, "prefix %q values %v rounds", pfx, values)
+			r.Limit = 3
+			require.Equal(t, wantAt, ttRoundPages(t, lookup, r), "prefix %q rounds limit 3", pfx)
+		}
+	}
+	require.Positive(t, emptyPages, "scan budgets leave pages empty")
+
+	// as of rounds, MaxObjects counts the boxes under the prefix only
+	var under uint64
+	require.NoError(t, l.historyNow(latest).Objects(timetravel.BoxKvNamePrefix(uint64(app), []byte("a")), func([]byte) bool { under++; return true }))
+	require.EqualValues(t, 4, under, "a, a\x00, a\x00b, ab")
+	r := VersionRange{Min: every[0], Max: latest, Limit: 1000, Rounds: every, MaxObjects: under}
+	_, err := lookup(r)
+	require.ErrorIs(t, err, ErrTooManyVersionObjects)
+	r.Prefix = []byte("a")
+	_, err = lookup(r)
+	require.NoError(t, err)
+	r.Prefix, r.Key = nil, []byte("a")
+	_, err = lookup(r)
+	require.Error(t, err, "a state key does not apply to boxes")
 }
 
 // TestTimeTravelAppBoxVersionsClose checks that closing the store while box

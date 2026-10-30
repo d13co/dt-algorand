@@ -30,6 +30,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/algorand/avm-abi/apps"
+
 	"github.com/algorand/go-algorand/cmd/util/datadir"
 	"github.com/algorand/go-algorand/cmd/util/ttview"
 	apiclient "github.com/algorand/go-algorand/daemon/algod/api/client"
@@ -54,6 +56,7 @@ var (
 	versionsDesc, versionsAll          bool
 	versionsRoundsOnly, versionsJSON   bool
 	versionsAssetID, versionsAppID     uint64
+	versionsKey, versionsPrefix        string
 )
 
 var (
@@ -105,6 +108,10 @@ func init() {
 	appVersionsCmd.Flags().Uint64Var((*uint64)(&appIdx), "app-id", 0, "Application ID (required)")
 	appVersionsCmd.MarkFlagRequired("app-id")
 	appBoxVersionsCmd.Flags().StringVarP(&boxName, "name", "n", "", "Application box name, in the same form as app-arg (default: every box of the application)")
+	appBoxVersionsCmd.Flags().StringVar(&versionsPrefix, "prefix", "", "Only the boxes whose names start with this prefix, in the same form as app-arg (not with --name)")
+	keyHelp := "Only the versions that change this %s state key, in the same form as app-arg: one line each, with the key's new value"
+	appVersionsCmd.Flags().StringVar(&versionsKey, "key", "", fmt.Sprintf(keyHelp, "global"))
+	accountVersionsCmd.Flags().StringVar(&versionsKey, "key", "", fmt.Sprintf(keyHelp, "local")+" (with --app-id)")
 }
 
 // withRound returns client pinned to --round, if cmd has it, once the node
@@ -154,6 +161,9 @@ Each version is a line with its round, time, the object that changed and how, fo
 		if (versionsAssetID != 0 || versionsAppID != 0) && versionsExclude != "" {
 			reportErrorf("--exclude narrows the versions of the whole account, not of one asset or app")
 		}
+		if versionsKey != "" && versionsAppID == 0 {
+			reportErrorf("--key is a local state key: give the app with --app-id")
+		}
 		addr, err := basics.UnmarshalChecksumAddress(accountAddress)
 		if err != nil {
 			reportErrorf(errorParseAddr, err)
@@ -171,6 +181,10 @@ Each version is a line with its round, time, the object that changed and how, fo
 			}
 			var ens []versionEntry
 			for _, v := range resp.Versions {
+				if p.Key != "" {
+					ens = append(ens, localKeyEntries(addr, v)...)
+					continue
+				}
 				ens = append(ens, accountVersionEntries(addr, v, p.Rounds != nil)...)
 			}
 			return resp, resp.NextToken, ens, err
@@ -252,6 +266,10 @@ var appVersionsCmd = &cobra.Command{
 			resp, err := client.ApplicationVersions(appIdx, p)
 			var ens []versionEntry
 			for _, v := range resp.Versions {
+				if p.Key != "" {
+					ens = append(ens, versionEntry{round: v.Round, timestamp: v.Timestamp, label: label, deleted: v.Deleted, value: ptrValue(v.KeyValue)})
+					continue
+				}
 				ens = append(ens, versionEntry{v.Round, v.Timestamp, label, v.Deleted, ptrValue(v.Application), appBaseline(appIdx), v.ChangedRound, false})
 			}
 			return resp, resp.NextToken, ens, err
@@ -266,6 +284,9 @@ var appBoxVersionsCmd = &cobra.Command{
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, _ []string) {
 		client := ensureAlgodClient(datadir.EnsureSingleDataDir())
+		if err := checkBoxPrefix(boxName, versionsPrefix); err != nil {
+			reportErrorf("%v", err)
+		}
 		if boxName == "" {
 			listVersions(cmd, client, func(p apiclient.VersionsParams) (any, *string, []versionEntry, error) {
 				resp, err := client.ApplicationBoxesVersions(appIdx, p)
@@ -296,6 +317,57 @@ var appBoxVersionsCmd = &cobra.Command{
 			return resp, resp.NextToken, ens, err
 		})
 	},
+}
+
+// checkBoxPrefix checks goal app box versions' --name and --prefix.
+func checkBoxPrefix(name, prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if name != "" {
+		return errors.New("--prefix lists the boxes under it: it cannot be combined with --name")
+	}
+	ab, err := apps.NewAppCallBytes(prefix)
+	if err == nil {
+		_, err = ab.Raw()
+	}
+	if err != nil {
+		return fmt.Errorf(errorInvalidBoxName, prefix, err)
+	}
+	return nil
+}
+
+// localKeyEntries are the --key entries of a version of an account's local
+// state: the local state's, whose value is the key's.
+func localKeyEntries(addr basics.Address, v model.AccountVersion) []versionEntry {
+	var ens []versionEntry
+	if v.AppsLocalState != nil {
+		for _, l := range *v.AppsLocalState {
+			ens = append(ens, versionEntry{round: v.Round, timestamp: v.Timestamp, label: fmt.Sprintf("local:%s:%d", addr, l.AppId), deleted: l.Deleted, value: ptrValue(l.KeyValue)})
+		}
+	}
+	return ens
+}
+
+// printKeyVersion prints en, a version that changed the --key state key,
+// to w: the round, its time, the object and key, then the key's new value,
+// "removed", or "deleted" when the state itself was.
+func printKeyVersion(w io.Writer, en versionEntry, key []byte) error {
+	state := "removed"
+	switch tv, _ := en.value.(*model.TealValue); {
+	case en.deleted:
+		state = "deleted"
+	case tv != nil && tv.Type == uint64(basics.TealUintType):
+		state = "= " + strconv.FormatUint(tv.Uint, 10)
+	case tv != nil:
+		b, err := base64.StdEncoding.DecodeString(tv.Bytes)
+		if err != nil {
+			return err
+		}
+		state = "= " + ttview.FormatBytes(b)
+	}
+	_, err := fmt.Fprintf(w, "%d  %s  %s %s %s\n", en.round, time.Unix(en.timestamp, 0).UTC().Format(time.DateTime), en.label, ttview.AppCallBytes(key), state)
+	return err
 }
 
 // boxVersionEntry is a change of box name of the --app-id app.
@@ -430,11 +502,28 @@ func viewOptions(label string) ttview.Options {
 	return ttview.Options{}
 }
 
+// versionsOut is where listVersions prints; tests replace it.
+var versionsOut io.Writer = os.Stdout
+
+// versionsNote is where listVersions writes notes for the user: the next token, and progress.
+var versionsNote io.Writer = os.Stderr
+
+// emptyPagesNote is how many empty pages in a row listVersions follows between progress notes.
+const emptyPagesNote = 10
+
 // listVersions prints the pages fetch returns: as JSON, or as the objects'
 // changes. It follows next tokens with --all, and otherwise prints the token
 // of the next page on stderr.
 func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclient.VersionsParams) (any, *string, []versionEntry, error)) {
-	p := apiclient.VersionsParams{Desc: versionsDesc, Limit: versionsLimit, Next: versionsNext, Values: !versionsRoundsOnly}
+	p := apiclient.VersionsParams{Desc: versionsDesc, Limit: versionsLimit, Next: versionsNext, Values: !versionsRoundsOnly, Key: versionsKey, Prefix: versionsPrefix}
+	var key []byte
+	if p.Key != "" {
+		var err error
+		if key, err = newAppCallBytes(p.Key).Raw(); err != nil {
+			reportErrorf("Invalid --key %q: %v", p.Key, err)
+		}
+		p.Values = false // the lines show the key's value
+	}
 	if cmd.Flags().Changed("min-round") {
 		r := basics.Round(versionsMinRound)
 		p.MinRound = &r
@@ -447,6 +536,9 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 		if p.MinRound != nil || p.MaxRound != nil {
 			reportErrorf("--rounds cannot be combined with --min-round or --max-round")
 		}
+		if p.Key != "" {
+			reportErrorf("--rounds cannot be combined with --key: read the key as of a round with --round")
+		}
 		for f := range strings.SplitSeq(versionsRounds, ",") {
 			r, err := strconv.ParseUint(strings.TrimSpace(f), 10, 64)
 			if err != nil {
@@ -455,8 +547,9 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 			p.Rounds = append(p.Rounds, basics.Round(r))
 		}
 	}
-	h := ttview.History{W: os.Stdout, Full: versionsDesc}
+	h := ttview.History{W: versionsOut, Full: versionsDesc}
 	seen := map[string]bool{}
+	empty := 0 // pages in a row without a version
 	for {
 		page, next, entries, err := fetch(p)
 		if err != nil {
@@ -467,9 +560,15 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 			if err != nil {
 				reportErrorf("%v", err)
 			}
-			fmt.Println(string(b))
+			fmt.Fprintln(versionsOut, string(b))
 		} else {
 			for _, en := range entries {
+				if p.Key != "" {
+					if err := printKeyVersion(h.W, en, key); err != nil {
+						reportErrorf("%v", err)
+					}
+					continue
+				}
 				h.Opts = viewOptions(en.label)
 				if p.Rounds != nil {
 					if err := printAsOf(h.W, en, h.Opts); err != nil {
@@ -491,9 +590,16 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 		if next == nil || *next == "" {
 			return
 		}
-		if !versionsAll {
-			fmt.Fprintf(os.Stderr, "More versions: --next %s\n", *next)
+		// with --key or --prefix a page can be empty: there is more to read
+		if !versionsAll && (len(entries) > 0 || (p.Key == "" && p.Prefix == "")) {
+			fmt.Fprintf(versionsNote, "More versions: --next %s\n", *next)
 			return
+		}
+		// say that a long search is still going, and where it is
+		if len(entries) > 0 {
+			empty = 0
+		} else if empty++; empty%emptyPagesNote == 0 {
+			fmt.Fprintf(versionsNote, "Still searching: %d pages without a match, now at --next %s\n", empty, *next)
 		}
 		p.Next = *next
 	}

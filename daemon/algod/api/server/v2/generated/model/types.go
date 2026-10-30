@@ -548,6 +548,9 @@ type ApplicationLocalStateVersion struct {
 
 	// Deleted Whether the version is the deletion of the local state (close out or clear).
 	Deleted bool `json:"deleted"`
+
+	// KeyValue Represents a TEAL value.
+	KeyValue *TealValue `json:"key-value,omitempty"`
 }
 
 // ApplicationParams Stores the global information associated with an application.
@@ -626,6 +629,9 @@ type ApplicationVersion struct {
 
 	// Deleted Whether the version is the deletion of the application.
 	Deleted bool `json:"deleted"`
+
+	// KeyValue Represents a TEAL value.
+	KeyValue *TealValue `json:"key-value,omitempty"`
 
 	// Round The round of the version, or with `rounds` the requested round.
 	Round basics.Round `json:"round"`
@@ -1512,8 +1518,14 @@ type VersionsInclude = []string
 // VersionsIncludeState defines model for versions-include-state.
 type VersionsIncludeState = []string
 
+// VersionsKey defines model for versions-key.
+type VersionsKey = string
+
 // VersionsOrder defines model for versions-order.
 type VersionsOrder string
+
+// VersionsPrefix defines model for versions-prefix.
+type VersionsPrefix = string
 
 // VersionsRounds defines model for versions-rounds.
 type VersionsRounds = []basics.Round
@@ -2025,6 +2037,12 @@ type AccountApplicationVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.
 	Include *[]AccountApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // AccountApplicationVersionsParamsOrder defines parameters for AccountApplicationVersions.
@@ -2079,6 +2097,12 @@ type AccountAssetVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
 	Include *[]AccountAssetVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // AccountAssetVersionsParamsOrder defines parameters for AccountAssetVersions.
@@ -2124,6 +2148,12 @@ type AccountVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.
 	Include *[]AccountVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // AccountVersionsParamsExclude defines parameters for AccountVersions.
@@ -2175,6 +2205,12 @@ type ApplicationBoxVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
 	Include *[]ApplicationBoxVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // ApplicationBoxVersionsParamsOrder defines parameters for ApplicationBoxVersions.
@@ -2229,6 +2265,12 @@ type ApplicationBoxesVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
 	Include *[]ApplicationBoxesVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // ApplicationBoxesVersionsParamsOrder defines parameters for ApplicationBoxesVersions.
@@ -2259,6 +2301,12 @@ type ApplicationVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.
 	Include *[]ApplicationVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // ApplicationVersionsParamsOrder defines parameters for ApplicationVersions.
@@ -2307,6 +2355,12 @@ type AssetVersionsParams struct {
 
 	// Include Include additional items in the response. Use `values` to include the new value of each changed object.
 	Include *[]AssetVersionsParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+
+	// Key A global or local state key, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'. Lists only the versions at which the key's value changed (added, removed, or a new value or type, net over the round as for `changed-keys`), each with the key's new value (`key-value`). Applies to GET /v2/applications/{application-id}/versions (a global state key) and GET /v2/accounts/{address}/applications/{application-id}/versions (a local state key: the entries then list the local state only, never the application's parameters); 400 elsewhere, with `rounds`, or for a key longer than 64 bytes. There is no index of keys: a page examines at most 100,000 versions and reads at most 64 MB of values, counting each record it reads once, so for an application or local state larger than about 640 bytes the read limit ends a page first (about 9,000 versions at 7 KB). A page can therefore hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent.
+	Key *string `form:"key,omitempty" json:"key,omitempty"`
+
+	// Prefix A box name prefix, in the goal app call arg form 'encoding:value', as for `key`. Lists only the changes of the boxes whose names start with it; rounds in which none of them changed are left out. Applies to GET /v2/applications/{application-id}/boxes/versions only (400 elsewhere), and must be 1 to 64 bytes long. Without `rounds`, a page steps through every box index entry of the application in its rounds, at most 1,000,000 of them, so it can hold fewer than `limit` versions, or none, and still have a `next-token`. Keep paging until `next-token` is absent. With `rounds`, only the boxes under the prefix are merged, so MaxAPIBoxPerApplication counts only those.
+	Prefix *string `form:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // AssetVersionsParamsOrder defines parameters for AssetVersions.

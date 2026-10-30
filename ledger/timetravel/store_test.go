@@ -129,9 +129,15 @@ type boxChange struct {
 // modelBoxChanges returns the changes of the boxes of app in [lo, hi]: the
 // rounds at which a box's state differs from the round before.
 func modelBoxChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uint64, desc bool) []boxChange {
+	return modelPrefixChanges(objs, history, app, lo, hi, desc, nil)
+}
+
+// modelPrefixChanges is modelBoxChanges for the boxes whose names start with
+// prefix.
+func modelPrefixChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uint64, desc bool, prefix []byte) []boxChange {
 	var names []string
 	for _, obj := range objs {
-		if a, name, ok := BoxOf(obj); ok && a == app {
+		if a, name, ok := BoxOf(obj); ok && a == app && bytes.HasPrefix(name, prefix) {
 			names = append(names, string(name))
 		}
 	}
@@ -161,11 +167,77 @@ func modelBoxChanges(objs [][]byte, history []map[string][]byte, app, lo, hi uin
 // boxChanges returns what BoxChanges reports, up to limit changes (0: all).
 func boxChanges(t *testing.T, s *Store, app, lo, hi uint64, desc bool, limit int) []boxChange {
 	var out []boxChange
-	require.NoError(t, s.BoxChanges(app, lo, hi, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+	end, err := s.BoxChanges(app, lo, hi, desc, BoxChangesOpts{}, func(rnd uint64, name, val []byte, ok bool) bool {
 		out = append(out, boxChange{rnd, string(name), val, ok})
 		return limit == 0 || len(out) < limit
-	}))
+	})
+	require.NoError(t, err)
+	require.False(t, end.More)
 	return out
+}
+
+// pagedBoxChanges reads BoxChanges with o, resuming from each stop, and
+// returns every change and the error that ended the last scan. With
+// MaxScanned 1, a scan reads a single round.
+func pagedBoxChanges(t *testing.T, s *Store, app, lo, hi uint64, desc bool, o BoxChangesOpts) ([]boxChange, error) {
+	var out []boxChange
+	for {
+		n := len(out)
+		end, err := s.BoxChanges(app, lo, hi, desc, o, func(rnd uint64, name, val []byte, ok bool) bool {
+			out = append(out, boxChange{rnd, string(name), val, ok})
+			return true
+		})
+		if err != nil || !end.More {
+			return out, err
+		}
+		require.Positive(t, end.Scanned)
+		require.GreaterOrEqual(t, end.Scanned, o.MaxScanned, "a scan stops once the budget is spent")
+		if o.MaxScanned == 1 {
+			for _, c := range out[n:] {
+				require.Equal(t, out[n].rnd, c.rnd, "one round a scan")
+			}
+		}
+		if len(out) > n {
+			last := out[len(out)-1].rnd
+			if desc {
+				require.Less(t, end.Next, last)
+			} else {
+				require.Greater(t, end.Next, last)
+			}
+		}
+		if desc {
+			require.Less(t, end.Next, hi)
+			hi = end.Next
+		} else {
+			require.Greater(t, end.Next, lo)
+			lo = end.Next
+		}
+	}
+}
+
+// boxPrefixes are name prefixes of the model's boxes: names that share
+// prefixes, contain 0x00, and one ("a") that is also a whole name.
+var boxPrefixes = [][]byte{[]byte("\x00"), []byte("a"), []byte("a\x00"), []byte("a\x00b"), []byte("b"), []byte("zz")}
+
+// checkBoxPrefixes compares BoxChanges with a name prefix and a scan budget
+// with the model over the ranges.
+func checkBoxPrefixes(t *testing.T, s *Store, objs [][]byte, history []map[string][]byte, app uint64, ranges [][2]uint64) {
+	for _, rg := range ranges {
+		for _, desc := range []bool{false, true} {
+			for _, budget := range []uint64{0, 1, 2} {
+				want := modelBoxChanges(objs, history, app, rg[0], rg[1], desc)
+				got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, BoxChangesOpts{MaxScanned: budget})
+				require.NoError(t, err)
+				require.Equal(t, want, got, "app %d range %v desc %v budget %d", app, rg, desc, budget)
+				for _, pfx := range boxPrefixes {
+					want := modelPrefixChanges(objs, history, app, rg[0], rg[1], desc, pfx)
+					got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, BoxChangesOpts{Prefix: pfx, MaxScanned: budget})
+					require.NoError(t, err)
+					require.Equal(t, want, got, "app %d range %v desc %v prefix %q budget %d", app, rg, desc, pfx, budget)
+				}
+			}
+		}
+	}
 }
 
 // checkBoxChanges compares BoxChanges with the model over random ranges.
@@ -189,6 +261,10 @@ func checkBoxChanges(t *testing.T, s *Store, objs [][]byte, history []map[string
 		if app != modelApps[2] {
 			require.NotEmpty(t, modelBoxChanges(objs, history, app, 0, rounds, false))
 		}
+		checkBoxPrefixes(t, s, objs, history, app, ranges[:6])
+	}
+	for _, pfx := range boxPrefixes[:5] {
+		require.NotEmpty(t, modelPrefixChanges(objs, history, modelApps[0], 0, rounds, false, pfx), "prefix %q", pfx)
 	}
 }
 
@@ -539,7 +615,7 @@ func TestStoreIndexBoxes(t *testing.T) {
 					require.EqualValues(t, r+1, from, "rounds a build without the index added are not indexed")
 				}
 			}
-			err = s.BoxChanges(modelApps[0], from-1, rounds, false, func(uint64, []byte, []byte, bool) bool { return true })
+			_, err = s.BoxChanges(modelApps[0], from-1, rounds, false, BoxChangesOpts{}, func(uint64, []byte, []byte, bool) bool { return true })
 			require.ErrorIs(t, err, ErrNoBoxIndex)
 			for _, desc := range []bool{false, true} {
 				require.Equal(t, modelBoxChanges(objs, history, modelApps[0], from, rounds, desc), boxChanges(t, s, modelApps[0], from, rounds, desc, 0))
@@ -548,12 +624,20 @@ func TestStoreIndexBoxes(t *testing.T) {
 			want := modelBoxChanges(objs, history, modelApps[0], from, rounds, true)
 			require.NotEmpty(t, want)
 			var got []boxChange
-			err = s.BoxChanges(modelApps[0], 0, rounds, true, func(rnd uint64, name, val []byte, ok bool) bool {
+			_, err = s.BoxChanges(modelApps[0], 0, rounds, true, BoxChangesOpts{}, func(rnd uint64, name, val []byte, ok bool) bool {
 				got = append(got, boxChange{rnd, string(name), val, ok})
 				return true
 			})
 			require.ErrorIs(t, err, ErrNoBoxIndex)
 			require.Equal(t, want, got)
+			// so do scans with a prefix and a budget: they reach the start
+			// after the later changes
+			for _, budget := range []uint64{0, 1, 2} {
+				pfx := []byte("a")
+				got, err := pagedBoxChanges(t, s, modelApps[0], 0, rounds, true, BoxChangesOpts{Prefix: pfx, MaxScanned: budget})
+				require.ErrorIs(t, err, ErrNoBoxIndex)
+				require.Equal(t, modelPrefixChanges(objs, history, modelApps[0], from, rounds, true, pfx), got, "budget %d", budget)
+			}
 			require.Equal(t, want[:1], boxChanges(t, s, modelApps[0], 0, rounds, true, 1), "a page that stops before the start needs no more")
 			// read-only, the start is the same and nothing is written
 			require.NoError(t, s.Close())
@@ -985,7 +1069,7 @@ func TestStoreIndexBoxesConcurrent(t *testing.T) {
 		}
 		desc := (answered+refused)%2 == 1
 		var got []boxChange
-		err := s.BoxChanges(modelApps[0], 0, rounds, desc, func(rnd uint64, name, val []byte, ok bool) bool {
+		_, err := s.BoxChanges(modelApps[0], 0, rounds, desc, BoxChangesOpts{}, func(rnd uint64, name, val []byte, ok bool) bool {
 			got = append(got, boxChange{rnd, string(name), val, ok})
 			return true
 		})
@@ -1026,7 +1110,7 @@ func TestStoreIndexBoxesConcurrent(t *testing.T) {
 		close(finished)
 	}()
 	<-started
-	err = s.BoxChanges(modelApps[0], 0, rounds, false, func(uint64, []byte, []byte, bool) bool { return true })
+	_, err = s.BoxChanges(modelApps[0], 0, rounds, false, BoxChangesOpts{}, func(uint64, []byte, []byte, bool) bool { return true })
 	require.ErrorIs(t, err, ErrNoBoxIndex, "the iterators may lack the rebuild's last entries")
 	require.NoError(t, <-errc)
 	boxChangesOpened = nil

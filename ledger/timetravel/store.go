@@ -841,23 +841,47 @@ func (s *Store) compactRange(ctx context.Context, start, end []byte) error {
 	return compactStep(ctx, s.db, start, end)
 }
 
+// BoxChangesOpts narrow and bound a BoxChanges scan.
+type BoxChangesOpts struct {
+	// Prefix, if not empty, keeps the changes of the boxes whose names start
+	// with it. The others cost a step over their index entry each, without
+	// reading their records.
+	Prefix []byte
+	// MaxScanned, if not 0, stops the scan before a round once it has stepped
+	// through that many index entries, matching Prefix or not. A round is
+	// never split, and the first is always read.
+	MaxScanned uint64
+}
+
+// BoxChangesEnd says where a BoxChanges scan stopped.
+type BoxChangesEnd struct {
+	// More reports that the scan budget (MaxScanned) ran out; Next is then
+	// the round to resume from, the first one not read.
+	More bool
+	Next uint64
+	// Scanned is the number of index entries stepped through.
+	Scanned uint64
+}
+
 // BoxChanges calls fn, in round order (newest first if desc), for every
 // change of a box of app with round in [lo, hi], with the box's name and new
 // value (ok false: deleted). A round's boxes come in name order (reversed if
 // desc). As with Versions, a write that repeats a box's state is not a change.
 // fn owns name and val, and must not call the store (Close would deadlock).
-// BoxChanges stops when fn returns false. It fails with ErrNoBoxIndex if it
-// needs a round before BoxIndexFrom: if lo is before it, ascending, or once
-// it reaches it, descending (fn has then seen the later changes). Reading a
-// page costs a seek per index entry in it, however many boxes the app ever
-// had.
-func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, name, val []byte, ok bool) bool) error {
+// BoxChanges stops when fn returns false, or as o says. It fails with
+// ErrNoBoxIndex if it needs a round before BoxIndexFrom: if lo is before it,
+// ascending, or once it reaches it, descending (fn has then seen the later
+// changes). Reading a page costs a seek per index entry it reads, however
+// many boxes the app ever had; with a prefix, the entries of other boxes
+// cost a step each.
+func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn func(rnd uint64, name, val []byte, ok bool) bool) (BoxChangesEnd, error) {
+	var end BoxChangesEnd
 	if err := s.acquire(); err != nil {
-		return err
+		return end, err
 	}
 	defer s.closeMu.RUnlock()
 	if lo > hi {
-		return nil
+		return end, nil
 	}
 	gen := s.boxGen.Load()
 	pfx := binary.BigEndian.AppendUint64([]byte{pfxBoxIndex}, app)
@@ -866,15 +890,16 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, na
 		UpperBound: prefixEnd(binary.BigEndian.AppendUint64(slices.Clip(pfx), hi)),
 	})
 	if err != nil {
-		return err
+		return end, err
 	}
 	defer it.Close()
-	// the records of the app's boxes, to read each entry's record and the one
-	// before it
-	rlo := append([]byte{pfxRecord}, BoxKvPrefix(app)...)
+	// the records of the app's boxes (under the prefix), to read each entry's
+	// record and the one before it
+	recPrefix := BoxKvNamePrefix(app, o.Prefix)
+	rlo := append([]byte{pfxRecord}, recPrefix...)
 	recs, err := s.db.NewIter(&pebble.IterOptions{LowerBound: rlo, UpperBound: prefixEnd(rlo)})
 	if err != nil {
-		return err
+		return end, err
 	}
 	defer recs.Close()
 	if boxChangesOpened != nil {
@@ -884,42 +909,60 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, fn func(rnd uint64, na
 	// complete once it has written it
 	from := s.boxFrom.Load()
 	if gen%2 == 1 || s.boxGen.Load() != gen {
-		return boxIndexError(boxIndexNone)
+		return end, boxIndexError(boxIndexNone)
 	}
 	if lo < from && !desc {
-		return boxIndexError(from)
+		return end, boxIndexError(from)
 	}
 	valid := it.First()
 	if desc {
 		valid = it.Last()
 	}
+	var cur uint64 // the round being read
 	for ; valid; valid = step(it, desc) {
 		k := it.Key()
 		if len(k) < 1+8+8 {
-			return fmt.Errorf("timetravel: bad box index key %x", k)
+			return end, fmt.Errorf("timetravel: bad box index key %x", k)
 		}
 		rnd, name := binary.BigEndian.Uint64(k[9:17]), k[17:]
 		if rnd < from {
-			return boxIndexError(from)
+			return end, boxIndexError(from)
 		}
-		val, ok, prev, prevOK, found, err := fullChange(recs, boxObject(app, name), rnd)
+		if end.Scanned == 0 || rnd != cur {
+			if o.MaxScanned > 0 && end.Scanned >= o.MaxScanned {
+				end.More, end.Next = true, rnd
+				return end, nil
+			}
+			cur = rnd
+		}
+		end.Scanned++
+		if !bytes.HasPrefix(name, o.Prefix) {
+			continue
+		}
+		obj := boxObject(app, name)
+		// the records iterator holds only the prefix's boxes: a box outside it
+		// would read as a no-op and be dropped
+		if !bytes.HasPrefix(obj, recPrefix) {
+			return end, fmt.Errorf("timetravel: box %x is outside the records of prefix %x", obj, o.Prefix)
+		}
+		val, ok, prev, prevOK, found, err := fullChange(recs, obj, rnd)
 		if err != nil {
-			return err
+			return end, err
 		}
 		if !found { // a no-op record that RemoveNoops deleted
 			continue
 		}
 		if !sameState(prev, prevOK, val, ok) && !fn(rnd, bytes.Clone(name), val, ok) {
-			return nil
+			return end, nil
 		}
 	}
 	if err := it.Error(); err != nil {
-		return err
+		return end, err
 	}
 	if lo < from { // descending, through the first indexed round
-		return boxIndexError(from)
+		return end, boxIndexError(from)
 	}
-	return nil
+	return end, nil
 }
 
 // boxChangesOpened is called by BoxChanges once its iterators are open; tests
