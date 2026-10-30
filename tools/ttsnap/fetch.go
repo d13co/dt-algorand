@@ -251,7 +251,7 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 			}
 			return m, dirs.RootGenesisDir, nil
 		}
-		return nil, "", fmt.Errorf("%s already exists (any start of the node creates it): to install a snapshot, stop the node and delete %s (and the genesis directories that config.json's *Dir settings put elsewhere)", histFinal, dirs.RootGenesisDir)
+		return nil, "", fmt.Errorf("%s already exists (any start of the node creates it): to install a snapshot, stop the node, move any participation keys aside, and delete %s (and the genesis directories that config.json's *Dir settings put elsewhere)", histFinal, dirs.RootGenesisDir)
 	} else if !os.IsNotExist(err) {
 		return nil, "", err
 	}

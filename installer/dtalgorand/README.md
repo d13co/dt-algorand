@@ -44,6 +44,8 @@ Don't run `brew services start dtalgorand` yet: a first start begins a sync from
 
 The node's first start begins a sync from genesis, so pick a path before starting it. A new install's `config.json` already sets `"EnableTimeTravel": true` and `"TimeTravelHoldersIndex": true` (the [asset holders index](../../ledger/timetravel/README.md#holders-index) for `GET /v2/assets/{asset-id}/holders`). Time travel can't be turned on later for a node that synced without it.
 
+To do without the holders index (3.6 GiB on mainnet), set `TimeTravelHoldersIndex` to `false` before the first start. Turning it off later deletes the index at the node's next start, and turning it back on means rebuilding it with `ttimport -holders-index` while the node is stopped (about 5 minutes on mainnet).
+
 ### Choosing a path
 
 | path | time on mainnet | trusts | needs |
@@ -166,8 +168,8 @@ curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2
 `ttsnap fetch` refuses a data directory whose node has started once (`ledger.timetravel already exists`). An interrupted `fetch` or import doesn't need this: rerun it to resume. To start from scratch, keep `config.json` and `genesis.json` and delete the ledger, which throws away whatever was downloaded or synced:
 
 1. Stop the node, and keep it from starting at boot until you are done: `sudo systemctl disable --now dtalgorand`, or `brew services stop dtalgorand`.
-2. If the node holds participation keys (see [Participation](#participation)), move them aside first: `partregistry.sqlite` with its `-wal` and `-shm` files, and any `*.partkey` files, in `D/mainnet-v1.0`.
-3. Delete the genesis directory, and the `mainnet-v1.0` directory under each `*Dir` setting of `config.json` you set (`TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`, `CatchpointDir`):
+2. If the node holds participation keys (see [Participation](#participation)), move them aside first: any `*.partkey` files in `D/mainnet-v1.0`, and `partregistry.sqlite` with its `-wal` and `-shm` files, which are in `D/mainnet-v1.0` too unless `ColdDataDir` is set (then in its `mainnet-v1.0`).
+3. Delete the genesis directory, and the `mainnet-v1.0` directory under each `*Dir` setting of `config.json` you set (`TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`, `CatchpointDir`, `StateproofDir`, `CrashDBDir`):
 
    ```sh
    sudo rm -rf /var/lib/dtalgorand/mainnet-v1.0 /mnt/fast/dtalgorand/mainnet-v1.0    # Linux, history on /mnt/fast
