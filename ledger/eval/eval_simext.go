@@ -43,3 +43,14 @@ func (eval *BlockEvaluator) txnForTail(txn transactions.Transaction) transaction
 	}
 	return txn
 }
+
+// Simulate at a past round (non-standard fork feature): only the consensus rules apply.
+
+// newBlockPolicies is the state's generate: whether the policies that apply only to new blocks
+// (pool admission, block assembly) hold, such as the refusal to close an account whose minimum
+// balance is above the base (checkCloseMinBalance). They are node policy, not consensus, and newer
+// than much of the chain, so simulate at a past round drops them (skipNewBlockPolicies): a txn
+// that block validation accepted then is accepted. The evaluator still generates the block.
+func (eval *BlockEvaluator) newBlockPolicies() bool {
+	return eval.generate && !eval.skipNewBlockPolicies
+}

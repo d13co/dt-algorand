@@ -52,8 +52,10 @@ type QueryState struct {
 // NewQueryState returns a QueryState on the state of l after the round of prevHdr, whose account
 // totals are prevTotals. nextHdr is the header of the block after it, whose round, protocol,
 // rewards state and special addresses the calls see. As at the start of a block, the rewards of
-// the round are withdrawn from the rewards pool.
-func NewQueryState(l LedgerForCowBase, prevHdr, nextHdr bookkeeping.BlockHeader, prevTotals ledgercore.AccountTotals) (*QueryState, error) {
+// the round are withdrawn from the rewards pool. newBlockPolicies applies the policies that hold
+// only for new blocks, as simulate does at the latest round; without it, at a past round, the
+// calls are judged by the consensus rules alone (BlockEvaluator.newBlockPolicies).
+func NewQueryState(l LedgerForCowBase, prevHdr, nextHdr bookkeeping.BlockHeader, prevTotals ledgercore.AccountTotals, newBlockPolicies bool) (*QueryState, error) {
 	if nextHdr.Round != prevHdr.Round+1 {
 		return nil, fmt.Errorf("query header round %d does not follow round %d", nextHdr.Round, prevHdr.Round)
 	}
@@ -65,8 +67,7 @@ func NewQueryState(l LedgerForCowBase, prevHdr, nextHdr bookkeeping.BlockHeader,
 	base := makeRoundCowBase(l, prevHdr.Round, prevHdr.TxnCounter,
 		prevHdr.StateProofTracking[protocol.StateProofBasic].StateProofNextRound, proto)
 	cow := makeRoundCowState(base, nextHdr, proto, prevHdr.TimeStamp, prevTotals, 1)
-	// Like simulate, which assembles a block: the checks that apply only to new blocks apply.
-	cow.generate = true
+	cow.generate = newBlockPolicies
 
 	// Withdraw the round's rewards from the pool, as StartEvaluator does (without its 2019 testnet
 	// workaround), so the pool's balance is the one a call in the next block sees.

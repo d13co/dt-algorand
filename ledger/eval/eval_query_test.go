@@ -44,7 +44,7 @@ func newTestQueryState(t *testing.T) (*QueryState, bookkeeping.BlockHeader) {
 	nextHdr := bookkeeping.MakeBlock(prevHdr).BlockHeader
 	_, totals, err := l.LatestTotals()
 	require.NoError(t, err)
-	q, err := NewQueryState(l, prevHdr, nextHdr, totals)
+	q, err := NewQueryState(l, prevHdr, nextHdr, totals, true)
 	require.NoError(t, err)
 	return q, prevHdr
 }

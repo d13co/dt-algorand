@@ -684,6 +684,10 @@ type BlockEvaluator struct {
 	// eval_simext.go). Non-standard fork feature.
 	skipValidityWindow bool
 
+	// skipNewBlockPolicies keeps the state's generate off while generating (simulate at a past
+	// round, eval_simext.go). Non-standard fork feature.
+	skipNewBlockPolicies bool
+
 	Tracer logic.EvalTracer
 }
 
@@ -709,6 +713,12 @@ type EvaluatorOptions struct {
 	// genesis part of the liveness check applies (eval_simext.go). For simulate only.
 	// Non-standard fork feature.
 	SkipValidityWindow bool
+
+	// SkipNewBlockPolicies, with Generate, drops the policies that apply only to new blocks
+	// (roundCowState.generate), so txns are judged by the consensus rules alone, as when their
+	// block was validated (eval_simext.go). For simulate at a past round only. Non-standard fork
+	// feature.
+	SkipNewBlockPolicies bool
 }
 
 // StartEvaluator creates a BlockEvaluator, given a ledger and a block header
@@ -764,6 +774,7 @@ func StartEvaluator(l LedgerForEvaluator, hdr bookkeeping.BlockHeader, evalOpts 
 		skipValidityWindow:  evalOpts.SkipValidityWindow,
 		Tracer:              evalOpts.Tracer,
 	}
+	eval.skipNewBlockPolicies = evalOpts.SkipNewBlockPolicies
 
 	// Preallocate space for the payset so that we don't have to
 	// dynamically grow a slice (if evaluating a whole block).
@@ -813,7 +824,7 @@ func StartEvaluator(l LedgerForEvaluator, hdr bookkeeping.BlockHeader, evalOpts 
 	}
 	// set the eval state with the current header
 	eval.state = makeRoundCowState(base, eval.block.BlockHeader, proto, eval.prevHeader.TimeStamp, prevTotals, evalOpts.PaysetHint)
-	eval.state.generate = evalOpts.Generate
+	eval.state.generate = eval.newBlockPolicies()
 
 	if evalOpts.Validate {
 		preCheckErr := eval.block.BlockHeader.PreCheck(eval.prevHeader)
@@ -2154,7 +2165,7 @@ func (eval *BlockEvaluator) GenerateBlock(participating []basics.Address) (*ledg
 	eval.state = makeRoundCowState(
 		eval.state, eval.block.BlockHeader, proto, eval.prevHeader.TimeStamp, eval.state.mods.Totals,
 		len(eval.block.Payset))
-	eval.state.generate = eval.generate
+	eval.state.generate = eval.newBlockPolicies()
 	return &vb, nil
 }
 
