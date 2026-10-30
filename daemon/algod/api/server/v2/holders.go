@@ -55,6 +55,14 @@ func (v2 *Handlers) GetAssetHolders(ctx echo.Context, assetID basics.AssetIndex,
 			return v2.historyError(ctx, err)
 		}
 	}
+	rnd := l.Latest()
+	if params.Round != nil {
+		if *params.Round > rnd {
+			err := errors.New(errRoundGreaterThanTheLatest)
+			return badRequest(ctx, err, err.Error(), v2.Log)
+		}
+		rnd = *params.Round
+	}
 	limit := uint64(DefaultHolders)
 	if params.Limit != nil {
 		if *params.Limit == 0 || *params.Limit > MaxHolders {
@@ -71,14 +79,6 @@ func (v2 *Handlers) GetAssetHolders(ctx echo.Context, assetID basics.AssetIndex,
 		}
 		after = &a
 	}
-	rnd := l.Latest()
-	if params.Round != nil {
-		if *params.Round > rnd {
-			err := errors.New(errRoundGreaterThanTheLatest)
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-		rnd = *params.Round
-	}
 
 	page, err := hl.AssetHoldersAt(rnd, assetID, after, limit)
 	switch {
@@ -86,6 +86,12 @@ func (v2 *Handlers) GetAssetHolders(ctx echo.Context, assetID basics.AssetIndex,
 		return serviceUnavailable(ctx, err, err.Error(), v2.Log)
 	case errors.Is(err, ledger.ErrNoHoldersIndex):
 		return serviceUnavailable(ctx, err, err.Error()+": build it with ttimport -holders-index while the node is stopped", v2.Log)
+	}
+	// The 503s above refuse the round; every other answer is given as of it.
+	if params.Round != nil {
+		markRound(ctx, rnd)
+	}
+	switch {
 	case errors.Is(err, ledger.ErrAssetNotFound):
 		return notFound(ctx, err, errAssetDoesNotExist, v2.Log)
 	case err != nil:

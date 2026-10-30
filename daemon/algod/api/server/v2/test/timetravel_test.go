@@ -235,6 +235,12 @@ func (l pastLedger) LookupKv(rnd basics.Round, key string) ([]byte, error) {
 func (l pastLedger) GetCreatorForRound(rnd basics.Round, _ basics.CreatableIndex, _ basics.CreatableType) (basics.Address, bool, error) {
 	return l.creator, rnd == l.at, nil
 }
+func (l pastLedger) GetCreator(basics.CreatableIndex, basics.CreatableType) (basics.Address, bool, error) {
+	return basics.Address{}, false, nil // the latest round holds nothing
+}
+func (l pastLedger) LatestTotals() (basics.Round, ledgercore.AccountTotals, error) {
+	return l.latest, ledgercore.AccountTotals{}, nil
+}
 func (l pastLedger) OnlineCirculation(basics.Round, basics.Round) (basics.MicroAlgos, error) {
 	return basics.MicroAlgos{}, nil
 }

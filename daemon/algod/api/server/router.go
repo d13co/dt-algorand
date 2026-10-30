@@ -58,6 +58,10 @@ const (
 	MaxRequestBodyBytes = "10MB"
 )
 
+// exposedHeaders are the response headers cross-origin scripts may read:
+// browsers hide the others.
+var exposedHeaders = []string{"Retry-After", v2.EffortHeader, v2.TTRoundHeader}
+
 // wrapCtx passes a common context to each request without a global variable.
 func wrapCtx(ctx lib.ReqContext, handler func(lib.ReqContext, echo.Context)) echo.HandlerFunc {
 	return func(context echo.Context) error {
@@ -115,10 +119,7 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 	if node.Config().EnablePrivateNetworkAccessHeader {
 		e.Use(middlewares.MakePNA())
 	}
-	e.Use(
-		// Browsers hide other response headers from cross-origin scripts unless they are exposed.
-		middlewares.MakeCORS(TokenHeader, "Retry-After", v2.EffortHeader),
-	)
+	e.Use(middlewares.MakeCORS(TokenHeader, exposedHeaders...))
 
 	// Request Context
 	ctx := lib.ReqContext{Node: node, Log: logger, Shutdown: shutdown}

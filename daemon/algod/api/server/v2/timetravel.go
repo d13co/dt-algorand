@@ -18,6 +18,7 @@ package v2
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/labstack/echo/v4"
 
@@ -26,6 +27,18 @@ import (
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 )
+
+// TTRoundHeader marks an answer given as of the round the request asked for
+// with ?round=R. It is set once the node accepts the round, so a 404 that
+// carries it means "not found at R". A node that ignores round (algod without
+// time travel) or refuses it never sends it.
+const TTRoundHeader = "X-Algod-TT-Round"
+
+// markRound sets TTRoundHeader to rnd. Echo sends the headers on the first
+// write, so it must run before the handler writes its answer.
+func markRound(ctx echo.Context, rnd basics.Round) {
+	ctx.Response().Header().Set(TTRoundHeader, strconv.FormatUint(uint64(rnd), 10))
+}
 
 // errOnlineStakeUnavailable: the history has no online stake for the round
 // (GetSupply's local ledger variable shadows the package).
@@ -150,7 +163,8 @@ func (v roundView) LatestTotals() (basics.Round, ledgercore.AccountTotals, error
 
 // ledgerFor returns the node's ledger or, when the request has ?round=R
 // (the at-round parameter), the ledger as of round R, whose lookups count in
-// the request's Effort (EnableEffortHeader).
+// the request's Effort (EnableEffortHeader). It marks the answer with
+// TTRoundHeader once it accepts R.
 func (v2 *Handlers) ledgerFor(ctx echo.Context, rnd *basics.Round) (LedgerForAPI, error) {
 	l := v2.Node.LedgerForAPI()
 	if rnd == nil {
@@ -172,6 +186,7 @@ func (v2 *Handlers) ledgerFor(ctx echo.Context, rnd *basics.Round) (LedgerForAPI
 	if view.counted != nil {
 		view.h = *view.counted
 	}
+	markRound(ctx, *rnd)
 	return view, nil
 }
 

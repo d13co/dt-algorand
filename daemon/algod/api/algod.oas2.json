@@ -2050,7 +2050,7 @@
             "type": "integer",
             "format": "uint64",
             "x-go-type": "basics.Round",
-            "description": "Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis.",
+            "description": "Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis. This node marks an answer given as of this round with an `X-Algod-TT-Round` header with this round, but not a refusal of the round; stock algod, which serves only its last few rounds, sends no header.",
             "name": "round",
             "in": "query"
           }
@@ -5607,7 +5607,7 @@
       "format": "uint64",
       "x-go-type": "basics.Round",
       "minimum": 0,
-      "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+      "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
       "name": "round",
       "in": "query"
     },

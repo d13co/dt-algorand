@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/algorand/go-algorand/daemon/algod/api/server/lib"
+	"github.com/algorand/go-algorand/daemon/algod/api/server/lib/middlewares"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v1/routes"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -75,4 +76,19 @@ func TestGetTransactionV1Sunset(t *testing.T) {
 		assert.NotNil(t, rec.Body)
 		assert.Equal(t, http.StatusGone, rec.Code)
 	}
+}
+
+// TestExposedHeaders checks that cross-origin scripts can read the headers
+// clients act on: Retry-After, the effort and the round of a read at a round.
+func TestExposedHeaders(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	e := echo.New()
+	e.Use(middlewares.MakeCORS(TokenHeader, exposedHeaders...))
+	e.GET("/health", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Origin", "http://algorand.com")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	assert.Equal(t, "Retry-After,X-Algod-Effort,X-Algod-TT-Round", rec.Header().Get("Access-Control-Expose-Headers"))
 }
