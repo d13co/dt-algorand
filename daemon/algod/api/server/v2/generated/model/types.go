@@ -1814,7 +1814,7 @@ type BoxesVersionsResponse struct {
 
 // CapabilitiesResponse The fork features this node has turned on, and the limits it places on simulate and query requests.
 type CapabilitiesResponse struct {
-	// DeveloperApi If true, the node serves the developer API: requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	// DeveloperApi If true, the node serves the developer API (POST /v2/teal/compile, /v2/teal/disassemble, /v2/transactions/async, and more), and requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
 
 	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
@@ -1826,7 +1826,7 @@ type CapabilitiesResponse struct {
 	// TimeLimitSeconds The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504, except a simulate request with rounds, whose rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
 	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
-	// TimeTravel If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions endpoints, are served. Otherwise only the last MaxAcctLookback rounds can be read (node config EnableTimeTravel).
+	// TimeTravel If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions and holders endpoints, are served. Otherwise the round parameter is rejected (400), those endpoints answer 404, and simulate's round and rounds and query's rounds reach only the last MaxAcctLookback rounds (node config EnableTimeTravel).
 	TimeTravel bool `json:"time-travel"`
 }
 

@@ -1447,7 +1447,7 @@
     },
     "/v2/capabilities": {
       "get": {
-        "description": "Returns the fork features this node has turned on, and the limits it places on simulate and query requests. The values are the ones the node applies, after it clamps its configuration. Every node of this fork serves it, time travel or not. A node that answers 404 is a stock algod, without any of the fork's features: it simulates one transaction group per request with at most 320,000 extra opcode budget, takes no round or rounds, keeps unnamed resources within the consensus limits, and has no POST /v2/query. Two simulate limits are not reported: a request body may be at most 1,000,000 bytes, and groups simulated in order share one block, so together they may take at most the protocol's MaxTxnBytesPerBlock. Non-standard fork feature.",
+        "description": "Returns the fork features this node has turned on, and the limits it places on simulate and query requests. The values are the ones the node applies, after it clamps its configuration. Every node of this fork serves it, time travel or not. A node that answers 404 is a stock algod, without any of the fork's features: it simulates one transaction group per request with at most 320,000 extra opcode budget, takes no rounds, keeps unnamed resources within the consensus limits, and has no POST /v2/query. Two simulate limits are not reported: a request body may be at most 1,000,000 bytes, and groups simulated in order share one block, so together they may take at most the protocol's MaxTxnBytesPerBlock. Non-standard fork feature.",
         "tags": ["dtalgorand"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -6506,11 +6506,11 @@
         "required": ["time-travel", "developer-api", "time-limit-seconds", "simulate"],
         "properties": {
           "time-travel": {
-            "description": "If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions endpoints, are served. Otherwise only the last MaxAcctLookback rounds can be read (node config EnableTimeTravel).",
+            "description": "If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions and holders endpoints, are served. Otherwise the round parameter is rejected (400), those endpoints answer 404, and simulate's round and rounds and query's rounds reach only the last MaxAcctLookback rounds (node config EnableTimeTravel).",
             "type": "boolean"
           },
           "developer-api": {
-            "description": "If true, the node serves the developer API: requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+            "description": "If true, the node serves the developer API (POST /v2/teal/compile, /v2/teal/disassemble, /v2/transactions/async, and more), and requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
             "type": "boolean"
           },
           "time-limit-seconds": {

@@ -227,8 +227,8 @@ The simulate responses were decoded into algosdk's `SimulateResponse`, the query
 
 | field | node config | meaning |
 |---|---|---|
-| `time-travel` | `EnableTimeTravel` | reads at a round (`round`, simulate's `round` and `rounds`, query's `rounds`) reach back to genesis, not only `MaxAcctLookback` rounds, and the endpoints that need the history (the versions endpoints among them) are served |
-| `developer-api` | `EnableDeveloperAPI` | simulate's `exec-trace-config` with `enable: true`, and `protocol: "future"` in simulate and query, are allowed; a traced simulate request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
+| `time-travel` | `EnableTimeTravel` | reads at a round (`round`, simulate's `round` and `rounds`, query's `rounds`) reach back to genesis, and the endpoints that need the history (versions, holders) are served; when false, `round` is rejected (400), those endpoints answer 404, and simulate's and query's rounds reach only the last `MaxAcctLookback` rounds |
+| `developer-api` | `EnableDeveloperAPI` | the developer API (`/v2/teal/compile` and the like) is served, and simulate's `exec-trace-config` with `enable: true`, and `protocol: "future"` in simulate and query, are allowed; a traced simulate request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
 | `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest an expensive request (simulate, query, `/v2/deltas/{round}`, the versions endpoints) may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
 | `simulate.max-txn-groups` | `MaxAPISimulateGroups` | most groups in `txn-groups`; a config of 0 counts as 1 |
 | `simulate.max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
