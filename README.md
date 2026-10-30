@@ -6,7 +6,7 @@ It changes no consensus rule, but it is not an official Algorand release: the no
 
 ## Running a node
 
-Install the `dtalgorand` package: a Debian package from apt.d13.co, which installs alongside the stock `algorand` package, or `brew install d13co/tap/dtalgorand` on macOS 14 or later on Apple silicon. Builds are on the [releases page](https://github.com/d13co/dt-algorand/releases). A mainnet node needs about 90 GB of disk today, ideally NVMe. Then pick a path before the node's first start, which otherwise begins a sync from genesis:
+Install the `dtalgorand` package: a Debian package from apt.d13.co, which installs alongside the stock `algorand` package, or `brew install d13co/tap/dtalgorand` on macOS 14 or later on Apple silicon. Builds are on the [releases page](https://github.com/d13co/dt-algorand/releases). Its commands have a `dt` prefix (`dtalgod`, `dtgoal`, ...) and read `$DTALGORAND_DATA` and `$DTALGORAND_KMD` rather than `$ALGORAND_DATA` and `$ALGORAND_KMD`, so they leave a stock node on the same machine alone. A mainnet node needs about 90 GB of disk today, ideally NVMe. Then pick a path before the node's first start, which otherwise begins a sync from genesis:
 
 | path | time on mainnet | needs |
 |---|---|---|
@@ -21,6 +21,8 @@ Install the `dtalgorand` package: a Debian package from apt.d13.co, which instal
 ## What it adds
 
 - **Use**: [ledger/timetravel/README.md](ledger/timetravel/README.md) covers the configuration (`EnableTimeTravel`), the REST endpoints that take `?round=`, simulation at a past round, the design, and the mainnet size estimates. [VERSIONS.md](ledger/timetravel/VERSIONS.md) describes the API that lists the rounds at which an object changed.
+- **Round marker**: every answer given as of a past round carries `X-Algod-TT-Round: R`, so a client can tell that the node honoured `round`; a stock node ignores the parameter and answers as of the latest round. See [REST](ledger/timetravel/README.md#rest).
+- **Asset holders**: `GET /v2/assets/{id}/holders` lists an asset's holders at any round, from an index of every holding by asset (`TimeTravelHoldersIndex`, on in a new package install). See [Holders index](ledger/timetravel/README.md#holders-index).
 - **goal**: read commands take `--round`, and `versions` subcommands list an object's changes. See [cmd/goal/README.md](cmd/goal/README.md#past-rounds-and-versions-time-travel).
 - **Simulate limits**: `SimulateResourceLimitMultiplier` lets an operator raise the limits simulate puts on unnamed resources, for read-only calls that touch many accounts or boxes. See [Unnamed-resource limits in simulation](ledger/timetravel/README.md#unnamed-resource-limits-in-simulation).
 - **Simulate budget**: `MaxAPISimulateExtraOpcodeBudget` lets an operator raise (or lower) the 320,000 limit on `extra-opcode-budget`, per group (mind the CPU, timeout and trace-memory costs listed there). See [Extra opcode budget limit in simulation](ledger/timetravel/README.md#extra-opcode-budget-limit-in-simulation).
@@ -28,6 +30,9 @@ Install the `dtalgorand` package: a Debian package from apt.d13.co, which instal
 - **Simulate rounds**: one simulate request can list several rounds (`rounds`) and gets one result per round (`round-results`), simulated in parallel, optionally with the transactions' validity windows skipped or moved to each round (`skip-validity-window`, `rewrite-validity-window`), so the rounds can be more than 1000 apart. See [One simulation at several rounds](ledger/timetravel/README.md#one-simulation-at-several-rounds).
 - **Simulate protocol**: `protocol` simulates a round under a later consensus protocol, as if an upgrade to it took effect right after that round (e.g. AVM 13 against 2022 state), and reports where the old chain lacks data the new protocol reads. See [A later protocol at a past round](ledger/timetravel/README.md#a-later-protocol-at-a-past-round).
 - **Queries**: `POST /v2/query` runs read-only TEAL: one program, many calls, each alone at each listed round, without signatures, fees or a block, and answers with each call's logs, cost and error. See [Read-only queries](ledger/timetravel/README.md#read-only-queries-post-v2query).
+- **Capabilities**: `GET /v2/capabilities` tells clients which fork features the node has turned on and what its simulate and query requests accept. See [Capabilities](ledger/timetravel/README.md#capabilities-get-v2capabilities).
+- **Overload limits**: simulate, query and the versions endpoints stop at the node's time limit (504) and when the client goes away, and `SimulateParallelism` caps the simulations running at once (503 with `Retry-After` beyond it). See [Overload limits](ledger/timetravel/README.md#overload-limits).
+- **Effort header**: with `EnableEffortHeader`, expensive requests report the work they did in an `X-Algod-Effort` header (opcodes, lookups, history reads, response bytes), so a load balancer can bill on it. Browsers on other origins can read it, and `Retry-After`. See [Effort header](ledger/timetravel/README.md#effort-header).
 - **Tools**:
   - [ttimport](tools/ttimport/README.md) builds a time travel node from an archival node's blocks instead of syncing from the network, which takes weeks on mainnet.
   - [ttsnap](tools/ttsnap/README.md) publishes snapshots of a node's history and installs them on new nodes, which then catch up from a catchpoint instead of syncing from genesis.
