@@ -18,10 +18,12 @@
 // node's block database (ledger.block.sqlite) instead of the network. The
 // ledger opens the archive in place as its block database and replays it the
 // way algod replays after a restart, without certificate or signature checks,
-// resuming from where the data directory's trackers stand. Nothing is written
-// to the archive. Afterwards the data directory's own block database gets the
-// last blocks algod needs to start; start algod on the directory to keep
-// syncing from the network.
+// resuming from where the data directory's trackers stand. No block of the
+// archive is changed, but SQLite opens it for writing (its -wal and -shm
+// files go next to it), so the archive's directory must be writable.
+// Afterwards the data directory's own block database gets the last blocks
+// algod needs to start; start algod on the directory to keep syncing from
+// the network.
 package main
 
 import (
@@ -60,7 +62,7 @@ func main() {
 	blocks := flag.String("blocks", "", "source block database: <archival data dir>/<genesis id>/"+blockDBFile)
 	dataDir := flag.String("d", "", "algod data directory to build: genesis.json, and config.json with EnableTimeTravel")
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the run to this file")
-	memprofile := flag.String("memprofile", "", "write a heap profile to this file whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps), and on Ctrl-C")
+	memprofile := flag.String("memprofile", "", "write a heap profile to this file on Ctrl-C and, during an import on Linux, whenever resident memory reaches a new high (from 1 GiB, in 256 MiB steps)")
 	verbose := flag.Bool("v", false, "also log the ledger's info messages")
 	dedup := flag.Bool("dedup", false, "instead of importing, remove the records that change nothing from the time travel store of -d, whose algod must be stopped, and rebuild its box index")
 	indexBoxes := flag.Bool("index-boxes", false, "instead of importing, build the box index of the time travel store of -d, whose algod must be stopped: stores written by builds without it need it for /v2/applications/{id}/boxes/versions")

@@ -1,10 +1,12 @@
 # Time travel (non-standard fork)
 
-`EnableTimeTravel` turns a node into a *state-history* node: it keeps the value of every ledger object (accounts, asset holdings and params, app local states and params, boxes, totals) at every round since genesis, plus every block header, and serves lookups, the REST API and simulation **at any past round**. It is meant to replace an archival node for state queries: with `Archival: false` the old block bodies and certificates (≈3.5 TB on mainnet) are pruned, and the history costs ≈65 GB (57–73 GB, see [Mainnet estimates](#mainnet-estimates)).
+`EnableTimeTravel` turns a node into a *state-history* node: it keeps the value of every ledger object (accounts, asset holdings and params, app local states and params, boxes, totals) at every round since genesis, plus every block header, and serves lookups, the REST API and simulation **at any past round**. It is meant to replace an archival node for state queries: with `Archival: false` the old block bodies and certificates (≈3.5 TB on mainnet) are pruned, and the history costs about 70 GB (65.5 GiB measured on a synced mainnet node in October 2026, both indexes included; see [Mainnet estimates](#mainnet-estimates)).
 
 This is a non-compliant fork feature: it changes no consensus rule, but the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](#limitations)).
 
 ## Using it
+
+To set up a node from the dtalgorand packages (system requirements, and the choice between a snapshot, an import and a sync from genesis), see [installer/dtalgorand/README.md](../../installer/dtalgorand/README.md#setting-up-a-node). On mainnet, testnet and betanet the node refuses participation keys unless `DangerouslyEnableParticipation` is set (see [Participation](../../installer/dtalgorand/README.md#participation)).
 
 ```json
 { "EnableTimeTravel": true, "Archival": false }
@@ -13,7 +15,7 @@ This is a non-compliant fork feature: it changes no consensus rule, but the node
 - The history is built from every block's state delta, so it comes from a sync from genesis: over the network, from an archive with `ttimport` (below), or from another node's history installed with `tools/ttsnap`, after which the node catches up from a catchpoint (see [Catching up from a catchpoint](#catching-up-from-a-catchpoint)). Without an installed history, fast catchup (`goal node catchup`) is refused, and a ledger whose tracker DB is past genesis with an empty history fails to open. So does one whose tracker DB is ahead of its block DB, which a stock node resets, resyncing from genesis; delete the tracker DB to do that on purpose.
 - The store (Pebble) lives in `<dir>/<genesis id>/ledger.timetravel/`, where `<dir>` is `TimeTravelDBDir`, else `BlockDBDir`, else `ColdDataDir`, else the data directory. Queries at past rounds read it at random, so point `TimeTravelDBDir` at a fast disk to keep their latency down. To move an existing store, stop the node, move the `ledger.timetravel` directory, and set `TimeTravelDBDir`. `goal node clone` copies it when it lives in the data directory.
 - `tools/ttimport` builds a non-archival node's ledger and history from an existing archival node's block database instead of the network: `ttimport -blocks <archival data dir>/<genesis id>/ledger.block.sqlite -d <new data dir>`. The ledger replays the archive in place like algod after a restart (no certificate or signature checks, nothing written to the archive), then the data directory gets the last ~1,000 blocks, and algod started on it continues from the network. On fnet's first 40k rounds it replayed at ~8,700 rounds/s (~35× a network sync) and produced a byte-identical history (identical reads in any case: after a restart, the raw records can differ by the [no-op writes](#no-op-writes) a fresh cache lets through). See [tools/ttimport/README.md](../../tools/ttimport/README.md) for the how-to.
-- `tools/ttsnap` publishes snapshots of a running node's history and installs them on new nodes, which then catch up from a catchpoint: a ~65 GB download instead of a sync from genesis. See [tools/ttsnap/README.md](../../tools/ttsnap/README.md).
+- `tools/ttsnap` publishes snapshots of a running node's history and installs them on new nodes, which then catch up from a catchpoint: a download of about 70 GB instead of a sync from genesis. See [tools/ttsnap/README.md](../../tools/ttsnap/README.md).
 - `tools/ttdump` explores the store of a stopped node: any object at any round, its versions with the changes between them, listings at past rounds, headers, and the raw records and their statistics. See [tools/ttdump/README.md](../../tools/ttdump/README.md).
 - `TimeTravelHoldersIndex` (off by default) serves `GET /v2/assets/{id}/holders` from an index of every holding by asset (~3.6 GiB on mainnet), kept from the genesis round by a store created with it on, or built with `ttimport -holders-index` while the node is stopped. Turning it off deletes the index at the next launch. See [Holders index](#holders-index).
 
@@ -32,7 +34,7 @@ Read endpoints take `?round=R` (the `at-round` parameter in the API spec) and an
 
 ¹ `/boxes` takes stock algod's own `round` parameter, not `at-round`: a node without time travel serves it for the rounds it still holds in memory (`MaxAcctLookback`) instead of rejecting it, and a time travel node for every round.
 
-`GET /v2/assets/{id}/holders?round=R` lists the accounts that hold an asset at R, in address order, with amount and frozen flag (zero balances included), from the [holders index](#holders-index). It needs `TimeTravelHoldersIndex` (off by default), 400 otherwise, and answers 503 until the index is built: from the start for a store created with the option on, otherwise by `ttimport -holders-index`. Pages hold `limit` holders (default 1,000, at most 10,000), or fewer once they have examined 100,000 accounts that ever held the asset, so a page can be short or empty while more remain: follow `next-token`, the last address examined, with the first page's `round`. A full page looks ahead for one more holder, so the last page has no `next-token` even when it is full.
+`GET /v2/assets/{id}/holders?round=R` lists the accounts that hold an asset at R, in address order, with amount and frozen flag (zero balances included), from the [holders index](#holders-index). It needs `TimeTravelHoldersIndex` (off by default), 400 otherwise (404 on a node without `EnableTimeTravel`, which doesn't register it), and answers 503 until the index is built: from the start for a store created with the option on, otherwise by `ttimport -holders-index`. Pages hold `limit` holders (default 1,000, at most 10,000), or fewer once they have examined 100,000 accounts that ever held the asset, so a page can be short or empty while more remain: follow `next-token`, the last address examined, with the first page's `round`. A full page looks ahead for one more holder, so the last page has no `next-token` even when it is full.
 
 Not served for pruned rounds (the price of `Archival: false`): full blocks (`/v2/blocks/{R}` without `header-only`), `/v2/blocks/{R}/hash`, `/txids`, `/logs`, `/transactions/{txid}/proof`, `/lightheader/proof`, and `/v2/stateproofs/{R}`, which read the full blocks after R. `goal clerk simulate --round R` works unchanged.
 
@@ -50,7 +52,7 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 
 `GET /v2/deltas/{R}` works for any round whose block is still stored (every round with `Archival: true`, otherwise the last ~1,000, more with `MaxBlockHistoryLookback`): rounds older than the trackers' in-memory deltas are re-evaluated (see [Node integration](#node-integration)).
 
-`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. The cost is the archival block DB (~3.5 TB) plus the history (~65 GB, of which ~12 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
+`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. Such a node can't catch up from a catchpoint (stock algod refuses catchpoints on archival nodes), so it builds its history by syncing from genesis or with `ttimport`, not from a snapshot. The cost is the archival block DB (~3.5 TB) plus the history (about 70 GB, of which about 11.5 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
 
 ### Unnamed-resource limits in simulation
 
@@ -404,6 +406,32 @@ Snappy at 32 KB: 2,962 B/round (5.4×). 64 KB blocks are the latency-leaning alt
 Bigger blocks keep compressing better (adjacent versions of the same object share a block). Reads stay sub-millisecond with a cold cache; the block cache absorbs hot objects.
 
 ### Mainnet estimates
+
+#### Measured on mainnet
+
+A synced mainnet node (`ttdump info` on 2026-10-30, rounds 0..66,475,729, holders index on): 65.48 GiB on disk, against the estimates below.
+
+| keyspace | contents | measured | estimate (full history) |
+|---|---|---|---|
+| `c` P | app params | 17.76 GiB (19.1 GB) | 17.1 GB (16.2–17.8) |
+| `c` a | accounts | 11.58 GiB (12.4 GB) | 13.7 GB (11.5–14.9) |
+| `c` h | holdings | 9.59 GiB (10.3 GB) | 10.3 GB (8.9–11.7) |
+| `c` l | local states | 3.65 GiB (3.9 GB) | 3.4 GB (3.3–3.5) |
+| `c` A | asset params | 2.40 GiB (2.6 GB) | 3.0 GB (2.5–3.7) |
+| `c` k | boxes | 2.33 GiB (2.5 GB) | 1.8 GB (1.8–2.1) |
+| `c` T | totals | 0.91 GiB (1.0 GB) | 1.1 GB |
+| `c` C | creator index | 0.57 GiB (0.6 GB) | 0.6 GB (0.5–0.8) |
+| | **state** | **48.8 GiB (52.4 GB)** | **51 GB (45–57)** |
+| `H` | headers and digests | 10.68 GiB (11.5 GB) | 12.05 GB (11.0–13.3) |
+| `E` | expired stake | 0.22 GiB (0.2 GB) | 0.2 GB |
+| `b` | box index | 2.06 GiB (2.2 GB) | 1–3 GB ([Box index](#box-index)) |
+| `a` | asset holders index | 3.60 GiB (3.9 GB) | 3.9 GB (3.59 GiB, measured on a copy; [Holders index](#holders-index)) |
+| | WAL, manifest and other files | 0.13 GiB (0.1 GB) | |
+| | **directory on disk** | **65.48 GiB (70.3 GB)** | |
+
+The keyspace rows are Pebble's estimates (sstables only); the last row is the directory's size. Without the two indexes the store is 59.8 GiB (64.2 GB), against the estimate of 65 GB (57–73) for a live store. A history installed from a snapshot is a few GB larger: the snapshot of round 66,469,709 was 65.4 GiB before its holders index was built.
+
+#### Estimates
 
 Comparing settings: each run's disk/logical ratio, applied to the sampled history (rounds < 35 M use the 2022 run, 35–55 M the 2024 one, the rest the 2026 one):
 

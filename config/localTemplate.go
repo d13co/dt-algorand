@@ -695,7 +695,9 @@ type Local struct {
 	// EnableTimeTravel keeps the history of every ledger object (accounts, asset holdings and params, app local states
 	// and params, boxes, totals) and every block header in a time travel store (see TimeTravelDBDir), so that
 	// lookups, the account/asset/application/box REST endpoints (?round=) and simulation (request "round") work at any
-	// past round. This is a non-standard fork feature. The node must sync from genesis (fast catchup is refused).
+	// past round. This is a non-standard fork feature. The history comes from a sync from genesis (over the network, or
+	// an archive imported with tools/ttimport), or from a snapshot installed with tools/ttsnap, after which the node
+	// catches up from a catchpoint; fast catchup without an installed history is refused.
 	// Combine with Archival=false to drop old block bodies and certificates, which the history does not need.
 	EnableTimeTravel bool `version[39]:"false"`
 
