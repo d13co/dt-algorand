@@ -97,7 +97,7 @@ func main() {
 
 	// If data directory doesn't exist, we can't run. Don't bother trying.
 	if len(dataDir) == 0 {
-		fmt.Fprintln(os.Stderr, "Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment.")
+		fmt.Fprintf(os.Stderr, "Data directory not specified.  Please use -d or set $%s in your environment.\n", config.DataDirEnvName())
 		os.Exit(1)
 	}
 
@@ -141,6 +141,11 @@ func main() {
 	go func() {
 		args := make([]string, len(os.Args)-1)
 		copy(args, os.Args[1:]) // Copy our arguments (skip the executable)
+		if dataDirectory == nil || *dataDirectory == "" {
+			// The data dir came from the environment. algod runs under its stock name, so it
+			// might read a different variable than we did (see config.DataDirEnvName).
+			args = append(args, "-d", absolutePath)
+		}
 		if log.GetTelemetryEnabled() {
 			args = append(args, "-s", log.GetTelemetrySession())
 		}
@@ -249,7 +254,7 @@ func resolveDataDir() string {
 	// If not specified on cmdline with '-d', look for default in environment.
 	var dir string
 	if dataDirectory == nil || *dataDirectory == "" {
-		dir = os.Getenv("ALGORAND_DATA")
+		dir = config.DataDirFromEnv()
 	} else {
 		dir = *dataDirectory
 	}
@@ -261,7 +266,7 @@ func ensureDataDir() string {
 	// then handle the scenario where no data directory is provided.
 	dir := resolveDataDir()
 	if dir == "" {
-		reportErrorf("Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment. Exiting.\n")
+		reportErrorf("Data directory not specified.  Please use -d or set $%s in your environment. Exiting.\n", config.DataDirEnvName())
 	}
 	return dir
 }

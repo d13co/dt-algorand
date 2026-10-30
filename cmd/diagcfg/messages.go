@@ -25,7 +25,7 @@ const (
 	metricConfigReadingFailed = "Failed to read configuration file : %s\n"
 	metricReportingStatus     = "Metric reporting is %s\n"
 	metricSaveConfigFailed    = "Metric configuration file could not be saved : %s\n"
-	metricDataDirectoryEmpty  = "no data directory was specified. Please use either -d or set environment variable ALGORAND_DATA"
+	metricDataDirectoryEmpty  = "no data directory was specified. Please use either -d or set environment variable %s"
 
 	telemetryConfigReadError = "Could not read telemetry config: %s\n"
 

@@ -135,7 +135,7 @@ func MakeClientFromConfig(config ClientConfig, clientType ClientType) (c Client,
 	return
 }
 
-// init takes data directory path or an empty string if $ALGORAND_DATA is defined and initializes Client
+// init takes data directory path or an empty string if $ALGORAND_DATA (see config.DataDirEnvName) is defined and initializes Client
 func (c *Client) init(config ClientConfig, clientType ClientType) error {
 	// check and assign dataDir
 	dataDir, err := getDataDir(config.AlgodDataDir)
@@ -214,11 +214,12 @@ func getDataDir(dataDir string) (string, error) {
 	// If not specified on cmdline with '-d', look for default in environment.
 	dir := dataDir
 	if dir == "" {
-		dir = os.Getenv("ALGORAND_DATA")
+		dir = config.DataDirFromEnv()
 	}
 	if dir == "" {
-		fmt.Println(errorNoDataDirectory.Error())
-		return "", errorNoDataDirectory
+		err := errorNoDataDirectory()
+		fmt.Println(err.Error())
+		return "", err
 
 	}
 	return dir, nil

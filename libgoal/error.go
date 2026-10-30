@@ -16,9 +16,13 @@
 
 package libgoal
 
-import "fmt"
+import (
+	"fmt"
 
-var (
-	errorNoDataDirectory = fmt.Errorf("Data directory not specified.  Please make sure to pass dir path or an empty string " +
-		" if $ALGORAND_DATA in your environment is set.")
+	"github.com/algorand/go-algorand/config"
 )
+
+func errorNoDataDirectory() error {
+	return fmt.Errorf("Data directory not specified.  Please make sure to pass dir path or an empty string "+
+		" if $%s in your environment is set.", config.DataDirEnvName())
+}

@@ -17,8 +17,9 @@
 package datadir
 
 import (
-	"os"
 	"path/filepath"
+
+	"github.com/algorand/go-algorand/config"
 )
 
 // DataDirs contains the list of data directories
@@ -37,7 +38,7 @@ func ResolveDataDir() string {
 		dir = absDir
 	}
 	if dir == "" {
-		dir = os.Getenv("ALGORAND_DATA")
+		dir = config.DataDirFromEnv()
 	}
 	return dir
 }
@@ -47,7 +48,7 @@ func ResolveDataDir() string {
 func EnsureFirstDataDir() string {
 	dir := ResolveDataDir()
 	if dir == "" {
-		reportErrorln(errorNoDataDirectory)
+		reportErrorf(errorNoDataDirectory, config.DataDirEnvName())
 	}
 	return dir
 }
@@ -74,7 +75,7 @@ func MaybeSingleDataDir() string {
 // Reports and Error and exits when no data directories are available.
 func GetDataDirs() (dirs []string) {
 	if len(DataDirs) == 0 {
-		reportErrorln(errorNoDataDirectory)
+		reportErrorf(errorNoDataDirectory, config.DataDirEnvName())
 	}
 	dirs = append(dirs, EnsureFirstDataDir())
 	dirs = append(dirs, DataDirs[1:]...)

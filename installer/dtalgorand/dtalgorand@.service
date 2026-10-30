@@ -1,19 +1,19 @@
-## For some data directory $ALGORAND_DATA
+## For some data directory $DTALGORAND_DATA
 ##
 ## Setup:
-## ALGORAND_DATA=/var/lib/dtalgorand_testnet
-## sudo mkdir -p ${ALGORAND_DATA}
-## sudo cp -p /var/lib/dtalgorand/genesis/testnet/genesis.json ${ALGORAND_DATA}/genesis.json
-## sudo cp -p /var/lib/dtalgorand/system.json ${ALGORAND_DATA}/system.json
-## echo '{ "EnableTimeTravel": true }' | sudo tee ${ALGORAND_DATA}/config.json
-## sudo chown -R dtalgorand:dtalgorand ${ALGORAND_DATA}
+## DTALGORAND_DATA=/var/lib/dtalgorand_testnet
+## sudo mkdir -p ${DTALGORAND_DATA}
+## sudo cp -p /var/lib/dtalgorand/genesis/testnet/genesis.json ${DTALGORAND_DATA}/genesis.json
+## sudo cp -p /var/lib/dtalgorand/system.json ${DTALGORAND_DATA}/system.json
+## echo '{ "EnableTimeTravel": true }' | sudo tee ${DTALGORAND_DATA}/config.json
+## sudo chown -R dtalgorand:dtalgorand ${DTALGORAND_DATA}
 ##
 ## systemd allows for config overrides in a .conf file under a directory named for the service. e.g.:
 ##
-## sudo systemctl edit dtalgorand@$(systemd-escape ${ALGORAND_DATA})
+## sudo systemctl edit dtalgorand@$(systemd-escape ${DTALGORAND_DATA})
 ##
-## sudo systemctl enable dtalgorand@$(systemd-escape ${ALGORAND_DATA})
-## sudo systemctl start dtalgorand@$(systemd-escape ${ALGORAND_DATA})
+## sudo systemctl enable dtalgorand@$(systemd-escape ${DTALGORAND_DATA})
+## sudo systemctl start dtalgorand@$(systemd-escape ${DTALGORAND_DATA})
 
 
 [Unit]

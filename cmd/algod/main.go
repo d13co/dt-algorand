@@ -117,7 +117,7 @@ func run() int {
 
 	// Don't fallback anymore - if not specified, we want to panic to force us to update our tooling and/or processes
 	if len(dataDir) == 0 {
-		fmt.Fprintln(os.Stderr, "Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment.")
+		fmt.Fprintf(os.Stderr, "Data directory not specified.  Please use -d or set $%s in your environment.\n", config.DataDirEnvName())
 		return 1
 	}
 
@@ -496,7 +496,7 @@ func resolveDataDir() string {
 	// If not specified on cmdline with '-d', look for default in environment.
 	var dir string
 	if dataDirectory == nil || *dataDirectory == "" {
-		dir = os.Getenv("ALGORAND_DATA")
+		dir = config.DataDirFromEnv()
 	} else {
 		dir = *dataDirectory
 	}
