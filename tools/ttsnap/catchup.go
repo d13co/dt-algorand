@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func catchup(dataDir, label string, useSnapshot bool, client *http.Client) error
 	nc := nodecontrol.MakeNodeController("", dataDir)
 	u, err := nc.ServerURL()
 	if err != nil {
-		return fmt.Errorf("finding the node's API (is algod running?): %w", err)
+		return fmt.Errorf("finding the node's API (is algod running? It writes algod.net once its ledger is open, which can take a minute or more): %w", err)
 	}
 	u.Path = "/v2/catchup/" + url.PathEscape(label)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), nil)
@@ -108,8 +109,17 @@ func catchup(dataDir, label string, useSnapshot bool, client *http.Client) error
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("POST %s: %s: %s", u.Path, resp.Status, strings.TrimSpace(string(body)))
 	}
-	fmt.Printf("catching up to %s; follow it with: goal node status -d %s\n", label, dataDir)
+	fmt.Printf("catching up to %s; follow it with: %s node status -d %s (done when the Catchpoint lines are gone)\n", label, goalCommand(), shellQuote(dataDir))
 	return nil
+}
+
+// goalCommand is the name of goal on this host: the dtalgorand packages install
+// it as dtgoal, a source build as goal.
+func goalCommand() string {
+	if _, err := exec.LookPath("dtgoal"); err == nil {
+		return "dtgoal"
+	}
+	return "goal"
 }
 
 // chooseLabel returns the catchpoint to catch up to: the network's latest,

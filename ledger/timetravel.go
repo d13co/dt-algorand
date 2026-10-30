@@ -222,7 +222,7 @@ func (ht *historyTracker) loadFromDisk(l ledgerForTracker, dbRound basics.Round)
 		return ht.loadDiverged()
 	}
 	if dbRound != 0 {
-		return fmt.Errorf("time travel store %s is empty but the ledger is at round %d: if the store was moved, remove this empty one and point TimeTravelDBDir at it; otherwise the node must sync from genesis (no fast catchup)", ht.path, dbRound)
+		return fmt.Errorf("time travel store %s is empty but the ledger is at round %d: if the store was moved, remove this empty one and point TimeTravelDBDir at it; otherwise delete the genesis directory (with this store), then sync from genesis, or install a history snapshot (ttsnap fetch) and catch up from a catchpoint", ht.path, dbRound)
 	}
 	hdr, err := l.BlockHdr(0)
 	if err != nil {

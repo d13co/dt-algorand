@@ -7,7 +7,7 @@ It expects the producer laid out as the ttsnap README's [Producer](../../tools/t
 | file | installed as | does |
 |---|---|---|
 | `setup.sh` | | installs or updates everything below, rclone 1.59 or later from rclone.org when needed (Ubuntu 22.04's rclone has no R2 support; the download's signature is checked against rclone's release key), and jq |
-| `tt-snapshot.env` | `/etc/tt-snapshot.env` (0600, kept when it exists; `setup.sh` adds settings new to it, not ones removed by hand) | `dt_snapshot.sh` settings, the bucket and the R2 credentials |
+| `tt-snapshot.env` | `/etc/tt-snapshot.env` (0600, kept when it exists; `setup.sh` adds settings new to it, not ones removed by hand) | `dt_snapshot.sh` settings (`NETWORK` names the network whose catchpoint label goes in each manifest), the bucket and the R2 credentials |
 | `tt-snapshot.service` | `/etc/systemd/system/` | one run of `dt_snapshot.sh`: btrfs snapshot, `ttsnap prepare`, `publish` and `gc`, then the upload. Runs at low CPU and IO priority |
 | `tt-snapshot-upload.service` | `/etc/systemd/system/` | `upload.sh` alone, when the bucket lags `OUT` (a failed upload) |
 | `tt-snapshot-trigger.timer`, `.service`, `trigger.sh` | `/etc/systemd/system/`, `/usr/local/lib/tt-snapshot/` | every 2 minutes: starts `tt-snapshot.service` when a snapshot is due ([when](#when-it-runs)), or `tt-snapshot-upload.service` when the bucket lags |
@@ -36,7 +36,7 @@ sudo systemctl start --no-block tt-snapshot.service && journalctl -fu tt-snapsho
 sudo systemctl enable --now tt-snapshot-trigger.timer
 ```
 
-The first run copies the whole history into `OUT` and uploads it: on mainnet, 70 GB, about 12 minutes to publish and 10 to upload on a gigabit link. Later runs copy and upload only the tables that changed since the run before, usually a few MB. Rerun `setup.sh` to update ttsnap or the scripts; it keeps `/etc/tt-snapshot.env` and adds the settings new since its last run. A setting removed from the file by hand stays out (`/var/lib/tt-snapshot/env-names` lists those it has offered): to turn one off, set it empty or delete it. Also rerun it after changing `ROOT` or `OUT` there: the units' mount dependencies (`RequiresMountsFor=`, in `tt-snapshot.service.d/paths.conf` and `tt-snapshot-upload.service.d/paths.conf`) come from them.
+The first run copies the whole history into `OUT` and uploads it: on mainnet, about 70 GB, about 12 minutes to publish and 10 to upload on a gigabit link. Later runs copy and upload only the tables that changed since the run before, usually a few MB. Rerun `setup.sh` to update ttsnap or the scripts; it keeps `/etc/tt-snapshot.env` and adds the settings new since its last run. A setting removed from the file by hand stays out (`/var/lib/tt-snapshot/env-names` lists those it has offered): to turn one off, set it empty or delete it. Also rerun it after changing `ROOT` or `OUT` there: the units' mount dependencies (`RequiresMountsFor=`, in `tt-snapshot.service.d/paths.conf` and `tt-snapshot-upload.service.d/paths.conf`) come from them.
 
 ## When it runs
 

@@ -118,10 +118,15 @@ func cmdFetch(args []string) error {
 		return err
 	}
 	fmt.Printf("installed the %s snapshot of %s up to round %d into %s\n", m.Kind, m.GenesisID, m.History.Last, gdir)
+	d := shellQuote(o.dataDir)
+	if cfg, err := config.LoadConfigFromDisk(o.dataDir); err == nil && cfg.TimeTravelHoldersIndex {
+		// the install drops any holders index, and the build needs algod stopped
+		fmt.Printf("next: build the asset holders index before starting algod: ttimport -holders-index -d %s\n", d)
+	}
 	if m.Kind == kindHistory {
-		fmt.Printf("next: start algod on %s, then run: ttsnap catchup -d %s\n", o.dataDir, o.dataDir)
+		fmt.Printf("next: start algod on %s, then run: ttsnap catchup -d %s\n", d, d)
 	} else {
-		fmt.Printf("next: start algod on %s; it continues from round %d\n", o.dataDir, *m.TrackerRound)
+		fmt.Printf("next: start algod on %s; it continues from round %d\n", d, *m.TrackerRound)
 	}
 	return nil
 }
@@ -246,7 +251,7 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 			}
 			return m, dirs.RootGenesisDir, nil
 		}
-		return nil, "", fmt.Errorf("%s already exists: remove it to install a snapshot", histFinal)
+		return nil, "", fmt.Errorf("%s already exists (any start of the node creates it): to install a snapshot, stop the node and delete %s (and the genesis directories that config.json's *Dir settings put elsewhere)", histFinal, dirs.RootGenesisDir)
 	} else if !os.IsNotExist(err) {
 		return nil, "", err
 	}
