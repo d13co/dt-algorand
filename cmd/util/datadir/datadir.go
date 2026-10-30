@@ -48,7 +48,7 @@ func ResolveDataDir() string {
 func EnsureFirstDataDir() string {
 	dir := ResolveDataDir()
 	if dir == "" {
-		reportErrorf(errorNoDataDirectory, config.DataDirEnvName())
+		reportErrorf(errorNoDataDirectory, config.DataDirEnv, config.DataDirEnvNote())
 	}
 	return dir
 }
@@ -75,7 +75,7 @@ func MaybeSingleDataDir() string {
 // Reports and Error and exits when no data directories are available.
 func GetDataDirs() (dirs []string) {
 	if len(DataDirs) == 0 {
-		reportErrorf(errorNoDataDirectory, config.DataDirEnvName())
+		reportErrorf(errorNoDataDirectory, config.DataDirEnv, config.DataDirEnvNote())
 	}
 	dirs = append(dirs, EnsureFirstDataDir())
 	dirs = append(dirs, DataDirs[1:]...)

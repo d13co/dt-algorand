@@ -16,35 +16,38 @@
 
 package config
 
-import (
-	"os"
-	"path/filepath"
-	"strings"
+import "os"
+
+// dtalgorand installs next to stock algorand, so its binaries read their own environment
+// variables, never the stock ALGORAND_DATA and ALGORAND_KMD, which may point at a stock node.
+const (
+	// DataDirEnv names the algod data directory when -d isn't given.
+	DataDirEnv = "DTALGORAND_DATA"
+	// KmdDirEnv names goal's kmd data directory when -k isn't given.
+	KmdDirEnv = "DTALGORAND_KMD"
+
+	stockDataDirEnv = "ALGORAND_DATA"
 )
 
-// DataDirEnvName is the environment variable that names the data directory when -d isn't
-// given: ALGORAND_DATA, or DTALGORAND_DATA under a dt name (see EnvName).
-func DataDirEnvName() string {
-	return EnvName("ALGORAND_DATA")
-}
-
-// DataDirFromEnv returns the data directory named by the DataDirEnvName variable, or "".
+// DataDirFromEnv returns the data directory named by $DTALGORAND_DATA, or "".
 func DataDirFromEnv() string {
-	return os.Getenv(DataDirEnvName())
+	return os.Getenv(DataDirEnv)
 }
 
-// EnvName returns the environment variable a binary reads in place of the stock variable name.
-// dtalgorand installs its binaries under their stock names and runs them through dt-prefixed
-// links (dtgoal, dtalgod, ...). Run under such a name, a binary reads DT<name> and ignores
-// <name>, which may point at a stock node on the same host. Any binary named dt* does this, and
-// it goes by argv[0] alone: run by its stock name, a dtalgorand binary reads the stock variables.
-func EnvName(name string) string {
-	return envName(os.Args[0], name)
-}
-
-func envName(arg0, name string) string {
-	if strings.HasPrefix(filepath.Base(arg0), "dt") {
-		return "DT" + name
+// ResolveDataDir returns flagDir (the -d value) if set, else DataDirFromEnv.
+func ResolveDataDir(flagDir string) string {
+	if flagDir != "" {
+		return flagDir
 	}
-	return name
+	return DataDirFromEnv()
+}
+
+// DataDirEnvNote explains, for a "data directory not specified" error, that a set
+// $ALGORAND_DATA was ignored. It returns "" when it wasn't set, or $DTALGORAND_DATA was.
+// Otherwise it returns a sentence with a leading space, to append to the error.
+func DataDirEnvNote() string {
+	if os.Getenv(stockDataDirEnv) == "" || DataDirFromEnv() != "" {
+		return ""
+	}
+	return " $" + stockDataDirEnv + " is set but ignored: dtalgorand reads $" + DataDirEnv + "."
 }

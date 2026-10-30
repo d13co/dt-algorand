@@ -108,7 +108,7 @@ func mnemonicDeterministicAccounts(initCfg PpConfig, out chan *crypto.SignatureS
 	close(out)
 }
 
-// load accounts from ${ALGORAND_DATA}/${netname}-${version}/*.rootkey
+// load accounts from ${DTALGORAND_DATA}/${netname}-${version}/*.rootkey
 func fileAccounts(ac *libgoal.Client) (out <-chan *crypto.SignatureSecrets, err error) {
 	genID, err2 := ac.GenesisID()
 	if err2 != nil {

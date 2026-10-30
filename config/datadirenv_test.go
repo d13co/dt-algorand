@@ -24,42 +24,22 @@ import (
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-func TestEnvName(t *testing.T) {
-	partitiontest.PartitionTest(t)
-	t.Parallel()
-
-	for arg0, dt := range map[string]bool{
-		"":                             false,
-		"goal":                         false,
-		"/usr/bin/algod":               false,
-		"/usr/lib/dtalgorand/bin/goal": false,
-		"/usr/bin/dtalgod/":            true,
-		"dtgoal":                       true,
-		"/usr/bin/dtalgod":             true,
-		"/opt/homebrew/bin/dtalgocfg":  true,
-		"./dtdiagcfg":                  true,
-		"../bin/dtalgoh":               true,
-	} {
-		for _, name := range []string{"ALGORAND_DATA", "ALGORAND_KMD"} {
-			want := name
-			if dt {
-				want = "DT" + name
-			}
-			require.Equal(t, want, envName(arg0, name), arg0)
-		}
-	}
-}
-
-// With both variables set, the binary reads only the one for its name. Run as the test binary
-// (not dt-named), that is ALGORAND_DATA.
+// Only $DTALGORAND_DATA counts; a stock $ALGORAND_DATA is ignored, and only noted.
 func TestDataDirFromEnv(t *testing.T) {
 	partitiontest.PartitionTest(t)
 
 	t.Setenv("ALGORAND_DATA", "/stock")
 	t.Setenv("DTALGORAND_DATA", "/dt")
-	require.Equal(t, "ALGORAND_DATA", DataDirEnvName())
-	require.Equal(t, "/stock", DataDirFromEnv())
+	require.Equal(t, "/dt", DataDirFromEnv())
+	require.Equal(t, "/dt", ResolveDataDir(""))
+	require.Equal(t, "/flag", ResolveDataDir("/flag"))
+	require.Empty(t, DataDirEnvNote())
+
+	t.Setenv("DTALGORAND_DATA", "")
+	require.Empty(t, DataDirFromEnv())
+	require.Empty(t, ResolveDataDir(""))
+	require.Equal(t, " $ALGORAND_DATA is set but ignored: dtalgorand reads $DTALGORAND_DATA.", DataDirEnvNote())
 
 	t.Setenv("ALGORAND_DATA", "")
-	require.Equal(t, "", DataDirFromEnv())
+	require.Empty(t, DataDirEnvNote())
 }

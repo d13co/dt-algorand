@@ -26,7 +26,7 @@ sudo apt install dtalgorand
 
 apt trusts every key in `d13co.asc`, hence the check before `apt update`.
 
-The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, the `dt` commands take the data directory from `$DTALGORAND_DATA` and ignore `$ALGORAND_DATA`, which may point at a stock node (likewise `$DTALGORAND_KMD` for `dtgoal -k`); the binaries in `/usr/lib/dtalgorand/bin`, run under their stock names, read `$ALGORAND_DATA` as stock ones do. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
+The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, the dtalgorand commands take the data directory from `$DTALGORAND_DATA` and ignore `$ALGORAND_DATA`, which may point at a stock node. Likewise, without `-k`, `dtgoal` takes kmd's data directory from `$DTALGORAND_KMD`, not `$ALGORAND_KMD`. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
 
 The package does not enable or start `dtalgorand.service`. It turns on unattended upgrades from apt.d13.co (`/etc/apt/apt.conf.d/51dtalgorand-upgrades`), and an upgrade restarts the nodes that are running.
 

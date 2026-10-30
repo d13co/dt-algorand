@@ -29,7 +29,7 @@ import (
 func TestEnsureDataDirReturnsWhenDataDirIsProvided(t *testing.T) { // nolint:paralleltest // Sets shared OS environment variable.
 	partitiontest.PartitionTest(t)
 	expectedDir := "~/.algorand"
-	os.Setenv("ALGORAND_DATA", expectedDir)
+	os.Setenv("DTALGORAND_DATA", expectedDir)
 	actualDir := datadir.EnsureFirstDataDir()
 	require.Equal(t, expectedDir, actualDir)
 }

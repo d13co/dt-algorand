@@ -466,6 +466,7 @@ def main():
     atexit.register(goal_network_stop, netdir, env)
 
     env['ALGORAND_DATA'] = nodeDataDir
+    env['DTALGORAND_DATA'] = nodeDataDir  # what goal reads; the scripts read ALGORAND_DATA
     env['ALGORAND_DATA2'] = primaryDataDir
 
     if args.unsafe_scrypt:
@@ -501,6 +502,7 @@ def main():
 
     if args.interactive:
         os.environ['ALGORAND_DATA'] = env['ALGORAND_DATA']
+        os.environ['DTALGORAND_DATA'] = env['DTALGORAND_DATA']
         os.system(os.environ['SHELL'])
 
     # ensure 'network stop' and 'network delete' also make they job

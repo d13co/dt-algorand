@@ -18,7 +18,6 @@ package main
 
 const (
 	// General
-	errorNoDataDirectory        = "Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment. Exiting."
 	errorOneDataDirSupported    = "Only one data directory can be specified for this command."
 	errorRequestFail            = "Error processing command: %s"
 	errorGenesisIDFail          = "Error determining kmd folder (%s). Ensure the node is running in %s."

@@ -9,7 +9,7 @@ How the dtalgorand packages are laid out, built and released: the Debian package
 | Path | |
 |---|---|
 | `/usr/lib/dtalgorand/bin/` | `algod`, `goal`, `kmd`, `algoh`, `algocfg`, `algokey`, `diagcfg`, `node_exporter` under their stock names: goal and algoh run algod and kmd from their own directory |
-| `/usr/bin/dt*` | links to them: `dtalgod`, `dtgoal`, `dtkmd`, `dtalgoh`, `dtalgocfg`, `dtalgokey`, `dtdiagcfg`; run under a `dt` name, a binary reads `$DTALGORAND_DATA` and `$DTALGORAND_KMD` instead of `$ALGORAND_DATA` and `$ALGORAND_KMD` (`config.EnvName`); `dtgoal` and `dtalgoh` pass the data directory to the algod and kmd they start with `-d`, since those run under their stock names |
+| `/usr/bin/dt*` | links to them: `dtalgod`, `dtgoal`, `dtkmd`, `dtalgoh`, `dtalgocfg`, `dtalgokey`, `dtdiagcfg` |
 | `/usr/bin/ttimport` | [ttimport](../../tools/ttimport/README.md) |
 | `/usr/bin/ttsnap` | [ttsnap](../../tools/ttsnap/README.md): install a history snapshot, then catch up from a catchpoint |
 | `/usr/share/dtalgorand/ttsnap/keys` | the Falcon-1024 keys of the snapshot producers and attesters `ttsnap fetch` trusts |

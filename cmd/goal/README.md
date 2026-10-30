@@ -6,7 +6,7 @@ begins at the top level of the `go-algorand` repo.
 It is also assumed that the main README's installation instructions have been followed and `make install` run so that the `goal` executable has been rebuilt from the same source as this example and is available in the shell environment.
 You can run `ls -l $(which goal)` after your `make install` and look at the installation time as a sanity check.
 
-Finally, all the `goal` commands assume that `${ALGORAND_DATA}` has been set. See the first Q/A for how this is done.
+Finally, all the `goal` commands assume that `${DTALGORAND_DATA}` has been set. See the first Q/A for how this is done.
 
 ## Starting a Single Node Dev Network
 
@@ -27,9 +27,9 @@ NAME=niftynetwork
 # assuming here that are currently working out of the root directory of the go-algorand repo
 goal network create -n ${NAME} -r ${NETWORKS}/${NAME} -t ./test/testdata/nettemplates/OneNodeFuture.json
 
-# after the next command and for the rest of the README, we assume that `${ALGORAND_DATA}` is set
-export ALGORAND_DATA=${NETWORKS}/${NAME}/Primary
-echo $ALGORAND_DATA
+# after the next command and for the rest of the README, we assume that `${DTALGORAND_DATA}` is set
+export DTALGORAND_DATA=${NETWORKS}/${NAME}/Primary
+echo $DTALGORAND_DATA
 
 # start the network
 goal node start

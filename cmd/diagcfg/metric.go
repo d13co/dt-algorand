@@ -110,7 +110,7 @@ func getConfigFilePath() (string, error) {
 	maybeUpdateDataDirFromEnv()
 	configFilePath := dataDir
 	if configFilePath == "" {
-		return "", fmt.Errorf(metricDataDirectoryEmpty, config.DataDirEnvName())
+		return "", fmt.Errorf(metricDataDirectoryEmpty, config.DataDirEnv, config.DataDirEnvNote())
 	}
 
 	// check if directory exists.

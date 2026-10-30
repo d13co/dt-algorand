@@ -24,5 +24,5 @@ import (
 
 func errorNoDataDirectory() error {
 	return fmt.Errorf("Data directory not specified.  Please make sure to pass dir path or an empty string "+
-		" if $%s in your environment is set.", config.DataDirEnvName())
+		" if $%s in your environment is set.%s", config.DataDirEnv, config.DataDirEnvNote())
 }
