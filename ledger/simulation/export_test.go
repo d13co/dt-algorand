@@ -46,6 +46,15 @@ func WithAfterTxnHook(r Request, hook func(g, i int)) Request {
 	return r
 }
 
+// WithBeforeTxnHook returns a copy of r that runs hook at the end of the tracer's BeforeTxn for
+// each top-level txn. A panic in hook happens inside the txn, as a panic while applying it would,
+// and leaves the evaluator usable. As with the other hooks, g is 0 for every parallel group.
+func WithBeforeTxnHook(r Request, hook func(g, i int)) Request {
+	r.hooks = withHooks(r.hooks)
+	r.hooks.beforeTxn = hook
+	return r
+}
+
 func withHooks(h *testHooks) *testHooks {
 	if h == nil {
 		return &testHooks{}
