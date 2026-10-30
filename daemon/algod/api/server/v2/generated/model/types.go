@@ -1814,7 +1814,7 @@ type BoxesVersionsResponse struct {
 
 // CapabilitiesResponse The fork features this node has turned on, and the limits it places on simulate and query requests.
 type CapabilitiesResponse struct {
-	// DeveloperApi If true, the node serves the developer API (POST /v2/teal/compile, /v2/teal/disassemble, /v2/transactions/async, and more), and requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	// DeveloperApi If true, the node serves POST /v2/teal/compile and /v2/teal/disassemble (and POST /v2/transactions/async when EnableExperimentalAPI is also set), and requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
 
 	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
