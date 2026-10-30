@@ -265,6 +265,13 @@ type simulatorLedger struct {
 	// upgradeTo, when set, is the protocol that the round after start switches to (Request.Protocol).
 	upgradeTo protocol.ConsensusVersion
 
+	// pastStart is set when start is before the node's latest round, so the simulated block, the
+	// one after start, is already on chain. The policies that apply only to new blocks are then
+	// off, so a txn the chain accepted at the time simulates as accepted
+	// (eval.EvaluatorOptions.SkipNewBlockPolicies). Set by Simulate, for each round of a request
+	// with rounds, and by prepareRound.
+	pastStart bool
+
 	// counted is the ledger whose reads count in the request's Effort (effort.go). Set by Simulate.
 	counted ledger.CountedLedger
 }
@@ -335,12 +342,13 @@ func (l simulatorLedger) StartEvaluator(hdr bookkeeping.BlockHeader, paysetHint,
 	}
 	return eval.StartEvaluator(&l, hdr,
 		eval.EvaluatorOptions{
-			PaysetHint:          paysetHint,
-			Generate:            true,
-			Validate:            true,
-			MaxTxnBytesPerBlock: maxTxnBytesPerBlock,
-			Tracer:              tracer,
-			SkipValidityWindow:  l.skipValidityWindow,
+			PaysetHint:           paysetHint,
+			Generate:             true,
+			Validate:             true,
+			MaxTxnBytesPerBlock:  maxTxnBytesPerBlock,
+			Tracer:               tracer,
+			SkipValidityWindow:   l.skipValidityWindow,
+			SkipNewBlockPolicies: l.pastStart,
 		})
 }
 
@@ -892,6 +900,7 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 	} else {
 		s.ledger.start = latest
 	}
+	s.ledger.pastStart = s.ledger.start < latest
 	// s is a copy, so these hold for this call only.
 	s.ledger.skipValidityWindow = simulateRequest.SkipValidityWindow
 	s.ledger.rewriteValidityWindow = simulateRequest.RewriteValidityWindow

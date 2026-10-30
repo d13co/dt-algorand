@@ -279,6 +279,7 @@ type queryRound struct {
 func (s Simulator) prepareRound(req *QueryRequest, rnd, latest basics.Round) *queryRound {
 	qr := &queryRound{ledger: s.ledger}
 	qr.ledger.start = rnd
+	qr.ledger.pastStart = rnd < latest
 	prevHdr, err := qr.ledger.BlockHdr(rnd)
 	if err != nil {
 		qr.err = err
@@ -599,7 +600,7 @@ func (run *queryRun) runPiece(piece queryWork) {
 	fresh := func() bool {
 		ql = &queryLedger{simulatorLedger: qr.ledger}
 		var err error
-		if qs, err = eval.NewQueryState(ql, qr.prevHdr, qr.nextHdr, qr.totals); err != nil {
+		if qs, err = eval.NewQueryState(ql, qr.prevHdr, qr.nextHdr, qr.totals, !qr.ledger.pastStart); err != nil {
 			run.fail(qr, err)
 			return false
 		}
