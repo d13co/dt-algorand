@@ -115,7 +115,7 @@ func main() {
 			maybefail(err, "bad net url %v\n", err)
 			cfg.APIToken = string(token)
 		} else {
-			fmt.Fprintf(os.Stderr, "need (config.ClientURL and config.APIToken) or (-d DTALGORAND_DATA)\n")
+			fmt.Fprintf(os.Stderr, "need (config.ClientURL and config.APIToken) or (-d <datadir>)\n")
 			os.Exit(1)
 		}
 	}

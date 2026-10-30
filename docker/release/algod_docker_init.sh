@@ -29,12 +29,12 @@ else
 fi
 
 echo "starting algod"
-goal node start
+goal node start -d "${ALGORAND_DATA}"
 
 sleep 5
 
 echo "algod status"
-goal node status
+goal node status -d "${ALGORAND_DATA}"
 
 tail -f /dev/null
 

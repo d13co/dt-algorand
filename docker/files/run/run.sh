@@ -2,8 +2,8 @@
 
 set -e
 
-if [ "$ALGORAND_DATA" != "/algod/data" ]; then
-  echo "Do not override 'ALGORAND_DATA' environment variable."
+if [ "$ALGORAND_DATA" != "/algod/data" ] || [ "$DTALGORAND_DATA" != "/algod/data" ]; then
+  echo "Do not override the 'ALGORAND_DATA' or 'DTALGORAND_DATA' environment variables."
   exit 1
 fi
 
@@ -28,7 +28,7 @@ fi
 
 function catchup() {
   sleep 5
-  goal node catchup --force --min 1000000
+  goal node catchup -d "$ALGORAND_DATA" --force --min 1000000
 }
 
 function start_public_network() {
@@ -43,10 +43,10 @@ function start_public_network() {
 
   if [ "$PEER_ADDRESS" != "" ]; then
        printf "$PEER_ADDRESS"
-       algod -o -p $PEER_ADDRESS
+       algod -o -d "$ALGORAND_DATA" -p $PEER_ADDRESS
   else
     # redirect output to stdout
-    algod -o
+    algod -o -d "$ALGORAND_DATA"
   fi
 }
 
@@ -100,7 +100,7 @@ function configure_data_dir() {
     fi
     diagcfg telemetry enable -d "$ALGORAND_DATA"
   elif ! [ -f "/etc/algorand/logging.config" ]; then
-    diagcfg telemetry disable
+    diagcfg telemetry disable -d "$ALGORAND_DATA"
   fi
 
   # start kmd
