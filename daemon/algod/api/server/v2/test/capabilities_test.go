@@ -40,24 +40,45 @@ import (
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-// getCapabilities asks h for GET /v2/capabilities, as a client would.
-func getCapabilities(t *testing.T, h http.Handler) model.CapabilitiesResponse {
+// capabilitiesJSON asks h for GET /v2/capabilities, as a client would, and returns the answer.
+func capabilitiesJSON(t *testing.T, h http.Handler) []byte {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/capabilities", nil))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	return rec.Body.Bytes()
+}
+
+// getCapabilities asks h for GET /v2/capabilities and decodes the answer.
+func getCapabilities(t *testing.T, h http.Handler) model.CapabilitiesResponse {
+	t.Helper()
 	var capabilities model.CapabilitiesResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &capabilities))
+	require.NoError(t, json.Unmarshal(capabilitiesJSON(t, h), &capabilities))
 	return capabilities
 }
 
-// nodeCapabilities asks a node with cfg for its capabilities.
-func nodeCapabilities(t *testing.T, cfg config.Local) model.CapabilitiesResponse {
+// capabilitiesRouter serves a mock node with cfg.
+func capabilitiesRouter(t *testing.T, cfg config.Local) http.Handler {
 	t.Helper()
 	n := makeMockNodeWithConfig(nil, t.Name(), nil, cannedStatusReportGolden, false, cfg)
-	return getCapabilities(t, server.NewRouter(logging.TestingLog(t), n, make(chan struct{}), "", "", nil, 1000))
+	return server.NewRouter(logging.TestingLog(t), n, make(chan struct{}), "", "", nil, 1000)
 }
 
+// TestCapabilitiesJSON checks what a node with the default config answers, field names included,
+// so that a rename in the spec fails here and not in the clients.
+func TestCapabilitiesJSON(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	require.JSONEq(t, `{
+		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
+		"simulate": {"max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1},
+		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16}
+	}`, string(capabilitiesJSON(t, capabilitiesRouter(t, config.GetDefaultLocal()))))
+}
+
+// TestCapabilities checks how the answer follows the node config. TestCapabilitiesJSON covers the
+// defaults.
 func TestCapabilities(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -69,9 +90,6 @@ func TestCapabilities(t *testing.T) {
 		configure func(*config.Local)
 		want      model.CapabilitiesResponse
 	}{
-		{"defaults", func(*config.Local) {}, model.CapabilitiesResponse{
-			TimeLimitSeconds: 108, Simulate: defaultSimulate, Query: defaultQuery,
-		}},
 		{"query disabled", func(c *config.Local) {
 			c.MaxAPIQueryCalls = 0
 		}, model.CapabilitiesResponse{
@@ -134,27 +152,9 @@ func TestCapabilities(t *testing.T) {
 			t.Parallel()
 			cfg := config.GetDefaultLocal()
 			tc.configure(&cfg)
-			require.Equal(t, tc.want, nodeCapabilities(t, cfg))
+			require.Equal(t, tc.want, getCapabilities(t, capabilitiesRouter(t, cfg)))
 		})
 	}
-}
-
-// TestCapabilitiesJSON checks the field names a client reads, so that a rename in the spec fails
-// here and not in the clients.
-func TestCapabilitiesJSON(t *testing.T) {
-	partitiontest.PartitionTest(t)
-	t.Parallel()
-
-	n := makeMockNodeWithConfig(nil, t.Name(), nil, cannedStatusReportGolden, false, config.GetDefaultLocal())
-	rec := httptest.NewRecorder()
-	server.NewRouter(logging.TestingLog(t), n, make(chan struct{}), "", "", nil, 1000).
-		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/capabilities", nil))
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	require.JSONEq(t, `{
-		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
-		"simulate": {"max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1},
-		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16}
-	}`, rec.Body.String())
 }
 
 // simulateLimitsNode serves a node on env with cfg changed by configure, and returns its router and
