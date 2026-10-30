@@ -17,6 +17,7 @@
 package ledger
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"maps"
@@ -756,6 +757,21 @@ func TestTimeTravelVersions(t *testing.T) {
 				require.False(t, p.More)
 				require.Equal(t, want, p.Versions, "%s %+v", c.name, inc)
 
+				// a page, by range or by rounds, stops when its
+				// context is done or past its deadline
+				canceled, cancel := context.WithCancel(context.Background())
+				cancel()
+				for _, rounds := range [][]basics.Round{nil, {latest}} {
+					r := all
+					r.Rounds = rounds
+					r.Ctx = canceled
+					_, err = c.lookup(r)
+					require.ErrorIs(t, err, context.Canceled, c.name)
+					r.Ctx, r.Deadline = nil, time.Now().Add(-time.Second)
+					_, err = c.lookup(r)
+					require.ErrorIs(t, err, context.DeadlineExceeded, c.name)
+				}
+
 				desc := slices.Clone(want)
 				slices.Reverse(desc)
 				var mid []Version // a range that cuts versions off both ends
@@ -801,7 +817,7 @@ func TestTimeTravelVersions(t *testing.T) {
 		p, err = l.AppVersions(kv, VersionRange{Max: latest, Limit: 1000})
 		require.NoError(t, err)
 		vs := p.Versions
-		h := l.historyNow(latest)
+		h := l.historyNow(latest, nil)
 		var budget uint64
 		for _, v := range vs[1:3] {
 			val, ok, err := h.Get(timetravel.AppParamsKey(kv), uint64(v.Round))
@@ -893,7 +909,7 @@ func TestTimeTravelVersions(t *testing.T) {
 		// the read budget counts the values read, returned or not: the
 		// params as of a round and, at their destruction, the params
 		// before it. A page always holds its first round.
-		hv := l.historyNow(latest)
+		hv := l.historyNow(latest, nil)
 		params, ok, err := hv.Get(timetravel.AssetParamsKey(asa2), uint64(created))
 		require.NoError(t, err)
 		require.True(t, ok)
@@ -1410,7 +1426,7 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 			r.MaxSeeks = 0
 			// every box the app ever had a record of counts
 			var recorded uint64
-			require.NoError(t, l.historyNow(latest).Objects(timetravel.BoxKvPrefix(uint64(app)), func([]byte) bool { recorded++; return true }))
+			require.NoError(t, l.historyNow(latest, nil).Objects(timetravel.BoxKvPrefix(uint64(app)), func([]byte) bool { recorded++; return true }))
 			require.GreaterOrEqual(t, recorded, uint64(len(boxChanges)))
 			r.MaxObjects = recorded - 1
 			_, err = lookup(r)
@@ -1425,6 +1441,19 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 		p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
 		require.NoError(t, err)
 		require.Empty(t, p.Versions, "an app without boxes")
+
+		// a page, by range or by rounds, stops when its context is
+		// done or past its deadline
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		for _, rounds := range [][]basics.Round{nil, {latest}} {
+			r := VersionRange{Max: latest, Limit: 10, Rounds: rounds, Ctx: canceled}
+			_, err = l.AppBoxVersions(app, r)
+			require.ErrorIs(t, err, context.Canceled)
+			r.Ctx, r.Deadline = nil, time.Now().Add(-time.Second)
+			_, err = l.AppBoxVersions(app, r)
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+		}
 		_, err = l.AppBoxVersions(app, VersionRange{Max: latest + 1, Limit: 10})
 		require.ErrorIs(t, err, errHistoryUnavailable)
 	}
@@ -1511,7 +1540,7 @@ func checkBoxPrefixVersions(t *testing.T, l *Ledger, app basics.AppIndex, every 
 
 	// as of rounds, MaxObjects counts the boxes under the prefix only
 	var under uint64
-	require.NoError(t, l.historyNow(latest).Objects(timetravel.BoxKvNamePrefix(uint64(app), []byte("a")), func([]byte) bool { under++; return true }))
+	require.NoError(t, l.historyNow(latest, nil).Objects(timetravel.BoxKvNamePrefix(uint64(app), []byte("a")), func([]byte) bool { under++; return true }))
 	require.EqualValues(t, 4, under, "a, a\x00, a\x00b, ab")
 	r := VersionRange{Min: every[0], Max: latest, Limit: 1000, Rounds: every, MaxObjects: under}
 	_, err := lookup(r)

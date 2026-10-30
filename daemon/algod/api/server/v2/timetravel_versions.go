@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -118,7 +117,7 @@ func strs[T ~string](vals *[]T) []string {
 // versionsRange checks a versions query and returns the history and the
 // range to read. Responses report the range's Max as their round: with
 // rounds, the largest requested round left after next.
-func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.VersionRange, error) {
+func (v2 *Handlers) versionsRange(ctx echo.Context, q versionsQuery) (versionsLedger, ledger.VersionRange, error) {
 	l := v2.Node.LedgerForAPI()
 	vl, ok := l.(versionsLedger)
 	if !ok || !v2.Node.Config().EnableTimeTravel {
@@ -130,6 +129,11 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 		}
 	}
 	r := ledger.VersionRange{Max: l.Latest(), Limit: DefaultVersions}
+	// A page stops when the client goes away or at the node's time limit.
+	r.Ctx = ctx.Request().Context()
+	if deadline, ok := requestDeadline(ctx, v2.Node.Config()); ok {
+		r.Deadline = deadline
+	}
 	for _, inc := range q.include {
 		switch inc {
 		case "values":
@@ -251,6 +255,8 @@ func (v2 *Handlers) versionsRange(q versionsQuery) (versionsLedger, ledger.Versi
 	if rs := r.Rounds; rs != nil {
 		r.Min, r.Max = min(rs[0], rs[len(rs)-1]), max(rs[0], rs[len(rs)-1])
 	}
+	// The page counts the entries it reads.
+	r.Ctx = contextWithEffort(r.Ctx, v2.startEffort(ctx))
 	return vl, r, nil
 }
 
@@ -263,6 +269,9 @@ func nextToken(page ledger.VersionPage) *string {
 }
 
 func (v2 *Handlers) versionsError(ctx echo.Context, err error) error {
+	if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
+		return answerErr
+	}
 	if errors.Is(err, ledger.ErrTooManyVersionObjects) {
 		return badRequest(ctx, err, err.Error()+": use exclude or the per-resource versions endpoints", v2.Log)
 	}
@@ -279,7 +288,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: true, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: true, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -294,7 +303,7 @@ func (v2 *Handlers) AccountVersions(ctx echo.Context, address basics.Address, pa
 // AccountAssetVersions lists the versions of an account's asset holding.
 // (GET /v2/accounts/{address}/assets/{asset-id}/versions)
 func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Address, assetID basics.AssetIndex, params model.AccountAssetVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -308,7 +317,7 @@ func (v2 *Handlers) AccountAssetVersions(ctx echo.Context, address basics.Addres
 // AccountApplicationVersions lists the versions of an account's application local state.
 // (GET /v2/accounts/{address}/applications/{application-id}/versions)
 func (v2 *Handlers) AccountApplicationVersions(ctx echo.Context, address basics.Address, applicationID basics.AppIndex, params model.AccountApplicationVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: true, rounds: params.Rounds, key: params.Key, prefix: params.Prefix, keyOK: true})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: true, rounds: params.Rounds, key: params.Key, prefix: params.Prefix, keyOK: true})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -355,7 +364,7 @@ func (v2 *Handlers) accountVersionsResponse(ctx echo.Context, addr basics.Addres
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.AccountVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.AccountVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // AccountVersionToModel is the REST form of a version of an account's
@@ -494,7 +503,7 @@ func BoxVersionToModel(v ledger.Version, values bool) (model.BoxVersion, error) 
 // AssetVersions lists the versions of an asset's params.
 // (GET /v2/assets/{asset-id}/versions)
 func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, params model.AssetVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -510,13 +519,13 @@ func (v2 *Handlers) AssetVersions(ctx echo.Context, assetID basics.AssetIndex, p
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.AssetVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.AssetVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // ApplicationVersions lists the versions of an application's params.
 // (GET /v2/applications/{application-id}/versions)
 func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: true, rounds: params.Rounds, key: params.Key, prefix: params.Prefix, keyOK: true})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: true, rounds: params.Rounds, key: params.Key, prefix: params.Prefix, keyOK: true})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -532,7 +541,7 @@ func (v2 *Handlers) ApplicationVersions(ctx echo.Context, applicationID basics.A
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.ApplicationVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.ApplicationVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // ApplicationBoxVersions lists the versions of an application's box.
@@ -546,7 +555,7 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -562,7 +571,7 @@ func (v2 *Handlers) ApplicationBoxVersions(ctx echo.Context, applicationID basic
 		}
 		out = append(out, mv)
 	}
-	return ctx.JSON(http.StatusOK, model.BoxVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.BoxVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }
 
 // BoxesVersionToModel is the REST form of a version from the ledger's
@@ -581,7 +590,7 @@ func BoxesVersionToModel(v ledger.Version, values bool) model.BoxesVersion {
 // ApplicationBoxesVersions lists the changes of an application's boxes.
 // (GET /v2/applications/{application-id}/boxes/versions)
 func (v2 *Handlers) ApplicationBoxesVersions(ctx echo.Context, applicationID basics.AppIndex, params model.ApplicationBoxesVersionsParams) error {
-	vl, r, err := v2.versionsRange(versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix, prefixOK: true})
+	vl, r, err := v2.versionsRange(ctx, versionsQuery{min: params.MinRound, max: params.MaxRound, order: (*string)(params.Order), limit: params.Limit, next: params.Next, include: strs(params.Include), keysOK: false, rounds: params.Rounds, key: params.Key, prefix: params.Prefix, prefixOK: true})
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -608,5 +617,5 @@ func (v2 *Handlers) ApplicationBoxesVersions(ctx echo.Context, applicationID bas
 	for _, v := range page.Versions {
 		out = append(out, BoxesVersionToModel(v, r.Values))
 	}
-	return ctx.JSON(http.StatusOK, model.BoxesVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
+	return writeJSON(ctx, model.BoxesVersionsResponse{Round: r.Max, NextToken: nextToken(page), Versions: out})
 }

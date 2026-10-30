@@ -108,7 +108,7 @@ func (l *Ledger) HoldersIndexState() timetravel.HoldersState {
 // last page has no More even when it is full, unless the look-ahead reaches
 // the cap. Pages at a fixed round never change.
 func (l *Ledger) AssetHoldersAt(rnd basics.Round, aidx basics.AssetIndex, after *basics.Address, limit uint64) (AssetHoldersPage, error) {
-	h := l.historyNow(rnd)
+	h := l.historyNow(rnd, nil) // the holders endpoint does not report Effort
 	if h == nil {
 		// the history may have been found untrusted since the caller checked
 		if err := l.HistoryUntrusted(); err != nil {

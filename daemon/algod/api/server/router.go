@@ -104,6 +104,7 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 	e.HideBanner = true
 
 	e.Pre(
+		v2.RecordArrival, // first: the time limits of expensive requests count from it
 		middlewares.MakeConnectionLimiter(numConnectionsLimit),
 		middleware.RemoveTrailingSlash())
 	e.Use(
@@ -141,8 +142,8 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 		Log:           logger,
 		Shutdown:      shutdown,
 		KeygenLimiter: semaphore.NewWeighted(1),
-		// node-wide: shared by every simulate request with "rounds"
-		SimulateRoundsLimiter: semaphore.NewWeighted(int64(v2.EffectiveSimulateRoundsParallelism(node.Config().SimulateRoundsParallelism))),
+		// node-wide: shared by every simulate request
+		SimulateLimiter: v2.NewSimulateLimiter(node.Config().SimulateParallelism),
 	}
 	nppublic.RegisterHandlers(e, &v2Handler, publicMiddleware...)
 	npprivate.RegisterHandlers(e, &v2Handler, adminMiddleware...)

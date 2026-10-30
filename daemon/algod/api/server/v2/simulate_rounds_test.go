@@ -37,16 +37,3 @@ func TestEffectiveMaxSimulateRounds(t *testing.T) {
 	require.Equal(t, ceiling, effectiveMaxSimulateRounds(ceiling+1))
 	require.Equal(t, ceiling, effectiveMaxSimulateRounds(1<<63))
 }
-
-func TestEffectiveSimulateRoundsParallelism(t *testing.T) {
-	partitiontest.PartitionTest(t)
-	t.Parallel()
-
-	const ceiling = simulation.MaxSimulateRounds
-	require.Equal(t, 1, EffectiveSimulateRoundsParallelism(-3))
-	require.Equal(t, 1, EffectiveSimulateRoundsParallelism(0))
-	require.Equal(t, 1, EffectiveSimulateRoundsParallelism(1))
-	require.Equal(t, 4, EffectiveSimulateRoundsParallelism(4))
-	require.Equal(t, ceiling, EffectiveSimulateRoundsParallelism(ceiling))
-	require.Equal(t, ceiling, EffectiveSimulateRoundsParallelism(ceiling+1))
-}

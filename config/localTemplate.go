@@ -606,10 +606,9 @@ type Local struct {
 	// MaxAPISimulateExtraOpcodeBudget is the most extra-opcode-budget a simulate request may ask for. It
 	// applies to each top-level transaction group of the request. 0 counts as 320000, the upstream limit;
 	// values above 320000000 are clamped to 320000000 when used. A larger budget lets one group run longer (roughly
-	// 60 ns to 2 µs per unit): the node evaluates it to the end even if the client has gone away or the
-	// REST write timeout has passed. Execution traces (EnableDeveloperAPI) take over 100 bytes per opcode
-	// run, so a raised limit and EnableDeveloperAPI together can exhaust the node's memory. A value below
-	// 320000 rejects clients that ask for the upstream maximum. Non-standard fork feature.
+	// 60 ns to 2 µs per unit); the simulation stops when the client goes away or RestWriteTimeoutSeconds is
+	// about to pass. A value below 320000 rejects clients that ask for the upstream maximum. Non-standard
+	// fork feature.
 	MaxAPISimulateExtraOpcodeBudget uint64 `version[39]:"320000"`
 
 	// MaxAPISimulateRounds is the most rounds one simulate request may list in "rounds", which simulates
@@ -617,10 +616,30 @@ type Local struct {
 	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
 	MaxAPISimulateRounds uint64 `version[39]:"16"`
 
-	// SimulateRoundsParallelism is the most per-round simulations of "rounds" requests that run at once,
-	// across all requests of the node. Values below 1 count as 1; values above simulation.MaxSimulateRounds
-	// (256) count as that. Non-standard fork feature.
+	// SimulateRoundsParallelism is not used: the rounds of a "rounds" simulate request run one after another.
+	// Non-standard fork feature.
+	//
+	// Deprecated: no effect.
 	SimulateRoundsParallelism int `version[39]:"4"`
+
+	// SimulateParallelism is the most simulate requests that run at once across the node; the rounds of a
+	// "rounds" request run one after another in its slot. A request that can't get a slot within 250 ms is
+	// refused with 503 and Retry-After, so a load balancer can send it to another node. 0 means GOMAXPROCS,
+	// the CPUs the process may use, and a negative value no limit. This applies whether or not
+	// EnableEffortHeader is set, and is new: upstream and earlier builds of this fork queue simulate
+	// requests without limit, which -1 restores. Non-standard fork feature.
+	SimulateParallelism int `version[39]:"0"`
+
+	// EnableEffortHeader adds an X-Algod-Effort response header, the work the request did, to simulate
+	// requests, the time travel versions endpoints, /v2/deltas and reads at a past round (?round=), except
+	// the asset holders listing, which counts nothing. It is an RFC 9651 dictionary of integers: opcodes (app
+	// and logicsig budget consumed), lookups (ledger objects read), history (of those, read from the time
+	// travel history), scanned (entries read by scans), response-bytes (the answer's size before compression;
+	// 0 for reads at a past round, which are billed on lookups) and eval-us (time spent). Answers given
+	// before any work (503 when busy, most 400s) don't carry it; a 400 from the simulator's checks of a
+	// request without rounds carries what was counted so far. Meant for a load balancer that bills on it and
+	// removes it before answering clients. Non-standard fork feature.
+	EnableEffortHeader bool `version[39]:"false"`
 
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation

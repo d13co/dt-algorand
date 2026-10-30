@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
@@ -217,6 +218,33 @@ func TestTimeTravelLookups(t *testing.T) {
 			}
 			require.NotZero(t, reevaluated)
 
+			// a request's rebuild gives the same delta, is refused while every
+			// slot is busy, and stops with its context
+			old := basics.Round(0)
+			for r := first; r < l.trackers.getDbRound() && old == 0; r++ {
+				if _, berr := l.Block(r); berr == nil {
+					old = r
+				}
+			}
+			require.NotZero(t, old)
+			rebuilt, err := l.GetStateDeltaForRoundContext(context.Background(), old)
+			require.NoError(t, err)
+			require.Equal(t, deltaJSON(t, deltas[old]), deltaJSON(t, rebuilt))
+			for range cap(l.history.reeval) {
+				l.history.reeval <- struct{}{}
+			}
+			start := time.Now()
+			_, err = l.GetStateDeltaForRoundContext(context.Background(), old)
+			require.ErrorIs(t, err, ErrReevalBusy)
+			require.GreaterOrEqual(t, time.Since(start), ReevalAdmissionWait)
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err = l.GetStateDeltaForRoundContext(canceled, old)
+			require.ErrorIs(t, err, context.Canceled)
+			for range cap(l.history.reeval) {
+				<-l.history.reeval
+			}
+
 			// the check catches a delta that is not the round's
 			r = first + 500
 			h := l.historyAt(r)
@@ -400,7 +428,7 @@ func TestTimeTravelOnlineCirculation(t *testing.T) {
 				// re-evaluating a delta falls back to the online money
 				_, err = l.OnlineCirculation(r, r)
 				require.ErrorIs(t, err, ErrOnlineStakeUnavailable)
-				up, err := pastLedger{l, r}.OnlineCirculation(r, r)
+				up, err := pastLedger{l.Counted(nil), r}.OnlineCirculation(r, r)
 				require.NoError(t, err)
 				require.Equal(t, totals.Online.Money, up)
 			}

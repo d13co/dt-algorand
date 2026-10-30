@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/require"
@@ -158,7 +159,12 @@ func TestVersionsParams(t *testing.T) {
 		code, resp := get(vl, cfg, tc.params)
 		require.Equal(t, http.StatusOK, code)
 		require.Equal(t, "account "+addr.String(), vl.call)
-		require.Equal(t, tc.want, vl.r)
+		// every page gets the request's context and the node's time limit
+		r := vl.r
+		require.NotNil(t, r.Ctx)
+		require.WithinDuration(t, time.Now().Add(time.Duration(cfg.RestWriteTimeoutSeconds)*time.Second*9/10), r.Deadline, 5*time.Second)
+		r.Ctx, r.Deadline = nil, time.Time{}
+		require.Equal(t, tc.want, r)
 		require.Equal(t, tc.ex, vl.ex)
 		require.Equal(t, tc.round, resp.Round)
 	}
@@ -332,7 +338,10 @@ func TestVersionsParams(t *testing.T) {
 			continue
 		}
 		require.Equal(t, http.StatusOK, rec.Code, "%s: %s", name, rec.Body.String())
-		require.Equal(t, tc.want, vl.r, name)
+		r := vl.r
+		require.NotNil(t, r.Ctx, name)
+		r.Ctx, r.Deadline = nil, time.Time{}
+		require.Equal(t, tc.want, r, name)
 	}
 
 	// as of rounds, the boxes endpoint merges every box: bounded by
@@ -344,7 +353,9 @@ func TestVersionsParams(t *testing.T) {
 		return rec
 	}
 	require.Equal(t, http.StatusOK, boxesAt(nil).Code)
-	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, vl.r)
+	r := vl.r
+	r.Ctx, r.Deadline = nil, time.Time{}
+	require.Equal(t, ledger.VersionRange{Min: 5, Max: 5, Limit: 100, MaxSeeks: 100_000, MaxReadBytes: 64_000_000, Rounds: []basics.Round{5}, MaxObjects: cfg.MaxAPIBoxPerApplication, MaxEntries: 10_000}, r)
 	require.Equal(t, http.StatusOK, boxesAt(&[]model.ApplicationBoxesVersionsParamsInclude{model.ApplicationBoxesVersionsParamsIncludeValues}).Code)
 	require.EqualValues(t, 1_000, vl.r.MaxEntries)
 	for _, err := range []error{ledger.ErrTooManyVersionObjects, ledger.ErrRoundTooLarge} {

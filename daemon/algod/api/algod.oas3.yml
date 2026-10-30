@@ -1162,7 +1162,7 @@
               "description": "The limits of simulate requests on this node, and the simulate features it allows.",
               "properties": {
                 "developer-api": {
-                  "description": "If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+                  "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
                   "type": "boolean"
                 },
                 "max-extra-opcode-budget": {
@@ -1185,6 +1185,11 @@
                   "type": "integer",
                   "x-go-type": "uint64"
                 },
+                "time-limit-seconds": {
+                  "description": "The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
+                  "type": "integer",
+                  "x-go-type": "uint64"
+                },
                 "time-travel": {
                   "description": "If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).",
                   "type": "boolean"
@@ -1196,6 +1201,7 @@
                 "max-rounds",
                 "max-txn-groups",
                 "resource-limit-multiplier",
+                "time-limit-seconds",
                 "time-travel"
               ],
               "type": "object"
@@ -4576,6 +4582,26 @@
             },
             "description": "Internal Error"
           },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+          },
           "default": {
             "content": {},
             "description": "Unknown Error"
@@ -5076,6 +5102,26 @@
             },
             "description": "Internal Error"
           },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+          },
           "default": {
             "content": {},
             "description": "Unknown Error"
@@ -5456,6 +5502,26 @@
               }
             },
             "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
           },
           "default": {
             "content": {},
@@ -5854,6 +5920,26 @@
             },
             "description": "Internal Error"
           },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+          },
           "default": {
             "content": {},
             "description": "Unknown Error"
@@ -6209,7 +6295,17 @@
                 }
               }
             },
-            "description": "The box index does not cover the range yet"
+            "description": "The box index does not cover the range yet, or the time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
           },
           "default": {
             "content": {},
@@ -6404,6 +6500,26 @@
               }
             },
             "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
           },
           "default": {
             "content": {},
@@ -6831,6 +6947,26 @@
               }
             },
             "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The time travel history is not served, as it was found to differ from the chain"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
           },
           "default": {
             "content": {},
@@ -7924,7 +8060,22 @@
                 }
               }
             },
-            "description": "Service Temporarily Unavailable"
+            "description": "Service Temporarily Unavailable: every slot for rebuilding an old round's delta stayed busy (with Retry-After)"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
           },
           "default": {
             "content": {},
@@ -10543,7 +10694,22 @@
                 }
               }
             },
-            "description": "Service Temporarily Unavailable"
+            "description": "Service Temporarily Unavailable: the node is catching up, or every simulation slot stayed busy (with Retry-After)"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
           },
           "default": {
             "content": {},
@@ -10570,7 +10736,7 @@
                   "description": "The limits of simulate requests on this node, and the simulate features it allows.",
                   "properties": {
                     "developer-api": {
-                      "description": "If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+                      "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
                       "type": "boolean"
                     },
                     "max-extra-opcode-budget": {
@@ -10593,6 +10759,11 @@
                       "type": "integer",
                       "x-go-type": "uint64"
                     },
+                    "time-limit-seconds": {
+                      "description": "The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
+                      "type": "integer",
+                      "x-go-type": "uint64"
+                    },
                     "time-travel": {
                       "description": "If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).",
                       "type": "boolean"
@@ -10604,6 +10775,7 @@
                     "max-rounds",
                     "max-txn-groups",
                     "resource-limit-multiplier",
+                    "time-limit-seconds",
                     "time-travel"
                   ],
                   "type": "object"

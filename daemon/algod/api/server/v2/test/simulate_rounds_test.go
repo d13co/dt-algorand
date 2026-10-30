@@ -63,7 +63,10 @@ type roundsNode struct {
 	inFlight    atomic.Int64
 	maxInFlight atomic.Int64
 	// delay makes every simulation last at least this long, so that they overlap.
-	delay     time.Duration
+	delay time.Duration
+	// slowAt makes the simulations of these rounds (0 for a request without rounds) last until
+	// their request's context is done.
+	slowAt    map[basics.Round]bool
 	panicAt   basics.Round
 	errAt     map[basics.Round]error
 	invalidAt basics.Round
@@ -79,7 +82,16 @@ func (n *roundsNode) Simulate(request simulation.Request) (simulation.Result, er
 			break
 		}
 	}
-	time.Sleep(n.delay)
+	// A simulation stops when its request's context is done, as the simulator does.
+	ctx := request.Context()
+	if n.slowAt[request.Round] {
+		<-ctx.Done()
+	}
+	select {
+	case <-ctx.Done():
+		return simulation.Result{}, context.Cause(ctx)
+	case <-time.After(n.delay):
+	}
 
 	if n.panicAt != 0 && request.Round == n.panicAt {
 		panic(fmt.Sprintf("injected panic at round %d", request.Round))
@@ -654,7 +666,8 @@ func simulateRoundsDirect(ctx context.Context, t *testing.T, handler *v2.Handler
 	return rec, err
 }
 
-// TestSimulateRoundsLimiter checks cancellation, panics and the node-wide limiter.
+// TestSimulateRoundsLimiter checks cancellation, panics and that a request takes one slot of the
+// node-wide limiter.
 func TestSimulateRoundsLimiter(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -673,7 +686,7 @@ func TestSimulateRoundsLimiter(t *testing.T) {
 	const slots = 4
 	newHandler := func(n *roundsNode) (*v2.Handlers, *semaphore.Weighted) {
 		limiter := semaphore.NewWeighted(slots)
-		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateRoundsLimiter: limiter}, limiter
+		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}, limiter
 	}
 
 	t.Run("canceled request", func(t *testing.T) {
@@ -760,17 +773,20 @@ func TestSimulateRoundsLimiter(t *testing.T) {
 		}
 	})
 
-	t.Run("parallelism does not change the response", func(t *testing.T) {
+	t.Run("one slot", func(t *testing.T) {
 		t.Parallel()
-		var bodies []string
-		for _, parallelism := range []int{1, 4, 0} {
-			n := newRoundsNode(t, env, func(c *config.Local) { c.SimulateRoundsParallelism = parallelism })
-			rec := postSimulate(t, newRoundsRouter(t, n), encodeSimulateRequest(t, request, "json"), "json")
-			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			bodies = append(bodies, rec.Body.String())
+		n := newRoundsNode(t, env)
+		limiter := semaphore.NewWeighted(1)
+		handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
+		rec, err := simulateRoundsDirect(context.Background(), t, handler, request)
+		require.NoError(t, err)
+		for _, result := range *decodeSimulateResponse(t, rec, "json").RoundResults {
+			require.Nil(t, result.Error)
 		}
-		require.Equal(t, bodies[0], bodies[1])
-		require.Equal(t, bodies[0], bodies[2])
+		// the rounds ran one after another, in the request's one slot
+		require.Equal(t, int64(len(request.Rounds)), n.calls.Load())
+		require.Equal(t, int64(1), n.maxInFlight.Load())
+		require.True(t, limiter.TryAcquire(1))
 	})
 }
 
@@ -861,7 +877,7 @@ int 1`,
 }
 
 // TestSimulateRoundsConcurrent runs several rounds requests with parallel groups at once, with more
-// rounds than CPUs, while the ledger moves on.
+// rounds than CPUs, while the ledger moves on. Each request runs its rounds one after another.
 func TestSimulateRoundsConcurrent(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -889,10 +905,11 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 		ParallelGroups: true,
 		Rounds:         rounds,
 	}
-	const parallelism = 2
+	// One slot per request, so no request waits for admission.
+	const requests = 3
 	n := newRoundsNode(t, env, func(c *config.Local) {
 		c.MaxAPISimulateRounds = uint64(numRounds)
-		c.SimulateRoundsParallelism = parallelism
+		c.SimulateParallelism = requests
 	})
 	n.delay = 5 * time.Millisecond
 	router := newRoundsRouter(t, n)
@@ -905,7 +922,6 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 			env.TransferAlgos(sender.Addr, sender.Addr, 0)
 		}
 	}()
-	const requests = 3
 	recs := make([]*httptest.ResponseRecorder, requests)
 	var wg sync.WaitGroup
 	for i := range recs {
@@ -934,8 +950,8 @@ func TestSimulateRoundsConcurrent(t *testing.T) {
 		}
 	}
 	require.True(t, strings.HasPrefix(recs[0].Header().Get("Content-Type"), "application/msgpack"))
-	// The router's limiter is shared by all requests: their rounds never ran more than
-	// SimulateRoundsParallelism at once.
-	require.Equal(t, int64(parallelism), n.maxInFlight.Load())
+	// The requests ran at the same time, each one round at a time.
+	require.LessOrEqual(t, n.maxInFlight.Load(), int64(requests))
+	require.GreaterOrEqual(t, n.maxInFlight.Load(), int64(2))
 	require.Equal(t, int64(requests*numRounds), n.calls.Load())
 }

@@ -116,9 +116,10 @@ type Handlers struct {
 	// KeygenLimiter is used to limit the number of concurrent key generation requests.
 	KeygenLimiter *semaphore.Weighted
 
-	// SimulateRoundsLimiter limits the per-round simulations of simulate requests with "rounds" that
-	// run at once, across all requests (SimulateRoundsParallelism). Non-standard fork feature.
-	SimulateRoundsLimiter *semaphore.Weighted
+	// SimulateLimiter limits the simulations that run at once across the node (SimulateParallelism):
+	// one per simulate request, whose "rounds" run one after another in its slot. Nil means no limit.
+	// Non-standard fork feature.
+	SimulateLimiter *semaphore.Weighted
 }
 
 // LedgerForAPI describes the Ledger methods used by the v2 API.
@@ -487,7 +488,7 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 		}
 	}
 
-	myLedger, err := v2.ledgerFor(params.Round)
+	myLedger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -548,7 +549,7 @@ func (v2 *Handlers) AccountInformation(ctx echo.Context, address basics.Address,
 
 // basicAccountInformation handles the case when no resources (assets or apps) are requested.
 func (v2 *Handlers) basicAccountInformation(ctx echo.Context, addr basics.Address, handle codec.Handle, contentType string, rnd *basics.Round) error {
-	myLedger, err := v2.ledgerFor(rnd)
+	myLedger, err := v2.ledgerFor(ctx, rnd)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -639,7 +640,7 @@ func (v2 *Handlers) AccountAssetInformation(ctx echo.Context, address basics.Add
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -690,7 +691,7 @@ func (v2 *Handlers) AccountApplicationInformation(ctx echo.Context, address basi
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -1022,7 +1023,7 @@ func (v2 *Handlers) GetTransactionProof(ctx echo.Context, round basics.Round, tx
 // GetSupply gets the current supply reported by the ledger.
 // (GET /v2/ledger/supply)
 func (v2 *Handlers) GetSupply(ctx echo.Context, params model.GetSupplyParams) error {
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -1374,7 +1375,7 @@ func (v2 *Handlers) AccountAssetsInformation(ctx echo.Context, address basics.Ad
 		params.Limit = &l
 	}
 
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -1472,7 +1473,7 @@ func (v2 *Handlers) AccountApplicationsInformation(ctx echo.Context, address bas
 		params.Limit = &l
 	}
 
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -1645,7 +1646,10 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Simulate transaction
-	simulationResult, err := v2.Node.Simulate(convertSimulationRequest(simulateRequest))
+	simulationResult, answered, err := v2.simulateOnce(ctx, convertSimulationRequest(simulateRequest))
+	if answered {
+		return err
+	}
 	if err != nil {
 		var invalidTxErr simulation.InvalidRequestError
 		switch {
@@ -1667,7 +1671,7 @@ func (v2 *Handlers) writeSimulateResponse(ctx echo.Context, handle codec.Handle,
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}
 
-	return ctx.Blob(http.StatusOK, contentType, responseData)
+	return writeEncoded(ctx, contentType, responseData)
 }
 
 // UnsetSyncRound removes the sync round restriction from the ledger.
@@ -1710,7 +1714,10 @@ func (v2 *Handlers) GetLedgerStateDelta(ctx echo.Context, round basics.Round, pa
 	if err != nil {
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
-	sDelta, err := v2.Node.LedgerForAPI().GetStateDeltaForRound(round)
+	sDelta, answered, err := v2.stateDeltaForRound(ctx, round)
+	if answered {
+		return err
+	}
 	if errors.Is(err, ledger.ErrDeltaReevaluation) {
 		return internalError(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
 	}
@@ -1726,7 +1733,7 @@ func (v2 *Handlers) GetLedgerStateDelta(ctx echo.Context, round basics.Round, pa
 	if err != nil {
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}
-	return ctx.Blob(http.StatusOK, contentType, data)
+	return writeEncoded(ctx, contentType, data)
 }
 
 // TransactionParams returns the suggested parameters for constructing a new transaction.
@@ -1961,7 +1968,7 @@ func (v2 *Handlers) GetPendingTransactions(ctx echo.Context, params model.GetPen
 // GetApplicationByID returns application information by app idx.
 // (GET /v2/applications/{application-id})
 func (v2 *Handlers) GetApplicationByID(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationByIDParams) error {
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -2018,6 +2025,7 @@ func (v2 *Handlers) GetApplicationBoxes(ctx echo.Context, applicationID basics.A
 		if queryRound > lastRound {
 			return badRequest(ctx, errors.New(errRoundGreaterThanTheLatest), errRoundGreaterThanTheLatest, v2.Log)
 		}
+		lgr = v2.countedLedgerFor(ctx, lgr) // EnableEffortHeader
 	}
 
 	limit := nilToZero(params.Limit)
@@ -2148,7 +2156,7 @@ func encodeBoxNameAsAppCallBytes(name []byte) string {
 // GetApplicationBoxByName returns the value of an application's box
 // (GET /v2/applications/{application-id}/box)
 func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxByNameParams) error {
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}
@@ -2183,7 +2191,7 @@ func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basi
 // GetAssetByID returns application information by app idx.
 // (GET /v2/assets/{asset-id})
 func (v2 *Handlers) GetAssetByID(ctx echo.Context, assetID basics.AssetIndex, params model.GetAssetByIDParams) error {
-	ledger, err := v2.ledgerFor(params.Round)
+	ledger, err := v2.ledgerFor(ctx, params.Round)
 	if err != nil {
 		return v2.historyError(ctx, err)
 	}

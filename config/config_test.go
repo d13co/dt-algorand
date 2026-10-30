@@ -434,8 +434,8 @@ func TestLocal_MaxAPISimulateExtraOpcodeBudget(t *testing.T) {
 
 // TestLocal_SimulateRounds checks that a v39 config file without MaxAPISimulateRounds and
 // SimulateRoundsParallelism loads their defaults, and that explicit values, 0 included, are kept
-// as written (the handler disables rounds at 0, treats a parallelism below 1 as 1 and clamps the
-// round count at 256).
+// as written (the handler disables rounds at 0 and clamps the round count at 256;
+// SimulateRoundsParallelism has no effect).
 func TestLocal_SimulateRounds(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -463,6 +463,11 @@ func TestLocal_SimulateRounds(t *testing.T) {
 	c = load(`{"Version": 39, "MaxAPISimulateRounds": 300, "SimulateRoundsParallelism": -2}`)
 	a.Equal(uint64(300), c.MaxAPISimulateRounds)
 	a.Equal(-2, c.SimulateRoundsParallelism)
+
+	// SimulateParallelism defaults to 0 (GOMAXPROCS) and keeps what is written
+	a.Equal(0, GetDefaultLocal().SimulateParallelism)
+	a.Equal(0, load(`{"Version": 39}`).SimulateParallelism)
+	a.Equal(12, load(`{"Version": 39, "SimulateParallelism": 12}`).SimulateParallelism)
 
 	// an older file never has the fields, and keeps the defaults
 	c = load(`{"Version": 38}`)

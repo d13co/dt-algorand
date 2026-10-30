@@ -138,11 +138,6 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			"MaxAPISimulateRounds %d exceeds the maximum %d; simulate uses %d",
 			cfg.MaxAPISimulateRounds, simulation.MaxSimulateRounds, simulation.MaxSimulateRounds)
 	}
-	if cfg.SimulateRoundsParallelism > simulation.MaxSimulateRounds {
-		s.log.Warnf(
-			"SimulateRoundsParallelism %d exceeds the maximum %d; simulate uses %d",
-			cfg.SimulateRoundsParallelism, simulation.MaxSimulateRounds, simulation.MaxSimulateRounds)
-	}
 	if cfg.IncomingConnectionsLimit < 0 {
 		return fmt.Errorf(
 			"Initialize() IncomingConnectionsLimit %d must be non-negative",

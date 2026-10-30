@@ -1866,7 +1866,7 @@ type PostTransactionsResponse struct {
 
 // SimulateLimitsResponse The limits of simulate requests on this node, and the simulate features it allows.
 type SimulateLimitsResponse struct {
-	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
 
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
@@ -1880,6 +1880,9 @@ type SimulateLimitsResponse struct {
 
 	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
 	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
+
+	// TimeLimitSeconds The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
+	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
 	// TimeTravel If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).
 	TimeTravel bool `json:"time-travel"`
