@@ -909,3 +909,56 @@ func TestWellFormedErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestFindAddress(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	// Not parallel: AllocsPerRun refuses to run in a parallel test.
+
+	sender := basics.Address{1}
+	a, b, missing := basics.Address{2}, basics.Address{3}, basics.Address{4}
+
+	accounts := ApplicationCallTxnFields{Accounts: []basics.Address{a, b, a, sender}}
+	access := ApplicationCallTxnFields{Access: []ResourceRef{{Asset: 7}, {Address: b}, {Address: a}, {Address: b}}}
+
+	cases := []struct {
+		name   string
+		fields ApplicationCallTxnFields
+		target basics.Address
+		idx    uint64
+		ok     bool
+	}{
+		{"sender", accounts, sender, 0, true}, // sender wins over its slot in Accounts
+		{"accounts first", accounts, a, 1, true},
+		{"accounts second", accounts, b, 2, true},
+		{"accounts missing", accounts, missing, 0, false},
+		{"access", access, a, 3, true},
+		{"access first match", access, b, 2, true},
+		{"access missing", access, missing, 0, false},
+		{"zero address matches a non-address ref", access, basics.Address{}, 1, true},
+		{"empty", ApplicationCallTxnFields{}, a, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, ok := tc.fields.FindAddress(tc.target, sender)
+			require.Equal(t, tc.ok, ok)
+			require.Equal(t, tc.idx, idx)
+
+			// IndexByAddress agrees, and errors exactly on a miss.
+			idx, err := tc.fields.IndexByAddress(tc.target, sender)
+			if tc.ok {
+				require.NoError(t, err)
+				require.Equal(t, tc.idx, idx)
+			} else {
+				require.EqualError(t, err, "invalid Account reference "+tc.target.String()+" does not appear in resource array")
+			}
+		})
+	}
+
+	// A miss must not allocate: logic looks up every unnamed account this way.
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, ok := access.FindAddress(missing, sender); ok {
+			t.Fatal("found missing address")
+		}
+	})
+	require.Zero(t, allocs)
+}

@@ -4596,18 +4596,17 @@ func (cx *EvalContext) resolveAccount(account stackValue) (basics.Address, int, 
 		return addr, -1, err
 	}
 
-	idx, err := cx.txn.Txn.IndexByAddress(addr, cx.txn.Txn.Sender)
-	if err != nil {
-		// we don't want to convey `err`, because the supplied `account` does
-		// seem to be an address, but we can't give a valid index.
-		return addr, -1, nil //nolint:nilerr // see above comment
+	idx, ok := cx.txn.Txn.FindAddress(addr, cx.txn.Txn.Sender)
+	if !ok {
+		// No error: the supplied `account` is an address, there is just no
+		// valid index for it.
+		return addr, -1, nil
 	}
 	return addr, int(idx), nil
 }
 
 func (cx *EvalContext) availableAccount(addr basics.Address) bool {
-	_, err := cx.txn.Txn.IndexByAddress(addr, cx.txn.Txn.Sender)
-	if err == nil {
+	if _, ok := cx.txn.Txn.FindAddress(addr, cx.txn.Txn.Sender); ok {
 		return true
 	}
 
