@@ -23,12 +23,14 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
-// MakeCORS sets up CORS with a token header.
-func MakeCORS(tokenHeader string) echo.MiddlewareFunc {
+// MakeCORS sets up CORS with a token header. exposeHeaders lists the response headers, beyond the
+// CORS-safelisted ones, that a browser lets cross-origin scripts read.
+func MakeCORS(tokenHeader string, exposeHeaders ...string) echo.MiddlewareFunc {
 	return middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"},
-		AllowHeaders: []string{tokenHeader, "Content-Type"},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		AllowOrigins:  []string{"*"},
+		AllowHeaders:  []string{tokenHeader, "Content-Type"},
+		AllowMethods:  []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		ExposeHeaders: exposeHeaders,
 	})
 }
 
