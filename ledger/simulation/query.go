@@ -27,7 +27,6 @@ import (
 	"math"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 
 	"github.com/algorand/go-deadlock"
 
@@ -264,9 +263,10 @@ type queryRound struct {
 	txns     []transactions.SignedTxn
 	err      error
 	// failed is set when the node fails to read the round while the calls run: it is the round's
-	// error then. Guarded by queryRun.mu.
-	failed error
-	calls  []QueryCallResult
+	// error then. charged is what its calls added to the response size. Guarded by queryRun.mu.
+	failed  error
+	charged uint64
+	calls   []QueryCallResult
 	// uses is how many entries of the request's rounds are this round: its results are in the
 	// response that many times.
 	uses uint64
@@ -524,10 +524,11 @@ type queryRun struct {
 	cancel context.CancelCauseFunc
 	effort *ledgercore.Effort
 	plans  []*queryRound
-	// size counts the log bytes of the calls run, up to maxSize (0: no limit).
-	size    atomic.Uint64
+	// size counts the log bytes of the calls run, up to maxSize (0: no limit), less those of the
+	// rounds that failed. Guarded by mu.
+	size    uint64
 	maxSize uint64
-	// mu guards the hits and failed of the plans.
+	// mu guards size, and the hits, failed and charged of the plans.
 	mu deadlock.Mutex
 }
 
@@ -608,6 +609,10 @@ func (run *queryRun) runPiece(piece queryWork) {
 	if !fresh() {
 		return
 	}
+	resetBytes := maxQueryCacheBytes
+	if tracer.stateLimit > 0 {
+		resetBytes = min(resetBytes, tracer.stateLimit/2)
+	}
 	opts := eval.QueryCallOptions{
 		Budget:           run.req.Budget,
 		MaxLogBytes:      run.req.Limits.MaxCallLogBytes,
@@ -615,7 +620,7 @@ func (run *queryRun) runPiece(piece queryWork) {
 		Tracer:           tracer,
 	}
 	for i := piece.lo; i < piece.hi; i++ {
-		if run.ctx.Err() != nil {
+		if run.ctx.Err() != nil || run.failed(qr) {
 			return
 		}
 		// call runs call i into logs and err. It returns false when the piece must stop.
@@ -653,13 +658,15 @@ func (run *queryRun) runPiece(piece queryWork) {
 		case err != nil:
 			res.Error = err.Error()
 		}
-		if !run.charge(&res, qr.uses) {
+		if !run.charge(qr, &res) {
 			return
 		}
 		qr.calls[i] = res
 		tracer.warm = true
-		if ql.bytes > maxQueryCacheBytes && i+1 < piece.hi {
-			// Start over with an empty cache, so that the memory a piece holds stays bounded.
+		// Start over with an empty cache once it holds enough, so that the memory a piece holds
+		// stays bounded, and after a call over the state limit, which leaves it over for the next.
+		// Below half the limit, a call that reads as much again is not over on the warm cache.
+		if (ql.bytes > resetBytes || tracer.overState()) && i+1 < piece.hi {
 			if !fresh() {
 				return
 			}
@@ -667,12 +674,15 @@ func (run *queryRun) runPiece(piece queryWork) {
 	}
 }
 
-// fail records err, a failure of the node to read qr's round, as the round's error.
+// fail records err, a failure of the node to read qr's round, as the round's error. The response
+// leaves out the round's calls, so their bytes no longer count toward its limit.
 func (run *queryRun) fail(qr *queryRound, err error) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	if qr.failed == nil {
 		qr.failed = err
+		run.size -= qr.charged
+		qr.charged = 0
 	}
 }
 
@@ -693,22 +703,31 @@ const maxQueryCacheBytes = 32 << 20
 // bytes: the memory of its string header, then of the []byte header encoding makes.
 const queryLogOverhead = 48
 
-// charge counts the bytes of res in the response, uses times, and stops the request once they are
-// over its limit: its logs, an overhead per log, and its error.
-func (run *queryRun) charge(res *QueryCallResult, uses uint64) bool {
-	if run.maxSize == 0 {
-		return true
-	}
+// charge counts the bytes of res, a result of qr, in the response, qr.uses times, and stops the
+// request once they are over its limit: its logs, an overhead per log, and its error. It returns
+// false when the piece must stop: the request is over its limit, or qr failed, whose results the
+// response leaves out.
+func (run *queryRun) charge(qr *queryRound, res *QueryCallResult) bool {
 	n := uint64(len(res.Error))
 	for _, l := range res.Logs {
 		n += uint64(len(l)) + queryLogOverhead
 	}
-	if run.size.Add(n*uses) <= run.maxSize {
-		return true
+	n *= qr.uses
+	run.mu.Lock()
+	if qr.failed != nil {
+		run.mu.Unlock()
+		return false
 	}
-	run.cancel(fmt.Errorf("%w: the logs are over %d bytes (MaxAPIQueryResponseBytes); query fewer calls or rounds",
-		ErrQueryResponseTooLarge, run.maxSize))
-	return false
+	qr.charged += n
+	run.size += n
+	over := run.maxSize > 0 && run.size > run.maxSize
+	run.mu.Unlock()
+	if over {
+		run.cancel(fmt.Errorf("%w: the logs are over %d bytes (MaxAPIQueryResponseBytes); query fewer calls or rounds",
+			ErrQueryResponseTooLarge, run.maxSize))
+		return false
+	}
+	return true
 }
 
 // callQuery runs one call. A panic is the call's error: it would otherwise crash the node, since

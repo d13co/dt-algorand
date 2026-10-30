@@ -16,10 +16,12 @@
 
 package simulation
 
+import "github.com/algorand/go-algorand/data/basics"
+
 // SetLookupFault makes the lookups of a query's state fail with what fault returns for their
-// method, until the returned function is called. It is not safe to use with tests that run in
+// method and round, until the returned function is called. It is not safe to use with tests that run in
 // parallel.
-func SetLookupFault(fault func(method string) error) (restore func()) {
+func SetLookupFault(fault func(method string, rnd basics.Round) error) (restore func()) {
 	lookupFault = fault
 	return func() { lookupFault = nil }
 }

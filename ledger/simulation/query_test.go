@@ -713,8 +713,9 @@ int 1`
 	span := func(lo, hi uint64) simulation.QueryCall {
 		return simulation.QueryCall{Args: [][]byte{[]byte(u64(lo)), []byte(u64(hi))}}
 	}
-	// 150 accounts fit in 50,000 bytes alone, but not after another 150; 250 never fit
-	calls := []simulation.QueryCall{span(0, 150), span(150, 300), span(0, 250), span(0, 0), span(300, 450)}
+	// 80 accounts (under half the limit, so the cache is kept) and 150 fit in 50,000 bytes alone,
+	// but not together; 250 never fit
+	calls := []simulation.QueryCall{span(0, 80), span(80, 230), span(0, 250), span(0, 0), span(300, 450)}
 	over := []bool{false, false, true, false, false}
 	for _, workers := range []int{1, 3} {
 		req := f.request(t, program, calls...)
@@ -745,7 +746,9 @@ int 1`
 }
 
 // TestQueryLookupFailure: when the node fails to read the round while the calls run, the round
-// reports the failure as its error, without calls, instead of passing it off as the calls' errors.
+// reports the failure as its error, without calls, instead of passing it off as the calls' errors,
+// and its calls' logs no longer count toward the response limit. The online account lookups, which
+// read the balance round, fail only their call.
 func TestQueryLookupFailure(t *testing.T) { // nolint:paralleltest // sets the lookup fault of every query
 	partitiontest.PartitionTest(t)
 
@@ -754,14 +757,16 @@ func TestQueryLookupFailure(t *testing.T) { // nolint:paralleltest // sets the l
 	s := simulation.MakeSimulator(f.env.Ledger, false)
 	latest := f.env.TxnInfo.LatestRound()
 
-	defer simulation.SetLookupFault(func(method string) error {
+	fault := func(method string, rnd basics.Round) error { return nil }
+	defer simulation.SetLookupFault(func(method string, rnd basics.Round) error { return fault(method, rnd) })()
+
+	// every box read fails: the ghost program reads the reader app's box
+	fault = func(method string, rnd basics.Round) error {
 		if method == "LookupKv" {
 			return errors.New("disk on fire")
 		}
 		return nil
-	})()
-
-	// the ghost program reads the reader app's box
+	}
 	req := f.request(t, f.ghost(), args("a"), args("b"))
 	req.Rounds = []basics.Round{latest, latest - 1}
 	result, err := s.Query(req)
@@ -770,10 +775,53 @@ func TestQueryLookupFailure(t *testing.T) { // nolint:paralleltest // sets the l
 		require.Equal(t, fmt.Sprintf("reading round %d failed: disk on fire", req.Rounds[i]), rr.Error)
 		require.Empty(t, rr.Calls)
 	}
-
 	// a program that reads no box is not affected
 	result, err = s.Query(f.request(t, "#pragma version 10\nint 1", args()))
 	require.NoError(t, err)
 	require.Empty(t, result.Rounds[0].Error)
 	require.Empty(t, result.Rounds[0].Calls[0].Error)
+
+	// box reads fail at one round only. Each call logs 100 bytes (148 counted); "box" also reads
+	// a box. The failed round's first call ran and was counted before its second failed the round;
+	// the other round's two calls fit only once that is given back.
+	fault = func(method string, rnd basics.Round) error {
+		if method == "LookupKv" && rnd == latest-1 {
+			return errors.New("disk on fire")
+		}
+		return nil
+	}
+	program := fmt.Sprintf(`#pragma version 13
+txna ApplicationArgs 0; byte "box"; ==; bz skip
+int %d; byte "b"; app_box_get; assert; pop
+skip:
+byte "%s"; log
+int 1`, f.reader, strings.Repeat("x", 100))
+	req = f.request(t, program, args("a"), args("box"))
+	req.Rounds = []basics.Round{latest - 1, latest}
+	req.Limits.Parallelism = 1
+	req.Limits.MaxResponseBytes = 2 * 148
+	result, err = s.Query(req)
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprintf("reading round %d failed: disk on fire", latest-1), result.Rounds[0].Error)
+	require.Empty(t, result.Rounds[1].Error)
+	require.Len(t, result.Rounds[1].Calls, 2)
+	for _, c := range result.Rounds[1].Calls {
+		require.Empty(t, c.Error)
+	}
+
+	// an online stake the history lacks fails the call that reads it, not the round
+	fault = func(method string, rnd basics.Round) error {
+		if method == "OnlineCirculation" {
+			return errors.New("no online stake recorded")
+		}
+		return nil
+	}
+	req = f.request(t, "#pragma version 11\ntxna ApplicationArgs 0; byte \"stake\"; ==; bz done; online_stake; pop\ndone: int 1",
+		args("stake"), args("none"))
+	result, err = s.Query(req)
+	require.NoError(t, err)
+	rr := result.Rounds[0]
+	require.Empty(t, rr.Error)
+	require.Contains(t, rr.Calls[0].Error, "no online stake recorded")
+	require.Empty(t, rr.Calls[1].Error)
 }
