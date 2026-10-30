@@ -116,7 +116,8 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 		e.Use(middlewares.MakePNA())
 	}
 	e.Use(
-		middlewares.MakeCORS(TokenHeader),
+		// Browsers hide other response headers from cross-origin scripts unless they are exposed.
+		middlewares.MakeCORS(TokenHeader, "Retry-After", v2.EffortHeader),
 	)
 
 	// Request Context

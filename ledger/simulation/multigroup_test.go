@@ -1138,6 +1138,107 @@ func TestParallelGroupsError(t *testing.T) {
 	require.Less(t, len(started), n-1)
 }
 
+// TestMultipleGroupsPanicFailedAt checks that a panic inside a txn reports that txn as FailedAt,
+// although the tracer's AfterTxnGroup sees no error for the group, and that a panic between the
+// group's txns or during its commit, which no txn caused, reports none.
+func TestMultipleGroupsPanicFailedAt(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	// Two groups of two payments. The hooks inject the panics in group 0, which with parallel groups
+	// is every group: each runs alone, as group 0 of its own tracer.
+	makeGroups := func(env simulationtesting.Environment) [][]transactions.SignedTxn {
+		groups := make([][]transactions.SignedTxn, 2)
+		for g := range groups {
+			sender := env.Accounts[g]
+			pay := func(note byte) txntest.Txn {
+				return env.TxnInfo.NewTxn(txntest.Txn{
+					Type:     protocol.PaymentTx,
+					Sender:   sender.Addr,
+					Receiver: sender.Addr,
+					Note:     []byte{note},
+				})
+			}
+			first, second := pay(0), pay(1)
+			groups[g] = txntest.Group(&first, &second)
+			for i := range groups[g] {
+				groups[g][i] = groups[g][i].Txn.Sign(sender.Sk)
+			}
+		}
+		return groups
+	}
+
+	for target := range 2 {
+		t.Run(fmt.Sprintf("in txn %d", target), func(t *testing.T) {
+			t.Parallel()
+			bothModes(t, func(t *testing.T, parallel bool) {
+				env := simulationtesting.PrepareSimulatorTest(t)
+				defer env.Close()
+				request := simulation.WithBeforeTxnHook(simulation.Request{
+					TxnGroups:      makeGroups(env),
+					ParallelGroups: parallel,
+				}, func(g, i int) {
+					if g == 0 && i == target {
+						panic("injected")
+					}
+				})
+				result := simulateGroups(t, env, request)
+				for g := range 2 {
+					if parallel || g == 0 {
+						require.Contains(t, result.TxnGroups[g].FailureMessage, "injected", "group %d", g)
+						require.Equal(t, simulation.TxnPath{target}, result.TxnGroups[g].FailedAt, "group %d", g)
+					} else {
+						requireGroupSucceeded(t, result, g)
+					}
+				}
+			})
+		})
+	}
+
+	t.Run("between txns", func(t *testing.T) {
+		t.Parallel()
+		bothModes(t, func(t *testing.T, parallel bool) {
+			env := simulationtesting.PrepareSimulatorTest(t)
+			defer env.Close()
+			request := simulation.WithAfterTxnHook(simulation.Request{
+				TxnGroups:      makeGroups(env),
+				ParallelGroups: parallel,
+			}, func(g, i int) {
+				if g == 0 && i == 0 {
+					panic("injected")
+				}
+			})
+			result := simulateGroups(t, env, request)
+			for g := range 2 {
+				if parallel || g == 0 {
+					require.Contains(t, result.TxnGroups[g].FailureMessage, "injected", "group %d", g)
+					require.Nil(t, result.TxnGroups[g].FailedAt, "group %d", g)
+				} else {
+					requireGroupSucceeded(t, result, g)
+				}
+			}
+		})
+	})
+
+	t.Run("during the commit", func(t *testing.T) {
+		t.Parallel()
+		env := simulationtesting.PrepareSimulatorTest(t)
+		defer env.Close()
+		request := simulation.WithAfterGroupHook(simulation.Request{
+			TxnGroups: makeGroups(env),
+			MaxGroups: 2,
+		}, func(g int, evalError error) {
+			if g == 0 && evalError == nil {
+				panic("injected")
+			}
+		})
+		result, err := simulation.MakeSimulator(env.Ledger, false).Simulate(request)
+		require.NoError(t, err)
+		require.Contains(t, result.TxnGroups[0].FailureMessage, "injected")
+		require.Nil(t, result.TxnGroups[0].FailedAt)
+	})
+}
+
 // TestMultipleGroupsCorruptedEvaluator checks that a panic while a sequential group is committed
 // fails that group, stops the later groups and discards the block, without failing the request.
 func TestMultipleGroupsCorruptedEvaluator(t *testing.T) {

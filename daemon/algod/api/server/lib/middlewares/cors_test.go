@@ -31,7 +31,7 @@ func TestMakeCORS(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	e := echo.New()
 	tokenHeader := "X-Algo-API-Token"
-	corsMiddleware := MakeCORS(tokenHeader)
+	corsMiddleware := MakeCORS(tokenHeader, "Retry-After", "X-Algod-Effort")
 
 	testCases := []struct {
 		name            string
@@ -52,6 +52,8 @@ func TestMakeCORS(t *testing.T) {
 				"Access-Control-Allow-Origin":  "*",
 				"Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
 				"Access-Control-Allow-Headers": tokenHeader + ",Content-Type",
+				// Browsers read exposed headers from the actual response only.
+				"Access-Control-Expose-Headers": "",
 			},
 		},
 		{
@@ -62,7 +64,8 @@ func TestMakeCORS(t *testing.T) {
 			},
 			expectedStatus: http.StatusOK,
 			expectedHeaders: map[string]string{
-				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Origin":   "*",
+				"Access-Control-Expose-Headers": "Retry-After,X-Algod-Effort",
 			},
 		},
 	}

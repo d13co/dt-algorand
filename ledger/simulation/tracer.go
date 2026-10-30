@@ -80,6 +80,11 @@ type evalTracer struct {
 	result   *Result
 	failedAt TxnPath
 
+	// txnInProgress is set from BeforeTxn to AfterTxn of the top-level txn at index txnIndex. A
+	// group that ends while it is set panicked inside that txn.
+	txnInProgress bool
+	txnIndex      int
+
 	unnamedResourcePolicy *resourcePolicy
 
 	// execTraceStack keeps track of the call stack:
@@ -156,6 +161,7 @@ func (tracer *evalTracer) currentGroup() *TxnGroupResult {
 func (tracer *evalTracer) startGroup(g int) {
 	tracer.groupIdx = g
 	tracer.failedAt = nil
+	tracer.txnInProgress = false
 	tracer.groupAuthAddrs = tracer.groupAuthAddrs[:0]
 	tracer.relativeCursor = nil
 	tracer.previousInnerTxns = nil
@@ -260,6 +266,13 @@ func (tracer *evalTracer) BeforeTxnGroup(ep *logic.EvalParams) {
 
 func (tracer *evalTracer) AfterTxnGroup(ep *logic.EvalParams, deltas *ledgercore.StateDelta, evalError error) {
 	tracer.handleError(evalError)
+	if ep.GetCaller() == nil && evalError == nil && tracer.txnInProgress && tracer.failedAt == nil {
+		// A panic inside a txn skips its AfterTxn, and this runs before the evaluator recovers
+		// and returns the panic as the group's error, so evalError is nil. The AVM recovers its
+		// own panics, inner txns included, so this one was in the top-level txn. A path recorded
+		// before the panic (an error in that txn, then a panic in its AfterTxn) is more precise.
+		tracer.failedAt = TxnPath{tracer.txnIndex}
+	}
 	tracer.cursorEvalTracer.AfterTxnGroup(ep, deltas, evalError)
 
 	if ep.GetCaller() == nil && tracer.unnamedResourcePolicy != nil {
@@ -293,6 +306,10 @@ func (tracer *evalTracer) saveApplyData(applyData transactions.ApplyData, omitEv
 }
 
 func (tracer *evalTracer) BeforeTxn(ep *logic.EvalParams, groupIndex int) {
+	if ep.GetCaller() == nil {
+		tracer.txnInProgress = true
+		tracer.txnIndex = groupIndex
+	}
 	if tracer.result.ReturnTrace() {
 		var txnTraceStackElem *TransactionTrace
 
@@ -340,6 +357,10 @@ func (tracer *evalTracer) BeforeTxn(ep *logic.EvalParams, groupIndex int) {
 		tracer.unnamedResourcePolicy.txnRootIndex = groupIndex
 	}
 	tracer.cursorEvalTracer.BeforeTxn(ep, groupIndex)
+
+	if ep.GetCaller() == nil && tracer.hooks != nil && tracer.hooks.beforeTxn != nil {
+		tracer.hooks.beforeTxn(tracer.groupIdx, groupIndex)
+	}
 }
 
 func (tracer *evalTracer) AfterTxn(ep *logic.EvalParams, groupIndex int, ad transactions.ApplyData, evalError error) {
@@ -360,6 +381,9 @@ func (tracer *evalTracer) AfterTxn(ep *logic.EvalParams, groupIndex int, ad tran
 		tracer.execTraceStack = tracer.execTraceStack[:len(tracer.execTraceStack)-1]
 	}
 	tracer.cursorEvalTracer.AfterTxn(ep, groupIndex, ad, evalError)
+	if ep.GetCaller() == nil {
+		tracer.txnInProgress = false
+	}
 
 	if ep.GetCaller() == nil && tracer.hooks != nil && tracer.hooks.afterTxn != nil {
 		tracer.hooks.afterTxn(tracer.groupIdx, groupIndex)

@@ -100,7 +100,7 @@ Every simulate request, with or without `rounds`, is bounded in time and stops w
 
 #### Effort header
 
-With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`, except the asset holders listing, which counts nothing) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, response-bytes=48213, eval-us=5310`. Readers should ignore keys they don't know.
+With `EnableEffortHeader` (default off), simulate requests, the versions endpoints, `/v2/deltas/{round}` and reads at a past round (`?round=`, except the asset holders listing, which counts nothing) answer with an `X-Algod-Effort` header: the work the request did, so that a load balancer can bill on it instead of on wall time. It is an RFC 9651 dictionary of integers, every key always present, e.g. `X-Algod-Effort: opcodes=184220, lookups=912, history=640, scanned=0, response-bytes=48213, eval-us=5310`. Readers should ignore keys they don't know. The node's CORS headers expose it and `Retry-After`, so scripts in a browser on another origin can read both.
 
 | Key | Counts |
 |---|---|

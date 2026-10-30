@@ -113,6 +113,9 @@ type testHooks struct {
 	// afterTxn runs at the end of the tracer's AfterTxn for each top-level txn, before the group
 	// is committed.
 	afterTxn func(g, i int)
+	// beforeTxn runs at the end of the tracer's BeforeTxn for each top-level txn, while the txn is
+	// being evaluated.
+	beforeTxn func(g, i int)
 }
 
 // MaxSimulateGroups is the ceiling for Request.MaxGroups.
