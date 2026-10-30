@@ -46,10 +46,10 @@ func init() {
 	telemetryEndpointCmd.Flags().StringVarP(&uri, "endpoint", "e", "", "Endpoint's URI")
 }
 
-// If we didn't get a value from -d, try $ALGORAND_DATA
+// If we didn't get a value from -d, try $DTALGORAND_DATA
 func maybeUpdateDataDirFromEnv() {
 	if dataDir == "" {
-		dataDir = os.Getenv("ALGORAND_DATA")
+		dataDir = config.DataDirFromEnv()
 	}
 }
 

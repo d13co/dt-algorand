@@ -36,7 +36,7 @@ func init() {
 	metricCmd.AddCommand(metricDisableCmd)
 
 	// override the data directory, if provided in the command.
-	metricCmd.PersistentFlags().StringVarP(&dataDir, "dataDir", "d", os.ExpandEnv("$ALGORAND_DATA"), "Data directory")
+	metricCmd.PersistentFlags().StringVarP(&dataDir, "dataDir", "d", config.DataDirFromEnv(), "Data directory")
 
 }
 
@@ -110,7 +110,7 @@ func getConfigFilePath() (string, error) {
 	maybeUpdateDataDirFromEnv()
 	configFilePath := dataDir
 	if configFilePath == "" {
-		return "", fmt.Errorf("%s", metricDataDirectoryEmpty)
+		return "", fmt.Errorf(metricDataDirectoryEmpty, config.DataDirEnv, config.DataDirEnvNote())
 	}
 
 	// check if directory exists.

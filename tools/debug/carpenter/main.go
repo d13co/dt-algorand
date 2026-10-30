@@ -36,12 +36,13 @@ import (
 	"github.com/fatih/color"
 	"golang.org/x/crypto/ssh/terminal"
 
+	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/logging/logspec"
 )
 
 var filename = flag.String("file", "", "Name of the input logfile (do not set to read from stdin)")
 var dataDir = flag.String("d", "", "DataDirectory to track (do not set to read from stdin)")
-var defaultDataDir = flag.Bool("D", false, "Track DataDirectory specified by $ALGORAND_DATA (do not set to read from stdin)")
+var defaultDataDir = flag.Bool("D", false, "Track DataDirectory specified by $DTALGORAND_DATA (do not set to read from stdin)")
 var forceColor = flag.Bool("color", false, "Force sending color codes to output")
 var forceNoColor = flag.Bool("no-color", false, "Disable sending color codes to output")
 var cat = flag.Bool("cat", false, "Read input without using tail -F (option is ignored for stdin)")
@@ -142,9 +143,9 @@ func setupInputStream() io.ReadCloser {
 	if *filename == "" {
 		// If filename not specified, see if a datadir was specified.
 		if *defaultDataDir {
-			*dataDir = os.ExpandEnv("$ALGORAND_DATA")
+			*dataDir = config.DataDirFromEnv()
 			if *dataDir == "" {
-				errorf("$ALGORAND_DATA is not defined")
+				errorf("$%s is not defined.%s", config.DataDirEnv, config.DataDirEnvNote())
 			}
 		}
 

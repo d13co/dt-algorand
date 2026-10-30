@@ -237,13 +237,13 @@ func readGenesis(dataDir string) (genesis bookkeeping.Genesis, err error) {
 	return
 }
 
-// -k || $ALGORAND_KMD || old location in algod data dir if it is a 'private' dev algo data dir || ~/.algorand/{genesis id}/kmd-{kmd version}
+// -k || $DTALGORAND_KMD || old location in algod data dir if it is a 'private' dev algo data dir || ~/.algorand/{genesis id}/kmd-{kmd version}
 func resolveKmdDataDir(dataDir string) string {
 	if kmdDataDirFlag != "" {
 		out, _ := filepath.Abs(kmdDataDirFlag)
 		return out
 	}
-	kmdDataDirEnv := os.Getenv("ALGORAND_KMD")
+	kmdDataDirEnv := os.Getenv(config.KmdDirEnv)
 	if kmdDataDirEnv != "" {
 		out, _ := filepath.Abs(kmdDataDirEnv)
 		return out

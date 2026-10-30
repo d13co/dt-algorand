@@ -97,7 +97,7 @@ func main() {
 
 	// If data directory doesn't exist, we can't run. Don't bother trying.
 	if len(dataDir) == 0 {
-		fmt.Fprintln(os.Stderr, "Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment.")
+		fmt.Fprintf(os.Stderr, "Data directory not specified.  Please use -d or set $%s in your environment.%s\n", config.DataDirEnv, config.DataDirEnvNote())
 		os.Exit(1)
 	}
 
@@ -244,24 +244,12 @@ func getRestClient(nc nodecontrol.NodeController) (rc client.RestClient, err err
 	return algodClient, nil
 }
 
-func resolveDataDir() string {
-	// Figure out what data directory to tell algod to use.
-	// If not specified on cmdline with '-d', look for default in environment.
-	var dir string
-	if dataDirectory == nil || *dataDirectory == "" {
-		dir = os.Getenv("ALGORAND_DATA")
-	} else {
-		dir = *dataDirectory
-	}
-	return dir
-}
-
 func ensureDataDir() string {
 	// Get the target data directory to work against,
 	// then handle the scenario where no data directory is provided.
-	dir := resolveDataDir()
+	dir := config.ResolveDataDir(*dataDirectory)
 	if dir == "" {
-		reportErrorf("Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment. Exiting.\n")
+		reportErrorf("Data directory not specified.  Please use -d or set $%s in your environment.%s Exiting.\n", config.DataDirEnv, config.DataDirEnvNote())
 	}
 	return dir
 }

@@ -3,6 +3,7 @@ ARG ALGOD_INSTALL_TAR_FILE
 
 ENV PATH /root/node/bin:$PATH
 ENV ALGORAND_DATA /root/node/data
+ENV DTALGORAND_DATA /root/node/data
 ENV ALGORAND_NETWORK testnet
 
 WORKDIR /root/install

@@ -22,10 +22,10 @@ import (
 	"path/filepath"
 )
 
-// SystemConfig is the json object in $ALGORAND_DATA/system.json
+// SystemConfig is the json object in $DTALGORAND_DATA/system.json
 type SystemConfig struct {
 	// SharedServer is true if this is a daemon on a multiuser system.
-	// If not shared, kmd and other files are often stored under $ALGORAND_DATA when otherwise they might go under $HOME/.algorand/
+	// If not shared, kmd and other files are often stored under $DTALGORAND_DATA when otherwise they might go under $HOME/.algorand/
 	SharedServer   bool `json:"shared_server,omitempty"`
 	SystemdManaged bool `json:"systemd_managed,omitempty"`
 }
@@ -37,7 +37,7 @@ func init() {
 	systemConfigCache = make(map[string]SystemConfig)
 }
 
-// ReadSystemConfig read and parse $ALGORAND_DATA/system.json
+// ReadSystemConfig read and parse $DTALGORAND_DATA/system.json
 func ReadSystemConfig(dataDir string) (sc SystemConfig, err error) {
 	var ok bool
 	sc, ok = systemConfigCache[dataDir]

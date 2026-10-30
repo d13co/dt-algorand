@@ -75,7 +75,7 @@ func main() {
 }
 
 func run() int {
-	dataDir := resolveDataDir()
+	dataDir := config.ResolveDataDir(*dataDirectory)
 	absolutePath, absPathErr := filepath.Abs(dataDir)
 	config.DataDirectory = absolutePath
 
@@ -117,7 +117,7 @@ func run() int {
 
 	// Don't fallback anymore - if not specified, we want to panic to force us to update our tooling and/or processes
 	if len(dataDir) == 0 {
-		fmt.Fprintln(os.Stderr, "Data directory not specified.  Please use -d or set $ALGORAND_DATA in your environment.")
+		fmt.Fprintf(os.Stderr, "Data directory not specified.  Please use -d or set $%s in your environment.%s\n", config.DataDirEnv, config.DataDirEnvNote())
 		return 1
 	}
 
@@ -489,18 +489,6 @@ var startupConfigCheckFields = []string{
 	"VerifiedTranscationsCacheSize",
 	"EnableP2P",
 	"EnableP2PHybridMode",
-}
-
-func resolveDataDir() string {
-	// Figure out what data directory to tell algod to use.
-	// If not specified on cmdline with '-d', look for default in environment.
-	var dir string
-	if dataDirectory == nil || *dataDirectory == "" {
-		dir = os.Getenv("ALGORAND_DATA")
-	} else {
-		dir = *dataDirectory
-	}
-	return dir
 }
 
 func loadGenesis(dataDir string, genesisPath string) (bookkeeping.Genesis, string, error) {
