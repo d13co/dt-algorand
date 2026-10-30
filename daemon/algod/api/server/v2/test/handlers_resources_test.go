@@ -110,7 +110,7 @@ func (l *mockLedger) LookupKvPairsByPrefix(round basics.Round, keyPrefix string,
 	var bytesAccum uint64
 	for _, k := range keys {
 		if limit > 0 && uint64(len(results)) >= limit {
-			return results, l.latest, true, nil
+			return results, round, true, nil
 		}
 		var val []byte
 		if includeValues {
@@ -119,12 +119,12 @@ func (l *mockLedger) LookupKvPairsByPrefix(round basics.Round, keyPrefix string,
 		kv := ledgercore.KvPairResult{Key: k, Value: val}
 		itemBytes := kv.ByteSize()
 		if maxBytes > 0 && bytesAccum+itemBytes > maxBytes && len(results) > 0 {
-			return results, l.latest, true, nil
+			return results, round, true, nil
 		}
 		bytesAccum += itemBytes
 		results = append(results, kv)
 	}
-	return results, l.latest, false, nil
+	return results, round, false, nil
 }
 
 func (l *mockLedger) ConsensusParams(r basics.Round) (config.ConsensusParams, error) {

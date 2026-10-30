@@ -214,6 +214,7 @@ func TestEffortHeaderReads(t *testing.T) {
 	require.Equal(t, uint64(1), effort["lookups"])
 	require.Zero(t, effort["history"], "the trackers still hold the round")
 	require.Zero(t, effort["response-bytes"], "single objects are billed on lookups")
+	require.Equal(t, strconv.FormatUint(uint64(past), 10), rec.Header().Get(v2.TTRoundHeader), "both headers")
 	rec = serve(func(c echo.Context) error {
 		return handler(env.Ledger, effortOn).AccountInformation(c, addr, model.AccountInformationParams{Exclude: &exclude})
 	})
@@ -227,6 +228,7 @@ func TestEffortHeaderReads(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, uint64(1), effortOf(t, rec)["lookups"])
+	require.Equal(t, strconv.FormatUint(uint64(past), 10), rec.Header().Get(v2.TTRoundHeader), "both headers")
 	rec = serve(func(c echo.Context) error {
 		return handler(env.Ledger, effortOn).GetApplicationBoxes(c, 1, model.GetApplicationBoxesParams{Limit: &limit})
 	})

@@ -2080,10 +2080,15 @@ func (v2 *Handlers) GetApplicationBoxes(ctx echo.Context, applicationID basics.A
 		if errors.As(err, &roundOffErr) {
 			return badRequest(ctx, err, errRoundTooOld, v2.Log)
 		}
+		if params.Round != nil {
+			markRound(ctx, queryRound)
+		}
 		return internalError(ctx, err, errFailedLookingUpLedger, v2.Log)
 	}
-	if params.Round != nil {
-		markRound(ctx, queryRound) // only once the ledger has answered for the round
+	// Mark only an answer at the round: with a limit of 0 (MaxAPIBoxPerApplication
+	// 0 and no limit), the ledger answers empty as of the latest round instead.
+	if params.Round != nil && rnd == queryRound {
+		markRound(ctx, queryRound)
 	}
 
 	prefixLen := len(keyPrefix)

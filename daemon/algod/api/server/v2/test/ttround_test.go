@@ -33,15 +33,19 @@ import (
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
 	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
 // ttRoundHandlers returns handlers over lgr, with time travel on or off.
-func ttRoundHandlers(t *testing.T, lgr v2.LedgerForAPI, timeTravel bool) *v2.Handlers {
+func ttRoundHandlers(t *testing.T, lgr v2.LedgerForAPI, timeTravel bool, configure ...func(*config.Local)) *v2.Handlers {
 	cfg := config.GetDefaultLocal()
 	cfg.EnableTimeTravel = timeTravel
+	for _, f := range configure {
+		f(&cfg)
+	}
 	return &v2.Handlers{Node: makeMockNodeWithConfig(lgr, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.Base(), Shutdown: make(chan struct{})}
 }
 
@@ -106,6 +110,12 @@ func TestTTRoundHeader(t *testing.T) {
 	rec := serve(ttRoundHandlers(t, sl, true), "/v2/ledger/supply?round=7")
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	require.Equal(t, "7", rec.Header().Get(v2.TTRoundHeader))
+
+	// The result limit is about the account at 7, not a refusal of the round.
+	rec = serve(ttRoundHandlers(t, pastLedger{historyLedger: historyLedger{ml}, at: 7, creator: addr}, true, func(c *config.Local) { c.MaxAPIResourcesPerAccount = 1 }), "/v2/accounts/"+a+"?round=7")
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "Result limit exceeded")
+	require.Equal(t, "7", rec.Header().Get(v2.TTRoundHeader))
 }
 
 // TestTTRoundHeaderRefused checks that an answer refusing the round is not
@@ -153,6 +163,45 @@ func TestTTRoundHeaderBoxes(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), "no longer available")
 	require.Empty(t, rec.Header().Values(v2.TTRoundHeader))
+
+	// With time travel and an untrusted history, the rounds in memory are
+	// still answered; the ledger refuses the others as no longer available.
+	h = ttRoundHandlers(t, untrustedLedger{historyLedger{ml}}, true)
+	rec = serve(h, "/v2/applications/1/boxes?round=6")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "6", rec.Header().Get(v2.TTRoundHeader))
+	rec = serve(h, "/v2/applications/1/boxes?round=4")
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Empty(t, rec.Header().Values(v2.TTRoundHeader))
+
+	// A failed lookup at the round is marked.
+	rec = serve(ttRoundHandlers(t, boxLedger{mockLedger: ml, err: errors.New("disk on fire")}, true), "/v2/applications/1/boxes?round=6")
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	require.Equal(t, "6", rec.Header().Get(v2.TTRoundHeader))
+
+	// With MaxAPIBoxPerApplication 0 and no limit, the ledger answers as of
+	// the latest round: not an answer at 6.
+	rec = serve(ttRoundHandlers(t, boxLedger{mockLedger: ml}, true, func(c *config.Local) { c.MaxAPIBoxPerApplication = 0 }), "/v2/applications/1/boxes?round=6")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"round":10`)
+	require.Empty(t, rec.Header().Values(v2.TTRoundHeader))
+}
+
+// boxLedger fails box pages with err, and answers a limit of 0 empty as of
+// the latest round, as Ledger.LookupKvPairsByPrefix does.
+type boxLedger struct {
+	*mockLedger
+	err error
+}
+
+func (l boxLedger) LookupKvPairsByPrefix(round basics.Round, keyPrefix string, cursor string, limit uint64, maxBytes uint64, includeValues bool) ([]ledgercore.KvPairResult, basics.Round, bool, error) {
+	if l.err != nil {
+		return nil, 0, false, l.err
+	}
+	if limit == 0 {
+		return nil, l.latest, false, nil
+	}
+	return l.mockLedger.LookupKvPairsByPrefix(round, keyPrefix, cursor, limit, maxBytes, includeValues)
 }
 
 // TestTTRoundHeaderHolders checks the asset holders: marked on the page, the
