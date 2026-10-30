@@ -203,7 +203,7 @@ func TestQueryRESTRejected(t *testing.T) {
 
 	t.Run("disabled", func(t *testing.T) {
 		h := newRoundsRouter(t, newRoundsNode(t, env, func(c *config.Local) { c.MaxAPIQueryCalls = 0 }))
-		require.Nil(t, getLimits(t, h).Query)
+		require.Nil(t, getCapabilities(t, h).Query)
 		rec := postQuery(t, h, encodeQueryRequest(t, v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a")}, "msgpack"), "msgpack")
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), "disabled")
@@ -212,7 +212,7 @@ func TestQueryRESTRejected(t *testing.T) {
 	t.Run("response too large", func(t *testing.T) {
 		// A call logs 9 bytes in 2 logs, counted as 9 + 2 × 48 = 105.
 		h := newRoundsRouter(t, newRoundsNode(t, env, func(c *config.Local) { c.MaxAPIQueryResponseBytes = 250 }))
-		require.Equal(t, uint64(250), getLimits(t, h).Query.MaxResponseBytes)
+		require.Equal(t, uint64(250), getCapabilities(t, h).Query.MaxResponseBytes)
 		ok := v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a")}
 		decodeQueryResponse(t, postQuery(t, h, encodeQueryRequest(t, ok, "msgpack"), "msgpack"), "msgpack")
 		tooMany := v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a", "b", "c")}
@@ -320,7 +320,7 @@ func TestQueryRESTClient(t *testing.T) {
 	require.NoError(t, err)
 	c := client.MakeRestClient(*u, "")
 
-	limits, err := c.SimulateLimits()
+	limits, err := c.Capabilities()
 	require.NoError(t, err)
 	require.NotNil(t, limits.Query)
 	require.Equal(t, uint64(1024), limits.Query.MaxCalls)
