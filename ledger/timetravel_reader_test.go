@@ -93,6 +93,10 @@ func TestHistoryReader(t *testing.T) {
 		hdr     any
 	}
 	full := VersionRange{Max: basics.Round(last), Limit: 1000, Values: true}
+	asOf := VersionRange{Max: basics.Round(last), Limit: 1000, Values: true}
+	for rnd := basics.Round(0); rnd <= basics.Round(last); rnd++ {
+		asOf.Rounds = append(asOf.Rounds, rnd)
+	}
 	type versionsCase struct {
 		name   string
 		ledger func() (VersionPage, error)
@@ -119,6 +123,16 @@ func TestHistoryReader(t *testing.T) {
 			func(r *HistoryReader) (VersionPage, error) { return r.AppVersions(app, full) }},
 		{"box", func() (VersionPage, error) { return l.KvVersions(box, full) },
 			func(r *HistoryReader) (VersionPage, error) { return r.KvVersions(box, full) }},
+		{"account as of rounds", func() (VersionPage, error) { return l.AccountVersions(addrs[1], AccountVersionsExclude{}, asOf) },
+			func(r *HistoryReader) (VersionPage, error) {
+				return r.AccountVersions(addrs[1], AccountVersionsExclude{}, asOf)
+			}},
+		{"holding as of rounds", func() (VersionPage, error) { return l.AccountAssetVersions(addrs[1], asa, asOf) },
+			func(r *HistoryReader) (VersionPage, error) { return r.AccountAssetVersions(addrs[1], asa, asOf) }},
+		{"app as of rounds", func() (VersionPage, error) { return l.AppVersions(app, asOf) },
+			func(r *HistoryReader) (VersionPage, error) { return r.AppVersions(app, asOf) }},
+		{"boxes as of rounds", func() (VersionPage, error) { return l.AppBoxVersions(app, asOf) },
+			func(r *HistoryReader) (VersionPage, error) { return r.AppBoxVersions(app, asOf) }},
 	}
 
 	want := map[basics.Round]answers{}
@@ -212,6 +226,20 @@ func TestHistoryReader(t *testing.T) {
 	require.ErrorIs(t, err, ErrRoundOutOfRange)
 	_, err = r.AppVersions(app, VersionRange{Min: 5, Max: 3, Limit: 10})
 	require.ErrorContains(t, err, "empty range")
+	// rounds are checked like a range
+	// (the reader answers rounds like the ledger: vcases)
+	for _, bad := range []VersionRange{
+		{Max: past, Limit: 10, Rounds: []basics.Round{past}},
+		{Min: 1, Max: 5, Limit: 10, Rounds: []basics.Round{0, 5}},
+		{Max: 5, Limit: 10, Rounds: []basics.Round{5, 3}},
+		{Max: 5, Limit: 10, Rounds: []basics.Round{3, 3}},
+		{Max: 5, Limit: 10, Rounds: []basics.Round{}},
+	} {
+		_, err = r.AppVersions(app, bad)
+		require.Error(t, err, "%+v", bad.Rounds)
+	}
+	_, err = r.AppVersions(app, VersionRange{Max: 5, Desc: true, Limit: 10, Rounds: []basics.Round{5, 3}})
+	require.NoError(t, err)
 }
 
 // TestHistProto checks that a header of an unknown protocol is an error, not

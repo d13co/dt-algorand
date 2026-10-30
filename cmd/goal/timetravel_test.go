@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/libgoal"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -75,4 +77,35 @@ func TestProbeRound(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAccountVersionsAsOf checks that goal account versions --rounds with
+// --assetid or --app-id prints a line for a round at which neither the
+// holding or local state nor the params exist, which the API leaves empty.
+func TestAccountVersionsAsOf(t *testing.T) { // nolint:paralleltest // sets the --assetid and --app-id flags
+	partitiontest.PartitionTest(t)
+
+	var addr basics.Address
+	addr[0] = 1
+	defer func() { versionsAssetID, versionsAppID = 0, 0 }()
+	printed := func(ens []versionEntry) string {
+		var b bytes.Buffer
+		for _, en := range ens {
+			require.NoError(t, printAsOf(&b, en, viewOptions(en.label)))
+		}
+		return b.String()
+	}
+	empty := model.AccountVersion{Round: 5, Timestamp: 60}
+
+	versionsAssetID = 7
+	require.Equal(t, fmt.Sprintf("5  1970-01-01 00:01:00  holding:%s:7 none\n", addr), printed(accountVersionEntries(addr, empty, true)))
+	require.Empty(t, accountVersionEntries(addr, empty, false), "a range page has no such entries")
+	changed := basics.Round(20)
+	held := model.AccountVersion{Round: 50, Timestamp: 60, Assets: &[]model.AssetHoldingVersion{{AssetId: 7, ChangedRound: &changed, AssetHolding: &model.AssetHolding{AssetID: 7, Amount: 3}}}}
+	out := printed(accountVersionEntries(addr, held, true))
+	require.Contains(t, out, fmt.Sprintf("holding:%s:7 last changed at 20", addr))
+	require.NotContains(t, out, "none")
+
+	versionsAssetID, versionsAppID = 0, 9
+	require.Equal(t, fmt.Sprintf("5  1970-01-01 00:01:00  local:%s:9 none\n", addr), printed(accountVersionEntries(addr, empty, true)))
 }

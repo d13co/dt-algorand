@@ -428,9 +428,11 @@ func TestStoreModel(t *testing.T) {
 
 			// versions: the rounds at which an object's state differs from the round before
 			type version struct {
-				rnd uint64
-				val []byte
-				ok  bool
+				rnd    uint64
+				val    []byte
+				ok     bool
+				prev   []byte // VersionsPrev: the state at rnd-1
+				prevOK bool
 			}
 			for _, obj := range objs {
 				var all []version
@@ -439,7 +441,7 @@ func TestStoreModel(t *testing.T) {
 				for r := uint64(0); r < rounds; r++ {
 					v, ok := history[r][string(obj)]
 					if ok != prevOK || (ok && !bytes.Equal(v, prev)) {
-						all = append(all, version{r, v, ok})
+						all = append(all, version{r, v, ok, prev, prevOK})
 					}
 					prev, prevOK = v, ok
 				}
@@ -450,24 +452,36 @@ func TestStoreModel(t *testing.T) {
 				}
 				for _, rg := range ranges {
 					for _, desc := range []bool{false, true} {
-						var want, got []version
+						var want, wantPrev, got []version
 						for _, v := range all {
 							if v.rnd >= rg[0] && v.rnd <= rg[1] {
+								wantPrev = append(wantPrev, v)
+								v.prev, v.prevOK = nil, false
 								want = append(want, v)
 							}
 						}
 						if desc {
 							slices.Reverse(want)
+							slices.Reverse(wantPrev)
 						}
 						require.NoError(t, s.Versions(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool) bool {
-							got = append(got, version{rnd, val, ok})
+							got = append(got, version{rnd: rnd, val: val, ok: ok})
 							return true
 						}))
 						require.Equal(t, want, got, "obj %q range %v desc %v", obj, rg, desc)
+						got = got[:0]
+						require.NoError(t, s.VersionsPrev(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
+							if !prevOK {
+								prev = nil
+							}
+							got = append(got, version{rnd, val, ok, prev, prevOK})
+							return true
+						}))
+						require.Equal(t, wantPrev, got, "VersionsPrev: obj %q range %v desc %v", obj, rg, desc)
 						if len(want) > 2 {
 							got = got[:0]
 							require.NoError(t, s.Versions(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool) bool {
-								got = append(got, version{rnd, val, ok})
+								got = append(got, version{rnd: rnd, val: val, ok: ok})
 								return len(got) < 2
 							}))
 							require.Equal(t, want[:2], got)

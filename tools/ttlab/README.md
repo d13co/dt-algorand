@@ -135,6 +135,6 @@ The demo uses no kmd (hence `-K`, which skips importing the root keys): it signs
 - `?round=` on accounts, apps, boxes and `/v2/ledger/supply`;
 - simulate at a past round;
 - block headers of old rounds (200) and their pruned bodies (404);
-- the `/versions` endpoints, ascending and descending, with paging.
+- the `/versions` endpoints, ascending and descending, with paging, the app's `changed-keys` with `include=keys`, and the app, box, boxes and account as of a list of rounds (`rounds=`) with their `changed-round`.
 
 The 404 checks reach 101 rounds past the first, and a node without `Archival` keeps the last ~1000 block bodies, so keep `-rounds` above ~1100. If any check fails, the demo exits with status 1.

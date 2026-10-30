@@ -87,6 +87,20 @@ func (r *HistoryReader) checkRange(vr VersionRange) error {
 	if vr.Min > vr.Max {
 		return fmt.Errorf("empty range of rounds %d..%d", vr.Min, vr.Max)
 	}
+	if vr.Rounds != nil {
+		// Rounds must be distinct, in page order, and within Min..Max
+		if len(vr.Rounds) == 0 {
+			return errors.New("no rounds")
+		}
+		for i, rnd := range vr.Rounds {
+			if rnd < vr.Min || rnd > vr.Max {
+				return fmt.Errorf("%w: round %d is outside rounds %d..%d", ErrRoundOutOfRange, rnd, vr.Min, vr.Max)
+			}
+			if i > 0 && (vr.Desc && rnd >= vr.Rounds[i-1] || !vr.Desc && rnd <= vr.Rounds[i-1]) {
+				return fmt.Errorf("rounds are not distinct and in page order at round %d", rnd)
+			}
+		}
+	}
 	return nil
 }
 
@@ -212,5 +226,5 @@ func (r *HistoryReader) objectVersions(obj []byte, vr VersionRange) (VersionPage
 	if err := r.checkRange(vr); err != nil {
 		return VersionPage{}, err
 	}
-	return versions(r.h, [][]byte{obj}, vr)
+	return versions(r.h, [][]byte{obj}, vr, true)
 }

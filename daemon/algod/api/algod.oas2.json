@@ -2190,7 +2190,7 @@
     },
     "/v2/accounts/{address}/versions": {
       "get": {
-        "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the rounds at which anything GET /v2/accounts/{address} returns changed: the account's base record, asset holdings, application local states, and the parameters of the assets and applications it created. Each version lists only the objects that changed in that round, with their new values if `include=values`. Applying the versions after `min-round`, replacing objects by id, to the account at `min-round` (GET /v2/accounts/{address}?round=min-round) gives the account at any later round of the range. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the account as of a requested round instead: its base record, and the asset holdings, application local states and created assets and applications that exist then, each with the round it last changed (`changed-round`). Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2218,6 +2218,9 @@
             "$ref": "#/parameters/max-round"
           },
           {
+            "$ref": "#/parameters/versions-rounds"
+          },
+          {
             "$ref": "#/parameters/versions-order"
           },
           {
@@ -2227,7 +2230,7 @@
             "$ref": "#/parameters/next"
           },
           {
-            "$ref": "#/parameters/versions-include"
+            "$ref": "#/parameters/versions-include-state"
           }
         ],
         "responses": {
@@ -2261,7 +2264,7 @@
     },
     "/v2/accounts/{address}/assets/{asset-id}/versions": {
       "get": {
-        "description": "Lists the versions of the objects GET /v2/accounts/{address}/assets/{asset-id} returns: the account's holding of the asset and, if the account created it, the asset's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/assets/{asset-id} returns: the account's holding of the asset and, if the account created it, the asset's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the holding and the asset's parameters as of a requested round instead, each with the round it last changed (`changed-round`); either is omitted if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2279,6 +2282,9 @@
           },
           {
             "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-rounds"
           },
           {
             "$ref": "#/parameters/versions-order"
@@ -2324,7 +2330,7 @@
     },
     "/v2/accounts/{address}/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of the objects GET /v2/accounts/{address}/applications/{application-id} returns: the account's local state of the application and, if the account created it, the application's parameters. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version of application parameters or local state lists the global or local state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the local state and the application's parameters as of a requested round instead, each with the round it last changed (`changed-round`); either is omitted if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2344,6 +2350,9 @@
             "$ref": "#/parameters/max-round"
           },
           {
+            "$ref": "#/parameters/versions-rounds"
+          },
+          {
             "$ref": "#/parameters/versions-order"
           },
           {
@@ -2353,7 +2362,7 @@
             "$ref": "#/parameters/next"
           },
           {
-            "$ref": "#/parameters/versions-include"
+            "$ref": "#/parameters/versions-include-state"
           }
         ],
         "responses": {
@@ -2387,7 +2396,7 @@
     },
     "/v2/assets/{asset-id}/versions": {
       "get": {
-        "description": "Lists the versions of an asset's parameters: its creation, reconfigurations and destruction. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of an asset's parameters: its creation, reconfigurations and destruction. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the asset as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2402,6 +2411,9 @@
           },
           {
             "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-rounds"
           },
           {
             "$ref": "#/parameters/versions-order"
@@ -2447,7 +2459,7 @@
     },
     "/v2/applications/{application-id}/versions": {
       "get": {
-        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of an application's parameters, global state included: its creation, global state changes, updates and deletion. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. With `include=keys`, each version lists the global state keys that changed against the round before (`changed-keys`), net over the round: a key set and deleted again within the round is not listed. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values` or `include=keys`) and end early once the values reach 1 MB, counting with `include=keys` the previous values the keys are found from; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the application as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2464,6 +2476,9 @@
             "$ref": "#/parameters/max-round"
           },
           {
+            "$ref": "#/parameters/versions-rounds"
+          },
+          {
             "$ref": "#/parameters/versions-order"
           },
           {
@@ -2473,7 +2488,7 @@
             "$ref": "#/parameters/next"
           },
           {
-            "$ref": "#/parameters/versions-include"
+            "$ref": "#/parameters/versions-include-state"
           }
         ],
         "responses": {
@@ -2507,7 +2522,7 @@
     },
     "/v2/applications/{application-id}/boxes/versions": {
       "get": {
-        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. A page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel. The node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
+        "description": "Lists the rounds at which any box of an application changed, with the boxes that did: their creation, writes and deletion. A write of an identical value is not a change, nor is a box created and deleted within a round. Each version lists its changed boxes in name order. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`), never split a round, and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. A page costs what it returns, however many boxes the application ever had. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry lists every box of the application that exists at a requested round instead, in name order, each with the round it last changed (`changed-round`). It merges every box the application ever had, so it fails with 400 past MaxAPIBoxPerApplication of them (use GET /v2/applications/{application-id}/boxes?round=), and pages also end once they hold 10,000 boxes (1,000 with `include=values`) or 1 MB of values, or have read 64 MB of values, deleted boxes included; a single round with more fails with 400. Requires EnableTimeTravel. Without `rounds`, the node answers 503 when a page needs rounds before its box index is complete: at once for an ascending range that starts before it; a descending range lists the changes since, and the page that would reach past it fails. A store written by a build without the index needs `ttimport -index-boxes` for the rounds before the upgrade.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2522,6 +2537,9 @@
           },
           {
             "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-rounds"
           },
           {
             "$ref": "#/parameters/versions-order"
@@ -2573,7 +2591,7 @@
     },
     "/v2/applications/{application-id}/box/versions": {
       "get": {
-        "description": "Lists the versions of a box: its creation, writes and deletion. Box names must be in the goal app call arg encoding form 'encoding:value'. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. Requires EnableTimeTravel.",
+        "description": "Lists the versions of a box: its creation, writes and deletion. Box names must be in the goal app call arg encoding form 'encoding:value'. Versions are the rounds at which the stored value changed: a write of an identical value is not a version, a deletion is. Pages hold at most `limit` versions (default 100, at most 10,000, or 1,000 with `include=values`) and end early once the values reach 1 MB; `next-token` is present if and only if more versions remain. History never changes, so pages stay consistent as new blocks arrive. With `rounds`, each entry is the box as of a requested round instead, with the round it last changed (`changed-round`); `deleted` is true if it does not exist then. Requires EnableTimeTravel.",
         "tags": ["timetravel"],
         "produces": ["application/json"],
         "schemes": ["http"],
@@ -2595,6 +2613,9 @@
           },
           {
             "$ref": "#/parameters/max-round"
+          },
+          {
+            "$ref": "#/parameters/versions-rounds"
           },
           {
             "$ref": "#/parameters/versions-order"
@@ -3069,12 +3090,12 @@
   },
   "definitions": {
     "AccountVersion": {
-      "description": "The objects of an account that changed in a round. Lists that did not change are omitted.",
+      "description": "The objects of an account that changed in a round. Lists that did not change are omitted. With `rounds`, the objects that exist at the requested round instead, and `base` always.",
       "type": "object",
       "required": ["round", "timestamp"],
       "properties": {
         "round": {
-          "description": "The round of the version.",
+          "description": "The round of the version, or with `rounds` the requested round.",
           "type": "integer",
           "x-go-type": "basics.Round"
         },
@@ -3126,6 +3147,11 @@
           "description": "Whether the account was closed.",
           "type": "boolean"
         },
+        "changed-round": {
+          "description": "With `rounds`: the round of the version in effect at the requested round, the latest change at or before it. Absent if there was none (the object did not exist yet; `deleted` is then true).",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
         "account": {
           "description": "With `include=values`, the account as of the version's round, without its assets and applications, as GET /v2/accounts/{address}?exclude=all&round={round} returns it.",
           "$ref": "#/definitions/Account"
@@ -3145,6 +3171,11 @@
         "deleted": {
           "description": "Whether the version is the deletion of the holding (opt out).",
           "type": "boolean"
+        },
+        "changed-round": {
+          "description": "With `rounds`: the round of the latest change at or before the requested round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
         },
         "asset-holding": {
           "description": "With `include=values`, the new holding.",
@@ -3166,9 +3197,22 @@
           "description": "Whether the version is the deletion of the local state (close out or clear).",
           "type": "boolean"
         },
+        "changed-round": {
+          "description": "With `rounds`: the round of the latest change at or before the requested round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
         "app-local-state": {
           "description": "With `include=values`, the new local state.",
           "$ref": "#/definitions/ApplicationLocalState"
+        },
+        "changed-keys": {
+          "description": "With `include=keys`, the local state keys added, removed or changed in this round, sorted. On an opt-in after no local state, every key of the new state; on a clear and opt-in in the same round, the keys that differ. Absent on deletions.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          }
         }
       }
     },
@@ -3185,6 +3229,11 @@
         "deleted": {
           "description": "Whether the version is the deletion of the asset.",
           "type": "boolean"
+        },
+        "changed-round": {
+          "description": "With `rounds`: the round of the latest change at or before the requested round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
         },
         "asset": {
           "description": "With `include=values`, the new asset parameters.",
@@ -3206,9 +3255,22 @@
           "description": "Whether the version is the deletion of the application.",
           "type": "boolean"
         },
+        "changed-round": {
+          "description": "With `rounds`: the round of the latest change at or before the requested round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
         "application": {
           "description": "With `include=values`, the new application parameters.",
           "$ref": "#/definitions/Application"
+        },
+        "changed-keys": {
+          "description": "With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions and with `exclude=created-apps-params`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          }
         }
       }
     },
@@ -3218,7 +3280,7 @@
       "required": ["round", "timestamp", "deleted"],
       "properties": {
         "round": {
-          "description": "The round of the version.",
+          "description": "The round of the version, or with `rounds` the requested round.",
           "type": "integer",
           "x-go-type": "basics.Round"
         },
@@ -3230,6 +3292,11 @@
         "deleted": {
           "description": "Whether the version is the deletion of the asset.",
           "type": "boolean"
+        },
+        "changed-round": {
+          "description": "With `rounds`: the round of the version in effect at the requested round, the latest change at or before it. Absent if there was none (the object did not exist yet; `deleted` is then true).",
+          "type": "integer",
+          "x-go-type": "basics.Round"
         },
         "asset": {
           "description": "With `include=values`, the new asset parameters.",
@@ -3243,7 +3310,7 @@
       "required": ["round", "timestamp", "deleted"],
       "properties": {
         "round": {
-          "description": "The round of the version.",
+          "description": "The round of the version, or with `rounds` the requested round.",
           "type": "integer",
           "x-go-type": "basics.Round"
         },
@@ -3256,9 +3323,22 @@
           "description": "Whether the version is the deletion of the application.",
           "type": "boolean"
         },
+        "changed-round": {
+          "description": "With `rounds`: the round of the version in effect at the requested round, the latest change at or before it. Absent if there was none (the object did not exist yet; `deleted` is then true).",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
         "application": {
           "description": "With `include=values`, the new application parameters.",
           "$ref": "#/definitions/Application"
+        },
+        "changed-keys": {
+          "description": "With `include=keys`, the global state keys added, removed or changed in this round, sorted. On creation, every key of the new state. Empty when only other parameters changed. Absent on deletions.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          }
         }
       }
     },
@@ -3268,7 +3348,7 @@
       "required": ["round", "timestamp", "deleted"],
       "properties": {
         "round": {
-          "description": "The round of the version.",
+          "description": "The round of the version, or with `rounds` the requested round.",
           "type": "integer",
           "x-go-type": "basics.Round"
         },
@@ -3280,6 +3360,11 @@
         "deleted": {
           "description": "Whether the version is the deletion of the box.",
           "type": "boolean"
+        },
+        "changed-round": {
+          "description": "With `rounds`: the round of the version in effect at the requested round, the latest change at or before it. Absent if there was none (the object did not exist yet; `deleted` is then true).",
+          "type": "integer",
+          "x-go-type": "basics.Round"
         },
         "value": {
           "description": "With `include=values`, the new box value, base64 encoded.",
@@ -3294,7 +3379,7 @@
       "required": ["round", "timestamp", "boxes"],
       "properties": {
         "round": {
-          "description": "The round of the version.",
+          "description": "The round of the version, or with `rounds` the requested round.",
           "type": "integer",
           "x-go-type": "basics.Round"
         },
@@ -3304,7 +3389,7 @@
           "format": "int64"
         },
         "boxes": {
-          "description": "The boxes that changed, in name order.",
+          "description": "The boxes that changed, in name order. With `rounds`, every box that exists at the requested round.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/BoxChange"
@@ -3325,6 +3410,11 @@
         "deleted": {
           "description": "Whether the change is the deletion of the box.",
           "type": "boolean"
+        },
+        "changed-round": {
+          "description": "With `rounds`: the round of the latest change at or before the requested round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
         },
         "value": {
           "description": "With `include=values`, the new box value, base64 encoded.",
@@ -5139,6 +5229,19 @@
       "name": "order",
       "in": "query"
     },
+    "versions-rounds": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint64",
+        "x-go-type": "basics.Round",
+        "minimum": 0
+      },
+      "collectionFormat": "csv",
+      "description": "Instead of the versions in a range, report the objects as of each of these rounds: one entry per round, for the state at that round, with the round of the version in effect as `changed-round`. Rounds are deduplicated and listed in `order`; at most 10,000 distinct rounds, none after the latest round. Cannot be combined with `min-round` or `max-round`. `limit` counts rounds, and `next-token` is the next requested round. A page also ends before a round that would take it past 100,000 lookups, one per object per round, or past 64 MB of values read, returned or not: each lookup counts the value of the version in effect and the one before it (for a deletion, the value deleted), which can be less than it reads. A page always holds its first round, whatever its size: an account at one round is bounded only by MaxAPIResourcesPerAccount, as `GET /v2/accounts/{address}` is, while an application's boxes at one round that take more lookups, values or boxes than a page allows fail with 400. Multiple values can be comma-separated.",
+      "name": "rounds",
+      "in": "query"
+    },
     "versions-include": {
       "type": "array",
       "items": {
@@ -5147,6 +5250,17 @@
       },
       "collectionFormat": "csv",
       "description": "Include additional items in the response. Use `values` to include the new value of each changed object.",
+      "name": "include",
+      "in": "query"
+    },
+    "versions-include-state": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["values", "keys"]
+      },
+      "collectionFormat": "csv",
+      "description": "Include additional items in the response. Use `values` to include the new value of each changed object. Use `keys` to list, on each version of application parameters or local state, the state keys that changed against the round before: added, removed or given a new value, net over the round. Either one lowers the largest `limit` to 1,000 and ends pages once the values read reach 1 MB, counting with `keys` the previous values the keys are found from. Multiple values can be comma-separated.",
       "name": "include",
       "in": "query"
     },
@@ -5265,7 +5379,7 @@
         "required": ["round", "versions"],
         "properties": {
           "round": {
-            "description": "The last round of the range: `max-round`, or the latest round.",
+            "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },
@@ -5289,7 +5403,7 @@
         "required": ["round", "versions"],
         "properties": {
           "round": {
-            "description": "The last round of the range: `max-round`, or the latest round.",
+            "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },
@@ -5313,7 +5427,7 @@
         "required": ["round", "versions"],
         "properties": {
           "round": {
-            "description": "The last round of the range: `max-round`, or the latest round.",
+            "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },
@@ -5337,7 +5451,7 @@
         "required": ["round", "versions"],
         "properties": {
           "round": {
-            "description": "The last round of the range: `max-round`, or the latest round.",
+            "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },
@@ -5361,7 +5475,7 @@
         "required": ["round", "versions"],
         "properties": {
           "round": {
-            "description": "The last round of the range: `max-round`, or the latest round.",
+            "description": "The last round of the range: `max-round` (on a descending page resumed from `next`, the token's round), or the latest round. With `rounds`, the largest requested round left after `next`.",
             "type": "integer",
             "x-go-type": "basics.Round"
           },

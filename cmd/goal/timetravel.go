@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -47,6 +50,7 @@ var (
 	versionsMinRound, versionsMaxRound uint64
 	versionsLimit                      uint64
 	versionsNext, versionsExclude      string
+	versionsRounds                     string
 	versionsDesc, versionsAll          bool
 	versionsRoundsOnly, versionsJSON   bool
 	versionsAssetID, versionsAppID     uint64
@@ -89,6 +93,7 @@ func init() {
 		f.BoolVar(&versionsAll, "all", false, "Follow the next tokens to the last page")
 		f.BoolVar(&versionsRoundsOnly, "rounds-only", false, "List the rounds of the versions without their values")
 		f.BoolVar(&versionsJSON, "json", false, "Print each page as the node returns it, one JSON document per line")
+		f.StringVar(&versionsRounds, "rounds", "", "Instead of the versions, print the objects as of each of these rounds (comma-separated), with the round each last changed")
 	}
 	accountVersionsCmd.Flags().StringVarP(&accountAddress, "address", "a", "", "Account address (required)")
 	accountVersionsCmd.MarkFlagRequired("address")
@@ -166,7 +171,7 @@ Each version is a line with its round, time, the object that changed and how, fo
 			}
 			var ens []versionEntry
 			for _, v := range resp.Versions {
-				ens = append(ens, accountVersionEntries(addr, v)...)
+				ens = append(ens, accountVersionEntries(addr, v, p.Rounds != nil)...)
 			}
 			return resp, resp.NextToken, ens, err
 		})
@@ -185,7 +190,7 @@ var assetVersionsCmd = &cobra.Command{
 			resp, err := client.AssetVersions(assetID, p)
 			var ens []versionEntry
 			for _, v := range resp.Versions {
-				ens = append(ens, versionEntry{v.Round, v.Timestamp, label, v.Deleted, ptrValue(v.Asset), assetBaseline(assetID)})
+				ens = append(ens, versionEntry{v.Round, v.Timestamp, label, v.Deleted, ptrValue(v.Asset), assetBaseline(assetID), v.ChangedRound, false})
 			}
 			return resp, resp.NextToken, ens, err
 		})
@@ -247,7 +252,7 @@ var appVersionsCmd = &cobra.Command{
 			resp, err := client.ApplicationVersions(appIdx, p)
 			var ens []versionEntry
 			for _, v := range resp.Versions {
-				ens = append(ens, versionEntry{v.Round, v.Timestamp, label, v.Deleted, ptrValue(v.Application), appBaseline(appIdx)})
+				ens = append(ens, versionEntry{v.Round, v.Timestamp, label, v.Deleted, ptrValue(v.Application), appBaseline(appIdx), v.ChangedRound, false})
 			}
 			return resp, resp.NextToken, ens, err
 		})
@@ -266,8 +271,12 @@ var appBoxVersionsCmd = &cobra.Command{
 				resp, err := client.ApplicationBoxesVersions(appIdx, p)
 				var ens []versionEntry
 				for _, v := range resp.Versions {
+					if p.Rounds != nil && len(v.Boxes) == 0 {
+						// a round without boxes: printAsOf says so
+						ens = append(ens, versionEntry{round: v.Round, timestamp: v.Timestamp, label: fmt.Sprintf("boxes:%d", appIdx), none: true})
+					}
 					for _, b := range v.Boxes {
-						ens = append(ens, boxVersionEntry(v.Round, v.Timestamp, b.Name, b.Deleted, b.Value))
+						ens = append(ens, boxVersionEntry(v.Round, v.Timestamp, b.Name, b.Deleted, b.Value, b.ChangedRound))
 					}
 				}
 				return resp, resp.NextToken, ens, err
@@ -282,7 +291,7 @@ var appBoxVersionsCmd = &cobra.Command{
 			resp, err := client.ApplicationBoxVersions(appIdx, boxName, p)
 			var ens []versionEntry
 			for _, v := range resp.Versions {
-				ens = append(ens, boxVersionEntry(v.Round, v.Timestamp, name, v.Deleted, v.Value))
+				ens = append(ens, boxVersionEntry(v.Round, v.Timestamp, name, v.Deleted, v.Value, v.ChangedRound))
 			}
 			return resp, resp.NextToken, ens, err
 		})
@@ -290,7 +299,7 @@ var appBoxVersionsCmd = &cobra.Command{
 }
 
 // boxVersionEntry is a change of box name of the --app-id app.
-func boxVersionEntry(rnd basics.Round, ts int64, name []byte, deleted bool, value *[]byte) versionEntry {
+func boxVersionEntry(rnd basics.Round, ts int64, name []byte, deleted bool, value *[]byte, changed *basics.Round) versionEntry {
 	var val any
 	if value != nil {
 		val = model.Box{Name: name, Value: *value}
@@ -302,7 +311,7 @@ func boxVersionEntry(rnd basics.Round, ts int64, name []byte, deleted bool, valu
 		}
 		return model.Box{Name: box.Name, Value: box.Value}, nil
 	}
-	return versionEntry{rnd, ts, fmt.Sprintf("box:%d:%s", appIdx, ttview.AppCallBytes(name)), deleted, val, baseline}
+	return versionEntry{rnd, ts, fmt.Sprintf("box:%d:%s", appIdx, ttview.AppCallBytes(name)), deleted, val, baseline, changed, false}
 }
 
 // versionEntry is one object's change in a version.
@@ -315,6 +324,11 @@ type versionEntry struct {
 	// baseline looks the object up with a client pinned to a round: what the
 	// first version of a page with --min-round is compared with.
 	baseline func(libgoal.Client) (any, error)
+	// changed is, with --rounds, the round of the version in effect at round
+	// (nil: the object did not exist yet).
+	changed *basics.Round
+	// none is, with --rounds, a round at which none of the objects exist.
+	none bool
 }
 
 // ptrValue returns p as an any, nil (not a typed nil) if p is nil.
@@ -340,8 +354,23 @@ func appBaseline(id basics.AppIndex) func(libgoal.Client) (any, error) {
 }
 
 // accountVersionEntries splits an account's version into its objects'
-// changes, each compared with that object's previous version.
-func accountVersionEntries(addr basics.Address, v model.AccountVersion) []versionEntry {
+// changes, each compared with that object's previous version. With asOf
+// (--rounds), a round of --assetid or --app-id at which neither the holding
+// or local state nor the params exist, which the API leaves empty, gets an
+// entry that says so.
+func accountVersionEntries(addr basics.Address, v model.AccountVersion, asOf bool) []versionEntry {
+	ens := accountObjectEntries(addr, v)
+	if asOf && len(ens) == 0 {
+		label := fmt.Sprintf("holding:%s:%d", addr, versionsAssetID)
+		if versionsAppID != 0 {
+			label = fmt.Sprintf("local:%s:%d", addr, versionsAppID)
+		}
+		ens = append(ens, versionEntry{round: v.Round, timestamp: v.Timestamp, label: label, none: true})
+	}
+	return ens
+}
+
+func accountObjectEntries(addr basics.Address, v model.AccountVersion) []versionEntry {
 	var ens []versionEntry
 	if b := v.Base; b != nil {
 		ens = append(ens, versionEntry{v.Round, v.Timestamp, "acct:" + addr.String(), b.Deleted, ptrValue(b.Account),
@@ -351,7 +380,7 @@ func accountVersionEntries(addr basics.Address, v model.AccountVersion) []versio
 					return nil, err // an account without algos does not exist
 				}
 				return acct, nil
-			}})
+			}, b.ChangedRound, false})
 	}
 	if v.Assets != nil {
 		for _, h := range *v.Assets {
@@ -362,7 +391,7 @@ func accountVersionEntries(addr basics.Address, v model.AccountVersion) []versio
 						return nil, err
 					}
 					return r.AssetHolding, nil
-				}})
+				}, h.ChangedRound, false})
 		}
 	}
 	if v.AppsLocalState != nil {
@@ -374,17 +403,17 @@ func accountVersionEntries(addr basics.Address, v model.AccountVersion) []versio
 						return nil, err
 					}
 					return r.AppLocalState, nil
-				}})
+				}, l.ChangedRound, false})
 		}
 	}
 	if v.CreatedAssets != nil {
 		for _, a := range *v.CreatedAssets {
-			ens = append(ens, versionEntry{v.Round, v.Timestamp, fmt.Sprintf("asset:%d", a.AssetId), a.Deleted, ptrValue(a.Asset), assetBaseline(a.AssetId)})
+			ens = append(ens, versionEntry{v.Round, v.Timestamp, fmt.Sprintf("asset:%d", a.AssetId), a.Deleted, ptrValue(a.Asset), assetBaseline(a.AssetId), a.ChangedRound, false})
 		}
 	}
 	if v.CreatedApps != nil {
 		for _, a := range *v.CreatedApps {
-			ens = append(ens, versionEntry{v.Round, v.Timestamp, fmt.Sprintf("app:%d", a.AppId), a.Deleted, ptrValue(a.Application), appBaseline(a.AppId)})
+			ens = append(ens, versionEntry{v.Round, v.Timestamp, fmt.Sprintf("app:%d", a.AppId), a.Deleted, ptrValue(a.Application), appBaseline(a.AppId), a.ChangedRound, false})
 		}
 	}
 	return ens
@@ -414,6 +443,18 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 		r := basics.Round(versionsMaxRound)
 		p.MaxRound = &r
 	}
+	if cmd.Flags().Changed("rounds") {
+		if p.MinRound != nil || p.MaxRound != nil {
+			reportErrorf("--rounds cannot be combined with --min-round or --max-round")
+		}
+		for f := range strings.SplitSeq(versionsRounds, ",") {
+			r, err := strconv.ParseUint(strings.TrimSpace(f), 10, 64)
+			if err != nil {
+				reportErrorf("Invalid --rounds %q: %v", versionsRounds, err)
+			}
+			p.Rounds = append(p.Rounds, basics.Round(r))
+		}
+	}
 	h := ttview.History{W: os.Stdout, Full: versionsDesc}
 	seen := map[string]bool{}
 	for {
@@ -430,6 +471,12 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 		} else {
 			for _, en := range entries {
 				h.Opts = viewOptions(en.label)
+				if p.Rounds != nil {
+					if err := printAsOf(h.W, en, h.Opts); err != nil {
+						reportErrorf("%v", err)
+					}
+					continue
+				}
 				if !seen[en.label] && !h.Full {
 					seen[en.label] = true
 					if err := h.Baseline(en.label, baselineValue(client, en, p)); err != nil {
@@ -450,6 +497,31 @@ func listVersions(cmd *cobra.Command, client libgoal.Client, fetch func(apiclien
 		}
 		p.Next = *next
 	}
+}
+
+// printAsOf prints en, an object as of a --rounds round, to w: the round,
+// its time, the object and the round it last changed, then its value.
+func printAsOf(w io.Writer, en versionEntry, opts ttview.Options) error {
+	state := "not created yet"
+	switch {
+	case en.none:
+		state = "none"
+	case en.changed != nil && en.deleted:
+		state = fmt.Sprintf("deleted at %d", *en.changed)
+	case en.changed != nil:
+		state = fmt.Sprintf("last changed at %d", *en.changed)
+	}
+	if _, err := fmt.Fprintf(w, "%d  %s  %s %s\n", en.round, time.Unix(en.timestamp, 0).UTC().Format(time.DateTime), en.label, state); err != nil {
+		return err
+	}
+	if en.value == nil {
+		return nil
+	}
+	fields, err := ttview.Flatten(en.value, opts)
+	if err != nil {
+		return err
+	}
+	return ttview.WriteFields(w, fields, "  ")
 }
 
 // baselineValue is the value of en's object before the range, nil if it did
