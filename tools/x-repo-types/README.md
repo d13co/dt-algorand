@@ -3,13 +3,15 @@
 Given two types **X** and **Y** from separate repositories, compare the types and generate a report of any differences to the serialized shape of the types. In particular it ignores different embedding of structs, different field names if `codec` tags are used, and different types if they map to the same primitives.
 This tool is designed to be used in CI systems to alert us if a change is made to one repo without a corresponding change to another. For example the `Genesis` type in `go-algorand` and `go-algorand-sdk`. See the [Makefile](./Makefile) for additional examples.
 
+In dt-algorand, `go.mod` replaces `github.com/algorand/go-algorand-sdk/v2` with a pinned commit of [go-dtalgorand-sdk](https://github.com/d13co/go-dtalgorand-sdk), the SDK that exports its types from dt-algorand. SDK types are therefore compared with that pin, whatever `--y-branch` says: the branch only names the upstream version that `go get` resolves before the replace applies. To compare with a local go-dtalgorand-sdk checkout instead, run `make x-repo-types` from the repository root (see `scripts/test_x_repo_types.sh`).
+
 ## Example run
 
 ```sh
 goal-v-sdk-state-delta-xrt:
     x-repo-types --x-package "github.com/algorand/go-algorand/ledger/ledgercore" \
     --x-type "StateDelta" \
-    --y-branch "develop" \
+    --y-branch "main" \
     --y-package "github.com/algorand/go-algorand-sdk/v2/types" \
     --y-type "LedgerStateDelta"
 ```

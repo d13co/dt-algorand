@@ -6,7 +6,9 @@ clean:
 x-repo-types:
 	go build
 
-# go-algorand vs go-algorand-sdk:
+# go-algorand vs go-algorand-sdk, which go.mod replaces with a pinned
+# go-dtalgorand-sdk commit (--y-branch only picks the upstream version that
+# go get resolves before the replace applies):
 
 goal-v-sdk: goal-v-sdk-state-delta goal-v-sdk-genesis goal-v-sdk-block goal-v-sdk-blockheader goal-v-sdk-stateproof
 
