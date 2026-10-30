@@ -193,16 +193,14 @@ Errors of the whole request: 400 for an invalid request or once its results pass
 
 How it differs from simulate: there is no signature check, no fee, minimum balance, duplicate or lease check, no block assembly or end-of-block work (rewards pool, state proof voters), and no execution trace or unnamed-resource bookkeeping per opcode; the response has logs, cost and error only. For time travel queries, wall time is dominated by the history lookups, which stay the same; the gain is the per-call overhead, response size and decode time, and the lookups shared by the calls of a worker.
 
-`BenchmarkQueryVsSimulate` (`ledger/simulation`): 16 calls per op, each reading the balance, minimum balance and asset count of 127 accounts and logging one entry per account, at the latest round of an in-memory test ledger, so without time travel lookups (Ryzen 7 5700U, 8 threads):
+`BenchmarkQueryVsSimulate` (`ledger/simulation`): 16 calls per op, each reading the balance, minimum balance and asset count of 127 accounts and logging one entry per account, at the latest round of an in-memory test ledger, so without time travel lookups (Ryzen 7 5700U, 8 threads, median of 5 runs of `-benchtime 100x`):
 
 | | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| simulate, one group of 16 | 25.4 ms | 7.7 MB | 107,626 |
-| simulate, `parallel-groups` (8 workers) | 16.4 ms | 13.7 MB | 147,481 |
-| query, 1 worker | 15.0 ms | 5.9 MB | 78,826 |
-| query, 4 workers | 8.2 ms | 7.1 MB | 86,769 |
-
-Over a third of the query's time goes to building the error that `logic` makes, then drops, when a program uses an account it did not name; simulate pays it too.
+| simulate, one group of 16 | 21.1 ms | 4.2 MB | 48,809 |
+| simulate, `parallel-groups` (8 workers) | 17.7 ms | 10.2 MB | 88,666 |
+| query, 1 worker | 9.3 ms | 2.2 MB | 18,159 |
+| query, 4 workers | 7.5 ms | 3.4 MB | 26,130 |
 
 On a copy of an FNet time travel node (2026-10-26, round 25,339,414, same machine), with GhostV11 sent as ghostkit sends it to simulate (one app create per group from the fee sink, `parallel-groups`, `rewrite-validity-window`, `protocol: latest`, resource limit multiplier 128) and the same calls to `/v2/query`, 256 rounds × 16 calls, msgpack, `QueryParallelism` 8 (simulate's parallel groups use the 8 CPUs). Every log was the same in both, and the calls that failed failed alike:
 

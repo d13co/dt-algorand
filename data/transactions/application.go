@@ -658,24 +658,34 @@ func (ac *ApplicationCallTxnFields) AddressByIndex(accountIdx uint64, sender bas
 	return ac.Accounts[accountIdx-1], nil
 }
 
-// IndexByAddress converts an address into an integer offset into [txn.Sender,
+// FindAddress converts an address into an integer offset into [txn.Sender,
 // tx.<list>[0], ...], returning the index at the first match. <list> is
-// tx.Access or tx.Accounts. It returns an error if there is no such match.
-func (ac *ApplicationCallTxnFields) IndexByAddress(target basics.Address, sender basics.Address) (uint64, error) {
+// tx.Access or tx.Accounts. It reports false if there is no such match. Use it
+// instead of IndexByAddress when a miss is not an error: IndexByAddress formats
+// the address into its error, which is costly.
+func (ac *ApplicationCallTxnFields) FindAddress(target basics.Address, sender basics.Address) (uint64, bool) {
 	// Index 0 always corresponds to the sender
 	if target == sender {
-		return 0, nil
+		return 0, true
 	}
 
 	// Try ac.Access first. Remember only one of Access or Accounts can be set.
 	if idx := slices.IndexFunc(ac.Access, func(rr ResourceRef) bool { return rr.Address == target }); idx != -1 {
-		return uint64(idx) + 1, nil
+		return uint64(idx) + 1, true
 	}
 
 	// Otherwise we index into ac.Accounts
 	if idx := slices.Index(ac.Accounts, target); idx != -1 {
-		return uint64(idx) + 1, nil
+		return uint64(idx) + 1, true
 	}
 
+	return 0, false
+}
+
+// IndexByAddress is FindAddress, returning an error if there is no match.
+func (ac *ApplicationCallTxnFields) IndexByAddress(target basics.Address, sender basics.Address) (uint64, error) {
+	if idx, ok := ac.FindAddress(target, sender); ok {
+		return idx, nil
+	}
 	return 0, fmt.Errorf("invalid Account reference %s does not appear in resource array", target)
 }
