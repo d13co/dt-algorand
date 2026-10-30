@@ -158,6 +158,8 @@ type NodeInterface interface {
 	BroadcastSignedTxGroup(txgroup []transactions.SignedTxn) error
 	AsyncBroadcastSignedTxGroup(txgroup []transactions.SignedTxn) error
 	Simulate(request simulation.Request) (result simulation.Result, err error)
+	// Query runs read-only TEAL calls (POST /v2/query). Non-standard fork feature.
+	Query(request simulation.QueryRequest) (result simulation.QueryResult, err error)
 	GetPeers() (inboundPeers []network.Peer, outboundPeers []network.Peer, err error)
 	GetPendingTransaction(txID transactions.Txid) (res node.TxnWithStatus, found bool)
 	GetPendingTxnsFromPool() ([]transactions.SignedTxn, error)

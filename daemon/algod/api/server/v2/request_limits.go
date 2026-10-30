@@ -163,6 +163,12 @@ func admitSimulate(ctx context.Context, limiter *semaphore.Weighted) error {
 	return nil
 }
 
+// trySimulate takes a free slot of limiter for more work of an admitted request, without waiting:
+// waiting would queue ahead of new requests, which would then be refused as busy.
+func trySimulate(limiter *semaphore.Weighted) bool {
+	return limiter == nil || limiter.TryAcquire(1)
+}
+
 func releaseSimulate(limiter *semaphore.Weighted) {
 	if limiter != nil {
 		limiter.Release(1)

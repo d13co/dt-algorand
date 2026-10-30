@@ -215,6 +215,47 @@ func upgradeAt(hdr bookkeeping.BlockHeader, target protocol.ConsensusVersion) bo
 	return hdr
 }
 
+// overrideProtocol works out how the protocol name (Request.Protocol, QueryRequest.Protocol)
+// applies to the round after prevHdr, whose header it is, with latest the node's latest round.
+// ProtocolLatest is the protocol of the block after latest. When it applies, it sets l to switch to
+// it, and returns the protocolGaps for the tracers.
+func (l *simulatorLedger) overrideProtocol(name string, prevHdr bookkeeping.BlockHeader, latest basics.Round) (*ProtocolOverride, *protocolGaps, error) {
+	var target protocol.ConsensusVersion
+	if name == ProtocolLatest {
+		// The protocol of the block after the tip, so that the round before an upgrade switches
+		// already gets the new one.
+		latestHdr, err := l.Ledger.BlockHdr(latest)
+		if err != nil {
+			return nil, nil, err
+		}
+		_, tipNext, err := bookkeeping.ProcessUpgradeParams(latestHdr)
+		if err != nil {
+			return nil, nil, err
+		}
+		target = tipNext.CurrentProtocol
+	} else {
+		var err error
+		if target, err = parseProtocol(name); err != nil {
+			return nil, nil, InvalidRequestError{SimulatorError{err}}
+		}
+	}
+
+	_, next, err := bookkeeping.ProcessUpgradeParams(prevHdr)
+	if err != nil {
+		return nil, nil, err
+	}
+	override := &ProtocolOverride{From: next.CurrentProtocol, To: target}
+	if override.Applied, err = decideProtocol(override.From, target); err != nil || !override.Applied {
+		return override, nil, err
+	}
+
+	realNext, targetParams := config.Consensus[override.From], config.Consensus[target]
+	l.upgradeTo = target
+	gaps := makeProtocolGaps(*l, realNext, targetParams)
+	override.Notes = staticNotes(realNext, targetParams)
+	return override, gaps, nil
+}
+
 // semanticParams are the ConsensusParams fields that change how transactions are checked or
 // evaluated. A difference in one of them makes the semantics-changed note. Every other field is in
 // ignoredParams; TestProtocolParamsClassified keeps the two lists complete.

@@ -74,6 +74,8 @@ func (cx *EvalContext) authorizeBoxAccess(ownerAppID basics.AppIndex, operation 
 			// any app with a box reference may read
 		case inFamily:
 			// inFamily only set to true if FamilyBoxAccess
+		case isRead && cx.AllowForeignBoxReads:
+			// a query may read any app's boxes (fork: POST /v2/query)
 		default:
 			/* We have a denied operation. For better errors, resolve `inFamily`
 			   now, even if we need the call we skipped above. */

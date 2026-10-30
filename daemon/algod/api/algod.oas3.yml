@@ -1155,6 +1155,35 @@
         },
         "description": "Transaction ID of the submission."
       },
+      "QueryResponse": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "description": "The results of a query, one per listed round.",
+              "properties": {
+                "last-round": {
+                  "description": "The node's latest round when the request started.",
+                  "type": "integer",
+                  "x-go-type": "basics.Round"
+                },
+                "rounds": {
+                  "description": "One result for each entry of the request's rounds, in order.",
+                  "items": {
+                    "$ref": "#/components/schemas/QueryRoundResult"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "last-round",
+                "rounds"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "description": "The results of a query. Non-standard fork feature."
+      },
       "SimulateLimitsResponse": {
         "content": {
           "application/json": {
@@ -1179,6 +1208,9 @@
                   "description": "The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).",
                   "type": "integer",
                   "x-go-type": "uint64"
+                },
+                "query": {
+                  "$ref": "#/components/schemas/QueryLimits"
                 },
                 "resource-limit-multiplier": {
                   "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",
@@ -3006,6 +3038,210 @@
         "required": [
           "pool-error",
           "txn"
+        ],
+        "type": "object"
+      },
+      "QueryCall": {
+        "description": "One call of a query: the args and references of its app call. The references are only needed by programs before v9, which address resources by index. Non-standard fork feature.",
+        "properties": {
+          "accounts": {
+            "items": {
+              "type": "string",
+              "x-algorand-format": "Address"
+            },
+            "type": "array"
+          },
+          "args": {
+            "description": "The application args.",
+            "items": {
+              "format": "byte",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "boxes": {
+            "description": "Box references; app 0 is the called app. An app not in foreign-apps is added to it.",
+            "items": {
+              "$ref": "#/components/schemas/BoxReference"
+            },
+            "type": "array"
+          },
+          "foreign-apps": {
+            "items": {
+              "type": "integer",
+              "x-go-type": "basics.AppIndex"
+            },
+            "type": "array"
+          },
+          "foreign-assets": {
+            "items": {
+              "type": "integer",
+              "x-go-type": "basics.AssetIndex"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "QueryCallResult": {
+        "description": "The result of one call of a query at one round. Non-standard fork feature.",
+        "properties": {
+          "cost": {
+            "description": "The opcode budget the call used, the apps it called included.",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "error": {
+            "description": "The call's error, if it failed.",
+            "type": "string"
+          },
+          "logs": {
+            "description": "The logs of the called app, also when the call failed part way.",
+            "items": {
+              "format": "byte",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cost",
+          "logs"
+        ],
+        "type": "object"
+      },
+      "QueryLimits": {
+        "description": "The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.",
+        "properties": {
+          "max-call-budget": {
+            "description": "The most opcode budget a call may ask for, and the budget of one that asks for none (node config MaxAPIQueryCallBudget).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-call-log-bytes": {
+            "description": "The most bytes each program of a call may log, in up to 2048 logs. 0 means the protocol's limits: 1024 bytes in 32 logs (node config MaxAPIQueryCallLogBytes).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-call-state-bytes": {
+            "description": "The most bytes of ledger state a call may read: accounts, holdings and local states, asset and app params (programs and global state included), and boxes, each counted once however often the call reads it. A call that reads more fails with an error, and the other calls run on. 0 means no limit (node config MaxAPIQueryCallStateBytes).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-calls": {
+            "description": "The most calls a request may hold (node config MaxAPIQueryCalls).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-response-bytes": {
+            "description": "The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. 0 means no limit (node config MaxAPIQueryResponseBytes).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-rounds": {
+            "description": "The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          }
+        },
+        "required": [
+          "max-call-budget",
+          "max-call-log-bytes",
+          "max-call-state-bytes",
+          "max-calls",
+          "max-response-bytes",
+          "max-rounds"
+        ],
+        "type": "object"
+      },
+      "QueryRequest": {
+        "description": "A request of POST /v2/query. Exactly one of program and app-id is required. Non-standard fork feature.",
+        "properties": {
+          "app-id": {
+            "description": "The deployed app each call calls, with OnCompletion NoOp.",
+            "type": "integer",
+            "x-go-type": "basics.AppIndex"
+          },
+          "budget": {
+            "description": "The opcode budget of each call, shared by the app it runs and the apps it calls. Defaults to, and may be at most, max-call-budget.",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "calls": {
+            "description": "The calls, at most max-calls.",
+            "items": {
+              "$ref": "#/components/schemas/QueryCall"
+            },
+            "type": "array"
+          },
+          "clear-program": {
+            "description": "The clear state program of the app each call creates. Defaults to pushint 1 at the version of program, which must then be v3 or later.",
+            "format": "byte",
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            "type": "string"
+          },
+          "global-schema": {
+            "$ref": "#/components/schemas/ApplicationStateSchema"
+          },
+          "local-schema": {
+            "$ref": "#/components/schemas/ApplicationStateSchema"
+          },
+          "program": {
+            "description": "The approval program of the app each call creates, at the id the next block would give it. Extra program pages follow from its length.",
+            "format": "byte",
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            "type": "string"
+          },
+          "protocol": {
+            "description": "The protocol the round after each queried one runs, as in simulate: latest (the default), a consensus version or vNN name of a later protocol, or round for the protocol the chain really ran. future needs the developer API.",
+            "type": "string"
+          },
+          "rounds": {
+            "description": "The rounds to query, at most max-rounds entries, duplicates included; 0 is the latest round. Defaults to the latest round. A round after the latest one is a 400.",
+            "items": {
+              "type": "integer",
+              "x-go-type": "basics.Round"
+            },
+            "type": "array"
+          },
+          "sender": {
+            "description": "The sender of every call. Defaults to the fee sink of the queried round.",
+            "type": "string",
+            "x-algorand-format": "Address"
+          }
+        },
+        "required": [
+          "calls"
+        ],
+        "type": "object"
+      },
+      "QueryRoundResult": {
+        "description": "The calls of a query at one round. Non-standard fork feature.",
+        "properties": {
+          "calls": {
+            "description": "One result for each call of the request, in order.",
+            "items": {
+              "$ref": "#/components/schemas/QueryCallResult"
+            },
+            "type": "array"
+          },
+          "error": {
+            "description": "Why the round could not be queried: outside the history, a protocol it can't run under, or a failure of the node to read it while the calls ran. There are no calls then.",
+            "type": "string"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/SimulateProtocolOverride"
+          },
+          "round": {
+            "description": "The queried round: the calls run in the round after it, on the state it left.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          }
+        },
+        "required": [
+          "round"
         ],
         "type": "object"
       },
@@ -9274,6 +9510,181 @@
         "x-codegen-request-body-name": "keymap"
       }
     },
+    "/v2/query": {
+      "post": {
+        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/transactions/simulate/limits; a node without it does not serve this endpoint: a stock algod answers 404, and a node with queries disabled (node config MaxAPIQueryCalls 0) answers 400. Non-standard fork feature.",
+        "operationId": "Query",
+        "parameters": [
+          {
+            "description": "Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.",
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "enum": [
+                "json",
+                "msgpack"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            },
+            "application/msgpack": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "description": "The program or app to call, the calls and the rounds.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The results of a query, one per listed round.",
+                  "properties": {
+                    "last-round": {
+                      "description": "The node's latest round when the request started.",
+                      "type": "integer",
+                      "x-go-type": "basics.Round"
+                    },
+                    "rounds": {
+                      "description": "One result for each entry of the request's rounds, in order.",
+                      "items": {
+                        "$ref": "#/components/schemas/QueryRoundResult"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "last-round",
+                    "rounds"
+                  ],
+                  "type": "object"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "description": "The results of a query, one per listed round.",
+                  "properties": {
+                    "last-round": {
+                      "description": "The node's latest round when the request started.",
+                      "type": "integer",
+                      "x-go-type": "basics.Round"
+                    },
+                    "rounds": {
+                      "description": "One result for each entry of the request's rounds, in order.",
+                      "items": {
+                        "$ref": "#/components/schemas/QueryRoundResult"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "last-round",
+                    "rounds"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The results of a query. Non-standard fork feature."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request: the request is invalid, names a round after the latest one, or its results are over max-response-bytes, or the node has queries disabled."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid API Token"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Temporarily Unavailable: the node is catching up, or busy (with Retry-After)."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request reached the node's time limit."
+          },
+          "default": {
+            "content": {},
+            "description": "Unknown Error"
+          }
+        },
+        "summary": "Run read-only TEAL calls at one or more rounds.",
+        "tags": [
+          "dtalgorand"
+        ],
+        "x-codegen-request-body-name": "request"
+      }
+    },
     "/v2/shutdown": {
       "post": {
         "deprecated": true,
@@ -10753,6 +11164,9 @@
                       "description": "The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).",
                       "type": "integer",
                       "x-go-type": "uint64"
+                    },
+                    "query": {
+                      "$ref": "#/components/schemas/QueryLimits"
                     },
                     "resource-limit-multiplier": {
                       "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",

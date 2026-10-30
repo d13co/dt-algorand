@@ -236,6 +236,12 @@ const (
 	GetTransactionGroupLedgerStateDeltasForRoundParamsFormatMsgpack GetTransactionGroupLedgerStateDeltasForRoundParamsFormat = "msgpack"
 )
 
+// Defines values for QueryParamsFormat.
+const (
+	QueryParamsFormatJson    QueryParamsFormat = "json"
+	QueryParamsFormatMsgpack QueryParamsFormat = "msgpack"
+)
+
 // Defines values for GetPendingTransactionsParamsFormat.
 const (
 	GetPendingTransactionsParamsFormatJson    GetPendingTransactionsParamsFormat = "json"
@@ -1093,6 +1099,100 @@ type PendingTransactionResponse struct {
 	Txn map[string]interface{} `json:"txn"`
 }
 
+// QueryCall One call of a query: the args and references of its app call. The references are only needed by programs before v9, which address resources by index. Non-standard fork feature.
+type QueryCall struct {
+	Accounts *[]string `json:"accounts,omitempty"`
+
+	// Args The application args.
+	Args *[][]byte `json:"args,omitempty"`
+
+	// Boxes Box references; app 0 is the called app. An app not in foreign-apps is added to it.
+	Boxes         *[]BoxReference      `json:"boxes,omitempty"`
+	ForeignApps   *[]basics.AppIndex   `json:"foreign-apps,omitempty"`
+	ForeignAssets *[]basics.AssetIndex `json:"foreign-assets,omitempty"`
+}
+
+// QueryCallResult The result of one call of a query at one round. Non-standard fork feature.
+type QueryCallResult struct {
+	// Cost The opcode budget the call used, the apps it called included.
+	Cost uint64 `json:"cost"`
+
+	// Error The call's error, if it failed.
+	Error *string `json:"error,omitempty"`
+
+	// Logs The logs of the called app, also when the call failed part way.
+	Logs [][]byte `json:"logs"`
+}
+
+// QueryLimits The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
+type QueryLimits struct {
+	// MaxCallBudget The most opcode budget a call may ask for, and the budget of one that asks for none (node config MaxAPIQueryCallBudget).
+	MaxCallBudget uint64 `json:"max-call-budget"`
+
+	// MaxCallLogBytes The most bytes each program of a call may log, in up to 2048 logs. 0 means the protocol's limits: 1024 bytes in 32 logs (node config MaxAPIQueryCallLogBytes).
+	MaxCallLogBytes uint64 `json:"max-call-log-bytes"`
+
+	// MaxCallStateBytes The most bytes of ledger state a call may read: accounts, holdings and local states, asset and app params (programs and global state included), and boxes, each counted once however often the call reads it. A call that reads more fails with an error, and the other calls run on. 0 means no limit (node config MaxAPIQueryCallStateBytes).
+	MaxCallStateBytes uint64 `json:"max-call-state-bytes"`
+
+	// MaxCalls The most calls a request may hold (node config MaxAPIQueryCalls).
+	MaxCalls uint64 `json:"max-calls"`
+
+	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. 0 means no limit (node config MaxAPIQueryResponseBytes).
+	MaxResponseBytes uint64 `json:"max-response-bytes"`
+
+	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
+	MaxRounds uint64 `json:"max-rounds"`
+}
+
+// QueryRequest A request of POST /v2/query. Exactly one of program and app-id is required. Non-standard fork feature.
+type QueryRequest struct {
+	// AppId The deployed app each call calls, with OnCompletion NoOp.
+	AppId *basics.AppIndex `json:"app-id,omitempty"`
+
+	// Budget The opcode budget of each call, shared by the app it runs and the apps it calls. Defaults to, and may be at most, max-call-budget.
+	Budget *uint64 `json:"budget,omitempty"`
+
+	// Calls The calls, at most max-calls.
+	Calls []QueryCall `json:"calls"`
+
+	// ClearProgram The clear state program of the app each call creates. Defaults to pushint 1 at the version of program, which must then be v3 or later.
+	ClearProgram *[]byte `json:"clear-program,omitempty"`
+
+	// GlobalSchema Specifies maximums on the number of each type that may be stored.
+	GlobalSchema *ApplicationStateSchema `json:"global-schema,omitempty"`
+
+	// LocalSchema Specifies maximums on the number of each type that may be stored.
+	LocalSchema *ApplicationStateSchema `json:"local-schema,omitempty"`
+
+	// Program The approval program of the app each call creates, at the id the next block would give it. Extra program pages follow from its length.
+	Program *[]byte `json:"program,omitempty"`
+
+	// Protocol The protocol the round after each queried one runs, as in simulate: latest (the default), a consensus version or vNN name of a later protocol, or round for the protocol the chain really ran. future needs the developer API.
+	Protocol *string `json:"protocol,omitempty"`
+
+	// Rounds The rounds to query, at most max-rounds entries, duplicates included; 0 is the latest round. Defaults to the latest round. A round after the latest one is a 400.
+	Rounds *[]basics.Round `json:"rounds,omitempty"`
+
+	// Sender The sender of every call. Defaults to the fee sink of the queried round.
+	Sender *string `json:"sender,omitempty"`
+}
+
+// QueryRoundResult The calls of a query at one round. Non-standard fork feature.
+type QueryRoundResult struct {
+	// Calls One result for each call of the request, in order.
+	Calls *[]QueryCallResult `json:"calls,omitempty"`
+
+	// Error Why the round could not be queried: outside the history, a protocol it can't run under, or a failure of the node to read it while the calls ran. There are no calls then.
+	Error *string `json:"error,omitempty"`
+
+	// Protocol How the request's protocol applied to the simulated round. Non-standard fork feature.
+	Protocol *SimulateProtocolOverride `json:"protocol,omitempty"`
+
+	// Round The queried round: the calls run in the round after it, on the state it left.
+	Round basics.Round `json:"round"`
+}
+
 // ScratchChange A write operation into a scratch slot.
 type ScratchChange struct {
 	// NewValue Represents an AVM value.
@@ -1864,6 +1964,15 @@ type PostTransactionsResponse struct {
 	TxId string `json:"txId"`
 }
 
+// QueryResponse The results of a query, one per listed round.
+type QueryResponse struct {
+	// LastRound The node's latest round when the request started.
+	LastRound basics.Round `json:"last-round"`
+
+	// Rounds One result for each entry of the request's rounds, in order.
+	Rounds []QueryRoundResult `json:"rounds"`
+}
+
 // SimulateLimitsResponse The limits of simulate requests on this node, and the simulate features it allows.
 type SimulateLimitsResponse struct {
 	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
@@ -1877,6 +1986,9 @@ type SimulateLimitsResponse struct {
 
 	// MaxTxnGroups The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).
 	MaxTxnGroups uint64 `json:"max-txn-groups"`
+
+	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
+	Query *QueryLimits `json:"query,omitempty"`
 
 	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
 	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
@@ -2457,6 +2569,15 @@ type GenerateParticipationKeysParams struct {
 	Last basics.Round `form:"last" json:"last"`
 }
 
+// QueryParams defines parameters for Query.
+type QueryParams struct {
+	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
+	Format *QueryParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+}
+
+// QueryParamsFormat defines parameters for Query.
+type QueryParamsFormat string
+
 // ShutdownNodeParams defines parameters for ShutdownNode.
 type ShutdownNodeParams struct {
 	Timeout *int `form:"timeout,omitempty" json:"timeout,omitempty"`
@@ -2512,6 +2633,9 @@ type SimulateTransactionParams struct {
 
 // SimulateTransactionParamsFormat defines parameters for SimulateTransaction.
 type SimulateTransactionParamsFormat string
+
+// QueryJSONRequestBody defines body for Query for application/json ContentType.
+type QueryJSONRequestBody = QueryRequest
 
 // TealCompileTextRequestBody defines body for TealCompile for text/plain ContentType.
 type TealCompileTextRequestBody = TealCompileTextBody

@@ -940,42 +940,10 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 }
 
 // overrideProtocol works out how request.Protocol applies to the round after prevHdr, whose
-// header it is, with latest the node's latest round. ProtocolLatest is the protocol of the block
-// after latest. When it applies, it sets the ledger to
-// switch to it, and request.protocolGaps for the tracers.
+// header it is, with latest the node's latest round. When it applies, it sets the ledger to switch
+// to it, and request.protocolGaps for the tracers.
 func (s *Simulator) overrideProtocol(request *Request, prevHdr bookkeeping.BlockHeader, latest basics.Round) (*ProtocolOverride, error) {
-	var target protocol.ConsensusVersion
-	if request.Protocol == ProtocolLatest {
-		// The protocol of the block after the tip, so that the round before an upgrade switches
-		// already gets the new one.
-		latestHdr, err := s.ledger.Ledger.BlockHdr(latest)
-		if err != nil {
-			return nil, err
-		}
-		_, tipNext, err := bookkeeping.ProcessUpgradeParams(latestHdr)
-		if err != nil {
-			return nil, err
-		}
-		target = tipNext.CurrentProtocol
-	} else {
-		var err error
-		if target, err = parseProtocol(request.Protocol); err != nil {
-			return nil, InvalidRequestError{SimulatorError{err}}
-		}
-	}
-
-	_, next, err := bookkeeping.ProcessUpgradeParams(prevHdr)
-	if err != nil {
-		return nil, err
-	}
-	override := &ProtocolOverride{From: next.CurrentProtocol, To: target}
-	if override.Applied, err = decideProtocol(override.From, target); err != nil || !override.Applied {
-		return override, err
-	}
-
-	realNext, targetParams := config.Consensus[override.From], config.Consensus[target]
-	s.ledger.upgradeTo = target
-	request.protocolGaps = makeProtocolGaps(s.ledger, realNext, targetParams)
-	override.Notes = staticNotes(realNext, targetParams)
-	return override, nil
+	override, gaps, err := s.ledger.overrideProtocol(request.Protocol, prevHdr, latest)
+	request.protocolGaps = gaps
+	return override, err
 }
