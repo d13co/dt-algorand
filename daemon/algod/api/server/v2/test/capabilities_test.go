@@ -40,43 +40,42 @@ import (
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-// getLimits asks h for GET /v2/transactions/simulate/limits, as a client would.
-func getLimits(t *testing.T, h http.Handler) model.SimulateLimitsResponse {
+// getCapabilities asks h for GET /v2/capabilities, as a client would.
+func getCapabilities(t *testing.T, h http.Handler) model.CapabilitiesResponse {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/transactions/simulate/limits", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/capabilities", nil))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	var limits model.SimulateLimitsResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &limits))
-	return limits
+	var capabilities model.CapabilitiesResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &capabilities))
+	return capabilities
 }
 
-// getSimulateLimits asks a node with cfg for its simulate limits.
-func getSimulateLimits(t *testing.T, cfg config.Local) model.SimulateLimitsResponse {
+// nodeCapabilities asks a node with cfg for its capabilities.
+func nodeCapabilities(t *testing.T, cfg config.Local) model.CapabilitiesResponse {
 	t.Helper()
 	n := makeMockNodeWithConfig(nil, t.Name(), nil, cannedStatusReportGolden, false, cfg)
-	return getLimits(t, server.NewRouter(logging.TestingLog(t), n, make(chan struct{}), "", "", nil, 1000))
+	return getCapabilities(t, server.NewRouter(logging.TestingLog(t), n, make(chan struct{}), "", "", nil, 1000))
 }
 
-func TestSimulateLimits(t *testing.T) {
+func TestCapabilities(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
+	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1}
 	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16}
 	for _, tc := range []struct {
 		name      string
 		configure func(*config.Local)
-		want      model.SimulateLimitsResponse
+		want      model.CapabilitiesResponse
 	}{
-		{"defaults", func(*config.Local) {}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			TimeLimitSeconds: 108, Query: defaultQuery,
+		{"defaults", func(*config.Local) {}, model.CapabilitiesResponse{
+			TimeLimitSeconds: 108, Simulate: defaultSimulate, Query: defaultQuery,
 		}},
 		{"query disabled", func(c *config.Local) {
 			c.MaxAPIQueryCalls = 0
-		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			TimeLimitSeconds: 108,
+		}, model.CapabilitiesResponse{
+			TimeLimitSeconds: 108, Simulate: defaultSimulate,
 		}},
 		{"query floors and ceilings", func(c *config.Local) {
 			c.MaxAPIQueryCalls = 3
@@ -85,10 +84,9 @@ func TestSimulateLimits(t *testing.T) {
 			c.MaxAPIQueryResponseBytes = 0
 			c.MaxAPIQueryCallStateBytes = 0
 			c.MaxAPIQueryRounds = 1_000_000
-		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			TimeLimitSeconds: 108,
-			Query:            &model.QueryLimits{MaxCalls: 3, MaxCallBudget: 1, MaxRounds: simulation.MaxQueryRounds},
+		}, model.CapabilitiesResponse{
+			TimeLimitSeconds: 108, Simulate: defaultSimulate,
+			Query: &model.QueryLimits{MaxCalls: 3, MaxCallBudget: 1, MaxRounds: simulation.MaxQueryRounds},
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
@@ -96,18 +94,22 @@ func TestSimulateLimits(t *testing.T) {
 			c.MaxAPISimulateExtraOpcodeBudget = 0
 			c.SimulateResourceLimitMultiplier = 0
 			c.RestWriteTimeoutSeconds = 0
-		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 1, MaxRounds: 0, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1, Query: defaultQuery,
+		}, model.CapabilitiesResponse{
+			Simulate: model.SimulateLimits{MaxTxnGroups: 1, MaxRounds: 0, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1},
+			Query:    defaultQuery,
 		}},
 		{"above the ceilings", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 1_000_000
 			c.MaxAPISimulateRounds = 1_000_000
 			c.MaxAPISimulateExtraOpcodeBudget = 1 << 40
 			c.SimulateResourceLimitMultiplier = 1_000_000
-		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: simulation.MaxSimulateGroups, MaxRounds: simulation.MaxSimulateRounds,
-			MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling, ResourceLimitMultiplier: simulation.MaxResourceLimitMultiplier,
-			TimeLimitSeconds: 108, Query: defaultQuery,
+		}, model.CapabilitiesResponse{
+			TimeLimitSeconds: 108,
+			Simulate: model.SimulateLimits{
+				MaxTxnGroups: simulation.MaxSimulateGroups, MaxRounds: simulation.MaxSimulateRounds,
+				MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling, ResourceLimitMultiplier: simulation.MaxResourceLimitMultiplier,
+			},
+			Query: defaultQuery,
 		}},
 		{"set values and features", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 3
@@ -117,35 +119,50 @@ func TestSimulateLimits(t *testing.T) {
 			c.EnableTimeTravel = true
 			c.EnableDeveloperAPI = true
 			c.RestWriteTimeoutSeconds = 65
-		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 3, MaxRounds: 5, MaxExtraOpcodeBudget: 1_000, ResourceLimitMultiplier: 8,
-			TimeLimitSeconds: 58,
-			TimeTravel:       true, DeveloperApi: true,
-			Query: defaultQuery,
+		}, model.CapabilitiesResponse{
+			TimeTravel: true, DeveloperApi: true, TimeLimitSeconds: 58,
+			Simulate: model.SimulateLimits{MaxTxnGroups: 3, MaxRounds: 5, MaxExtraOpcodeBudget: 1_000, ResourceLimitMultiplier: 8},
+			Query:    defaultQuery,
 		}},
 		{"short write timeout", func(c *config.Local) {
 			c.RestWriteTimeoutSeconds = 1
-		}, model.SimulateLimitsResponse{
-			MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1,
-			TimeLimitSeconds: 1,
-			Query:            defaultQuery,
+		}, model.CapabilitiesResponse{
+			TimeLimitSeconds: 1, Simulate: defaultSimulate, Query: defaultQuery,
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := config.GetDefaultLocal()
 			tc.configure(&cfg)
-			require.Equal(t, tc.want, getSimulateLimits(t, cfg))
+			require.Equal(t, tc.want, nodeCapabilities(t, cfg))
 		})
 	}
 }
 
-// limitsNode serves a node on env with cfg changed by configure, and returns its router and the
-// limits it reports.
-func limitsNode(t *testing.T, env simulationtesting.Environment, configure func(*config.Local)) (http.Handler, model.SimulateLimitsResponse) {
+// TestCapabilitiesJSON checks the field names a client reads, so that a rename in the spec fails
+// here and not in the clients.
+func TestCapabilitiesJSON(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	n := makeMockNodeWithConfig(nil, t.Name(), nil, cannedStatusReportGolden, false, config.GetDefaultLocal())
+	rec := httptest.NewRecorder()
+	server.NewRouter(logging.TestingLog(t), n, make(chan struct{}), "", "", nil, 1000).
+		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/capabilities", nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.JSONEq(t, `{
+		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
+		"simulate": {"max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1},
+		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16}
+	}`, rec.Body.String())
+}
+
+// simulateLimitsNode serves a node on env with cfg changed by configure, and returns its router and
+// the simulate limits it reports.
+func simulateLimitsNode(t *testing.T, env simulationtesting.Environment, configure func(*config.Local)) (http.Handler, model.SimulateLimits) {
 	t.Helper()
 	h := newRoundsRouter(t, newRoundsNode(t, env, configure))
-	return h, getLimits(t, h)
+	return h, getCapabilities(t, h).Simulate
 }
 
 // requireSimulated posts request to h and checks that it was simulated, returning the response.
@@ -170,9 +187,9 @@ func failure(group v2.PreEncodedSimulateTxnGroupResult) string {
 	return *group.FailureMessage
 }
 
-// TestSimulateLimitsEnforced checks that the limits GET /v2/transactions/simulate/limits reports
-// are the ones POST /v2/transactions/simulate enforces: a request at a reported limit is
-// simulated, and one past it is not.
+// TestSimulateLimitsEnforced checks that the simulate limits GET /v2/capabilities reports are the
+// ones POST /v2/transactions/simulate enforces: a request at a reported limit is simulated, and one
+// past it is not.
 func TestSimulateLimitsEnforced(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
@@ -208,7 +225,7 @@ func TestSimulateLimitsEnforced(t *testing.T) {
 	t.Run("groups", func(t *testing.T) {
 		t.Parallel()
 		for _, m := range []uint64{0, 1, 16, 1_000} {
-			h, limits := limitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateGroups = m })
+			h, limits := simulateLimitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateGroups = m })
 			requireSimulated(t, h, groups(limits.MaxTxnGroups))
 			requireRejected(t, h, groups(limits.MaxTxnGroups+1), "too many transaction groups")
 		}
@@ -217,7 +234,7 @@ func TestSimulateLimitsEnforced(t *testing.T) {
 	t.Run("extra opcode budget", func(t *testing.T) {
 		t.Parallel()
 		for _, m := range []uint64{0, 1, 320_000, 1 << 40} {
-			h, limits := limitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateExtraOpcodeBudget = m })
+			h, limits := simulateLimitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateExtraOpcodeBudget = m })
 			request := groups(1)
 			request.ExtraOpcodeBudget = int(limits.MaxExtraOpcodeBudget)
 			requireSimulated(t, h, request)
@@ -237,7 +254,7 @@ func TestSimulateLimitsEnforced(t *testing.T) {
 			return request
 		}
 		for _, m := range []uint64{0, 1, 16, 1_000} {
-			h, limits := limitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateRounds = m })
+			h, limits := simulateLimitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateRounds = m })
 			if limits.MaxRounds == 0 {
 				requireRejected(t, h, withRounds(1), "rounds is disabled")
 				continue
@@ -306,7 +323,7 @@ int 1`,
 			return request
 		}
 		for _, m := range []uint64{0, 1, 3, 1 << 20} {
-			h, limits := limitsNode(t, env, func(c *config.Local) { c.SimulateResourceLimitMultiplier = m })
+			h, limits := simulateLimitsNode(t, env, func(c *config.Local) { c.SimulateResourceLimitMultiplier = m })
 			n := int(limits.ResourceLimitMultiplier) * proto.MaxAppTotalTxnReferences
 
 			group := requireSimulated(t, h, accounts(n)).TxnGroups[0]

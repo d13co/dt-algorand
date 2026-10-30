@@ -60,13 +60,13 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 
 With `allow-unnamed-resources`, simulate caps the unnamed resources a group may touch at what the group could legally reference under the consensus rules: each app call's account, asset, app, box and total reference limits (plus those of the empty slots of a group shorter than 16), the limit on holdings and local states, and the box I/O budget those box refs bring. That aims to keep the reported `unnamed-resources-accessed` sized for a real group (a txn that uses an `access` list can still get more than fits, an existing upstream limitation), but it blocks read-only uses such as reading many boxes or accounts in one call.
 
-`SimulateResourceLimitMultiplier` (node config, default 1) multiplies all of those limits, and with them the box I/O budget. Values below 1 count as 1; values above 1024 count as 1024, and the node logs a warning at startup. Clients cannot set it; simulate responses do not report it, but [`GET /v2/transactions/simulate/limits`](#simulate-limits) does. Above 1, the reported resources may no longer fit in a submittable group. The limits on the submitted transactions themselves (foreign arrays, `access` list, app args, group size) and the I/O budget of the box refs they list do not change. The setting is independent of time travel and works on any node.
+`SimulateResourceLimitMultiplier` (node config, default 1) multiplies all of those limits, and with them the box I/O budget. Values below 1 count as 1; values above 1024 count as 1024, and the node logs a warning at startup. Clients cannot set it; simulate responses do not report it, but [`GET /v2/capabilities`](#capabilities-get-v2capabilities) does. Above 1, the reported resources may no longer fit in a submittable group. The limits on the submitted transactions themselves (foreign arrays, `access` list, app args, group size) and the I/O budget of the box refs they list do not change. The setting is independent of time travel and works on any node.
 
 High values have a cost. The opcode budget (including `extra-opcode-budget`) bounds the work a call can do, but the multiplier bounds how many resources simulate records, and so the memory it uses and the size of the response: near the ceiling, one response can list hundreds of thousands of `unnamed-resources-accessed` entries (a full group at 1024× allows about 131,000 boxes or accounts). Raise it only as far as the reads you need.
 
 ### Extra opcode budget limit in simulation
 
-Upstream, `extra-opcode-budget` may be at most 320,000 per group (16 × the LogicSig budget), on top of the group's own app budget (700 per app call) and any op-ups. `MaxAPISimulateExtraOpcodeBudget` (node config, default 320000) sets that limit instead, per top-level group; inner groups share their top-level group's budget and don't get the extra again. 0 counts as 320,000; values above 320,000,000 (1000×) are clamped to 320,000,000 when used, and the node logs a warning at startup. A negative `extra-opcode-budget` is rejected (400). Clients cannot change it; [`GET /v2/transactions/simulate/limits`](#simulate-limits) reports it. The setting is independent of time travel and works on any node. `goal clerk simulate --allow-more-opcode-budget` still asks for exactly 320,000; use `--extra-opcode-budget N` to ask for more. The limit can also be set lower than 320,000, but then clients that ask for the upstream maximum, such as that goal flag, get a 400.
+Upstream, `extra-opcode-budget` may be at most 320,000 per group (16 × the LogicSig budget), on top of the group's own app budget (700 per app call) and any op-ups. `MaxAPISimulateExtraOpcodeBudget` (node config, default 320000) sets that limit instead, per top-level group; inner groups share their top-level group's budget and don't get the extra again. 0 counts as 320,000; values above 320,000,000 (1000×) are clamped to 320,000,000 when used, and the node logs a warning at startup. A negative `extra-opcode-budget` is rejected (400). Clients cannot change it; [`GET /v2/capabilities`](#capabilities-get-v2capabilities) reports it. The setting is independent of time travel and works on any node. `goal clerk simulate --allow-more-opcode-budget` still asks for exactly 320,000; use `--extra-opcode-budget N` to ask for more. The limit can also be set lower than 320,000, but then clients that ask for the upstream maximum, such as that goal flag, get a 400.
 
 This is a change for apps that make inner app calls. Upstream 5.0.x and earlier dtalgorand builds give every inner group the extra budget again, so with `extra-opcode-budget` a call with inner app calls could run on far more budget than it asked for (up to 257× with 256 inner groups). This build has upstream's later fix (go-algorand #6708): the extra budget is added once per top-level group, and `app-budget-added` counts 700 for each inner app call. A simulation that only passed because of the inflated budget now fails with `dynamic cost budget exceeded`; ask for a larger `extra-opcode-budget` if the call needs it.
 
@@ -215,34 +215,35 @@ On a copy of an FNet time travel node (2026-10-26, round 25,339,414, same machin
 
 The simulate responses were decoded into algosdk's `SimulateResponse`, the query ones with `msgpackRawDecode`, as algosdk has no query model yet. `blkData` is bound by reading block headers, which both pay alike.
 
-### Simulate limits
+### Capabilities (GET /v2/capabilities)
 
-`GET /v2/transactions/simulate/limits` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients what this node's simulate accepts, with each value as the handlers clamp it:
+`GET /v2/capabilities` (`dtalgorand` tag in the API spec, served by every node of this fork, time travel or not) tells clients which fork features this node has turned on and what its simulate and query requests accept, with each value as the handlers clamp it:
 
 ```json
-{ "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1, "time-limit-seconds": 108, "time-travel": true, "developer-api": false,
+{ "time-travel": true, "developer-api": false, "time-limit-seconds": 108,
+  "simulate": { "max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1 },
   "query": { "max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16 } }
 ```
 
 | field | node config | meaning |
 |---|---|---|
-| `max-txn-groups` | `MaxAPISimulateGroups` | most groups in `txn-groups`; a config of 0 counts as 1 |
-| `max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
-| `max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
-| `resource-limit-multiplier` | `SimulateResourceLimitMultiplier` | factor on the unnamed-resource limits; 1: the consensus limits; a config of 0 counts as 1 |
-| `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest a request may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
-| `time-travel` | `EnableTimeTravel` | `round` and `rounds` reach back to genesis, not only `MaxAcctLookback` rounds |
-| `developer-api` | `EnableDeveloperAPI` | `exec-trace-config` with `enable: true`, and `protocol: "future"`, are allowed; a traced request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
+| `time-travel` | `EnableTimeTravel` | reads at a round (`round`, simulate's `round` and `rounds`, query's `rounds`) reach back to genesis, not only `MaxAcctLookback` rounds, and the endpoints that need the history (the versions endpoints among them) are served |
+| `developer-api` | `EnableDeveloperAPI` | simulate's `exec-trace-config` with `enable: true`, and `protocol: "future"` in simulate and query, are allowed; a traced simulate request may not list `rounds` and may ask for at most 320,000 extra budget; a disabled `exec-trace-config` is accepted either way |
+| `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest an expensive request (simulate, query, `/v2/deltas/{round}`, the versions endpoints) may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
+| `simulate.max-txn-groups` | `MaxAPISimulateGroups` | most groups in `txn-groups`; a config of 0 counts as 1 |
+| `simulate.max-rounds` | `MaxAPISimulateRounds` | most entries in `rounds`, duplicates included; a config of 0 disables `rounds` |
+| `simulate.max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
+| `simulate.resource-limit-multiplier` | `SimulateResourceLimitMultiplier` | factor on the unnamed-resource limits; 1: the consensus limits; a config of 0 counts as 1 |
 | `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-call-state-bytes` (0: no limit), `max-response-bytes` (0: no limit; the answer is built in memory while the request holds its slot, so a running request can take two to three times this much) and `max-rounds` (a config of 0 counts as 1); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint: it then answers 400 (a stock algod answers 404) |
 
-The response holds the values after these rules, so `max-rounds`, `time-limit-seconds` and two of `query`'s are the only fields that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
+The response holds the values after these rules, so `time-limit-seconds`, `simulate.max-rounds` and three of `query`'s are the only numbers that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 
-Two limits are not in the response, because they don't come from the node's config:
+Two simulate limits are not in the response, because they don't come from the node's config:
 
 - A request body is at most 1,000,000 bytes, whatever `max-txn-groups` allows; a larger one gets a 400 `http: request body too large`. A full group of 16 transactions takes several KB, so a request near the 256-group ceiling can reach it first.
 - Groups simulated in order share one block, so together they may take at most the protocol's `MaxTxnBytesPerBlock`, counting what they produce (logs, inner transactions) as well as what was sent. A group that doesn't fit fails with `block does not have space for transaction`, without a `failed-at`, and the later groups still run; a smaller one may still fit. With `parallel-groups` every group gets a block of its own.
 
-A stock algod answers 404, which tells a client it can't use any of the fork's simulate features. `QueryParallelism` and `SimulateParallelism` are left out: they limit how fast a request runs, not what it may ask.
+A stock algod answers 404, which tells a client it can't use any of the fork's features. `QueryParallelism` and `SimulateParallelism` are left out: they limit how fast a request runs, not what it may ask.
 
 ## Design
 

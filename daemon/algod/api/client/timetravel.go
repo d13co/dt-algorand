@@ -165,8 +165,8 @@ func init() {
 }
 
 // Query runs read-only TEAL calls at one or more rounds (POST /v2/query).
-// Only dtalgorand nodes have it: GET /v2/transactions/simulate/limits
-// reports a query object when they do.
+// Only dtalgorand nodes have it: GET /v2/capabilities reports a query
+// object when they do.
 func (client RestClient) Query(request model.QueryRequest) (response model.QueryResponse, err error) {
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -176,8 +176,9 @@ func (client RestClient) Query(request model.QueryRequest) (response model.Query
 	return
 }
 
-// SimulateLimits gets the limits of simulate and query requests.
-func (client RestClient) SimulateLimits() (response model.SimulateLimitsResponse, err error) {
-	err = client.get(&response, "/v2/transactions/simulate/limits", nil)
+// Capabilities gets the fork features of a dtalgorand node and its limits on simulate and query
+// requests (GET /v2/capabilities). A stock algod answers 404.
+func (client RestClient) Capabilities() (response model.CapabilitiesResponse, err error) {
+	err = client.get(&response, "/v2/capabilities", nil)
 	return
 }

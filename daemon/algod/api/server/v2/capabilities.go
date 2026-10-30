@@ -16,7 +16,7 @@
 
 package v2
 
-// The limits of simulate requests (GET /v2/transactions/simulate/limits). Non-standard fork
+// The fork features and request limits of this node (GET /v2/capabilities). Non-standard fork
 // feature, kept in its own file to keep upstream merges of handlers.go clean.
 
 import (
@@ -30,11 +30,11 @@ import (
 	"github.com/algorand/go-algorand/ledger/simulation"
 )
 
-// SimulateLimits returns the limits this node places on simulate requests, and the simulate
-// features it allows.
-// (GET /v2/transactions/simulate/limits)
-func (v2 *Handlers) SimulateLimits(ctx echo.Context) error {
-	return ctx.JSON(http.StatusOK, simulateLimits(v2.Node.Config()))
+// GetCapabilities returns the fork features this node has turned on, and the limits it places on
+// simulate and query requests.
+// (GET /v2/capabilities)
+func (v2 *Handlers) GetCapabilities(ctx echo.Context) error {
+	return ctx.JSON(http.StatusOK, capabilities(v2.Node.Config()))
 }
 
 // timeLimitSeconds returns limit in whole seconds, at least 1 for a limit under a second, since 0
@@ -46,9 +46,10 @@ func timeLimitSeconds(limit time.Duration) uint64 {
 	return uint64(max(limit/time.Second, 1))
 }
 
-// simulateLimits returns the limits of simulate requests under cfg. It takes them from
-// Request.WithNodeLimits and clamps them with the functions simulate checks them with.
-func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
+// capabilities returns the capabilities of a node configured with cfg. The limits come from
+// Request.WithNodeLimits and QueryLimitsFromConfig, clamped with the functions the handlers check
+// requests with.
+func capabilities(cfg config.Local) model.CapabilitiesResponse {
 	limits := simulation.Request{}.WithNodeLimits(cfg)
 	var query *model.QueryLimits
 	if q := simulation.QueryLimitsFromConfig(cfg); q.MaxCalls > 0 {
@@ -61,14 +62,16 @@ func simulateLimits(cfg config.Local) model.SimulateLimitsResponse {
 			MaxRounds:         uint64(q.MaxRounds),
 		}
 	}
-	return model.SimulateLimitsResponse{
-		MaxTxnGroups:            uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
-		MaxRounds:               uint64(effectiveMaxSimulateRounds(cfg.MaxAPISimulateRounds)),
-		MaxExtraOpcodeBudget:    uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
-		ResourceLimitMultiplier: uint64(simulation.EffectiveResourceLimitMultiplier(limits.ResourceLimitMultiplier)),
-		TimeLimitSeconds:        timeLimitSeconds(requestTimeLimit(cfg)),
-		TimeTravel:              cfg.EnableTimeTravel,
-		DeveloperApi:            cfg.EnableDeveloperAPI,
-		Query:                   query,
+	return model.CapabilitiesResponse{
+		TimeTravel:       cfg.EnableTimeTravel,
+		DeveloperApi:     cfg.EnableDeveloperAPI,
+		TimeLimitSeconds: timeLimitSeconds(requestTimeLimit(cfg)),
+		Simulate: model.SimulateLimits{
+			MaxTxnGroups:            uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
+			MaxRounds:               uint64(effectiveMaxSimulateRounds(cfg.MaxAPISimulateRounds)),
+			MaxExtraOpcodeBudget:    uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
+			ResourceLimitMultiplier: uint64(simulation.EffectiveResourceLimitMultiplier(limits.ResourceLimitMultiplier)),
+		},
+		Query: query,
 	}
 }

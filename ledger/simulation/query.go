@@ -70,7 +70,7 @@ type QueryLimits struct {
 }
 
 // QueryLimitsFromConfig returns the query limits of a node configured with cfg, clamped as the
-// config documents. The node and GET /v2/transactions/simulate/limits both take them from here.
+// config documents. The node and GET /v2/capabilities both take them from here.
 func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 	return QueryLimits{
 		MaxCalls:          int(min(cfg.MaxAPIQueryCalls, math.MaxInt32)),

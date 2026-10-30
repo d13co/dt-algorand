@@ -1208,6 +1208,21 @@ type SimulateInitialStates struct {
 	AppInitialStates *[]ApplicationInitialStates `json:"app-initial-states,omitempty"`
 }
 
+// SimulateLimits The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
+type SimulateLimits struct {
+	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
+	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
+
+	// MaxRounds The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).
+	MaxRounds uint64 `json:"max-rounds"`
+
+	// MaxTxnGroups The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).
+	MaxTxnGroups uint64 `json:"max-txn-groups"`
+
+	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
+	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
+}
+
 // SimulateProtocolNote A note about simulating under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
 type SimulateProtocolNote struct {
 	Code string `json:"code"`
@@ -1797,6 +1812,24 @@ type BoxesVersionsResponse struct {
 	Versions []BoxesVersion `json:"versions"`
 }
 
+// CapabilitiesResponse The fork features this node has turned on, and the limits it places on simulate and query requests.
+type CapabilitiesResponse struct {
+	// DeveloperApi If true, the node serves the developer API: requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	DeveloperApi bool `json:"developer-api"`
+
+	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
+	Query *QueryLimits `json:"query,omitempty"`
+
+	// Simulate The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
+	Simulate SimulateLimits `json:"simulate"`
+
+	// TimeLimitSeconds The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504, except a simulate request with rounds, whose rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
+	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
+
+	// TimeTravel If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions endpoints, are served. Otherwise only the last MaxAcctLookback rounds can be read (node config EnableTimeTravel).
+	TimeTravel bool `json:"time-travel"`
+}
+
 // CatchpointAbortResponse An catchpoint abort response.
 type CatchpointAbortResponse struct {
 	// CatchupMessage Catchup abort response string
@@ -1971,33 +2004,6 @@ type QueryResponse struct {
 
 	// Rounds One result for each entry of the request's rounds, in order.
 	Rounds []QueryRoundResult `json:"rounds"`
-}
-
-// SimulateLimitsResponse The limits of simulate requests on this node, and the simulate features it allows.
-type SimulateLimitsResponse struct {
-	// DeveloperApi If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
-	DeveloperApi bool `json:"developer-api"`
-
-	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
-	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
-
-	// MaxRounds The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).
-	MaxRounds uint64 `json:"max-rounds"`
-
-	// MaxTxnGroups The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).
-	MaxTxnGroups uint64 `json:"max-txn-groups"`
-
-	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
-	Query *QueryLimits `json:"query,omitempty"`
-
-	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
-	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
-
-	// TimeLimitSeconds The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
-	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
-
-	// TimeTravel If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).
-	TimeTravel bool `json:"time-travel"`
 }
 
 // SimulateResponse defines model for SimulateResponse.

@@ -149,8 +149,8 @@ func EffectiveMaxGroups(m uint64) int {
 
 // WithNodeLimits returns r with the limits of a node configured with cfg: ResourceLimitMultiplier,
 // MaxGroups and MaxExtraOpcodeBudget. The nodes, the REST handlers that check a request before
-// passing it to the node, and GET /v2/transactions/simulate/limits all take the limits from it, so
-// the limits the endpoint reports are the ones simulate enforces. Non-standard fork feature.
+// passing it to the node, and GET /v2/capabilities all take the limits from it, so the limits the
+// endpoint reports are the ones simulate enforces. Non-standard fork feature.
 func (r Request) WithNodeLimits(cfg config.Local) Request {
 	r.ResourceLimitMultiplier = cfg.SimulateResourceLimitMultiplier
 	r.MaxGroups = cfg.MaxAPISimulateGroups

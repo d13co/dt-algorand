@@ -732,6 +732,44 @@
         },
         "description": "Changes of an application's boxes."
       },
+      "CapabilitiesResponse": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "description": "The fork features this node has turned on, and the limits it places on simulate and query requests.",
+              "properties": {
+                "developer-api": {
+                  "description": "If true, the node serves the developer API: requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+                  "type": "boolean"
+                },
+                "query": {
+                  "$ref": "#/components/schemas/QueryLimits"
+                },
+                "simulate": {
+                  "$ref": "#/components/schemas/SimulateLimits"
+                },
+                "time-limit-seconds": {
+                  "description": "The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504, except a simulate request with rounds, whose rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
+                  "type": "integer",
+                  "x-go-type": "uint64"
+                },
+                "time-travel": {
+                  "description": "If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions endpoints, are served. Otherwise only the last MaxAcctLookback rounds can be read (node config EnableTimeTravel).",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "developer-api",
+                "simulate",
+                "time-limit-seconds",
+                "time-travel"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "description": "The fork features and request limits of this node. Non-standard fork feature."
+      },
       "CatchpointAbortResponse": {
         "content": {
           "application/json": {
@@ -1183,64 +1221,6 @@
           }
         },
         "description": "The results of a query. Non-standard fork feature."
-      },
-      "SimulateLimitsResponse": {
-        "content": {
-          "application/json": {
-            "schema": {
-              "description": "The limits of simulate requests on this node, and the simulate features it allows.",
-              "properties": {
-                "developer-api": {
-                  "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
-                  "type": "boolean"
-                },
-                "max-extra-opcode-budget": {
-                  "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
-                  "type": "integer",
-                  "x-go-type": "uint64"
-                },
-                "max-rounds": {
-                  "description": "The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).",
-                  "type": "integer",
-                  "x-go-type": "uint64"
-                },
-                "max-txn-groups": {
-                  "description": "The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).",
-                  "type": "integer",
-                  "x-go-type": "uint64"
-                },
-                "query": {
-                  "$ref": "#/components/schemas/QueryLimits"
-                },
-                "resource-limit-multiplier": {
-                  "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",
-                  "type": "integer",
-                  "x-go-type": "uint64"
-                },
-                "time-limit-seconds": {
-                  "description": "The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
-                  "type": "integer",
-                  "x-go-type": "uint64"
-                },
-                "time-travel": {
-                  "description": "If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).",
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "developer-api",
-                "max-extra-opcode-budget",
-                "max-rounds",
-                "max-txn-groups",
-                "resource-limit-multiplier",
-                "time-limit-seconds",
-                "time-travel"
-              ],
-              "type": "object"
-            }
-          }
-        },
-        "description": "The limits of simulate requests on this node. Non-standard fork feature."
       },
       "SimulateResponse": {
         "content": {
@@ -3275,6 +3255,38 @@
         },
         "type": "object"
       },
+      "SimulateLimits": {
+        "description": "The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.",
+        "properties": {
+          "max-extra-opcode-budget": {
+            "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-rounds": {
+            "description": "The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "max-txn-groups": {
+            "description": "The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "resource-limit-multiplier": {
+            "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          }
+        },
+        "required": [
+          "max-extra-opcode-budget",
+          "max-rounds",
+          "max-txn-groups",
+          "resource-limit-multiplier"
+        ],
+        "type": "object"
+      },
       "SimulateProtocolNote": {
         "description": "A note about simulating under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.",
         "properties": {
@@ -4836,7 +4848,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -5356,7 +5368,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -5757,7 +5769,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -6174,7 +6186,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -6541,7 +6553,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -6755,7 +6767,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -7202,7 +7214,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -7847,6 +7859,70 @@
         ]
       }
     },
+    "/v2/capabilities": {
+      "get": {
+        "description": "Returns the fork features this node has turned on, and the limits it places on simulate and query requests. The values are the ones the node applies, after it clamps its configuration. Every node of this fork serves it, time travel or not. A node that answers 404 is a stock algod, without any of the fork's features: it simulates one transaction group per request with at most 320,000 extra opcode budget, takes no round or rounds, keeps unnamed resources within the consensus limits, and has no POST /v2/query. Two simulate limits are not reported: a request body may be at most 1,000,000 bytes, and groups simulated in order share one block, so together they may take at most the protocol's MaxTxnBytesPerBlock. Non-standard fork feature.",
+        "operationId": "GetCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "The fork features this node has turned on, and the limits it places on simulate and query requests.",
+                  "properties": {
+                    "developer-api": {
+                      "description": "If true, the node serves the developer API: requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
+                      "type": "boolean"
+                    },
+                    "query": {
+                      "$ref": "#/components/schemas/QueryLimits"
+                    },
+                    "simulate": {
+                      "$ref": "#/components/schemas/SimulateLimits"
+                    },
+                    "time-limit-seconds": {
+                      "description": "The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504, except a simulate request with rounds, whose rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
+                      "type": "integer",
+                      "x-go-type": "uint64"
+                    },
+                    "time-travel": {
+                      "description": "If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions endpoints, are served. Otherwise only the last MaxAcctLookback rounds can be read (node config EnableTimeTravel).",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "developer-api",
+                    "simulate",
+                    "time-limit-seconds",
+                    "time-travel"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The fork features and request limits of this node. Non-standard fork feature."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid API Token"
+          },
+          "default": {
+            "content": {},
+            "description": "Unknown Error"
+          }
+        },
+        "summary": "Get the fork features and request limits of this node.",
+        "tags": [
+          "dtalgorand"
+        ]
+      }
+    },
     "/v2/catchup/{catchpoint}": {
       "delete": {
         "description": "Given a catchpoint, it aborts catching up to this catchpoint",
@@ -8311,7 +8387,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -9512,7 +9588,7 @@
     },
     "/v2/query": {
       "post": {
-        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/transactions/simulate/limits; a node without it does not serve this endpoint: a stock algod answers 404, and a node with queries disabled (node config MaxAPIQueryCalls 0) answers 400. Non-standard fork feature.",
+        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/capabilities; a node without it does not serve this endpoint: a stock algod answers 404, and a node with queries disabled (node config MaxAPIQueryCalls 0) answers 400. Non-standard fork feature.",
         "operationId": "Query",
         "parameters": [
           {
@@ -11120,7 +11196,7 @@
                 }
               }
             },
-            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/transactions/simulate/limits)"
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)"
           },
           "default": {
             "content": {},
@@ -11133,90 +11209,6 @@
           "nonparticipating"
         ],
         "x-codegen-request-body-name": "request"
-      }
-    },
-    "/v2/transactions/simulate/limits": {
-      "get": {
-        "description": "Returns the limits this node places on simulate requests, and the simulate features it allows. The values are the ones the node applies, after it clamps its configuration. Two limits are not reported: a request body may be at most 1,000,000 bytes, and groups simulated in order share one block, so together they may take at most the protocol's MaxTxnBytesPerBlock. A node that answers 404 does not have this endpoint: a stock algod simulates one transaction group per request with at most 320,000 extra opcode budget, takes no rounds, and keeps unnamed resources within the consensus limits. Non-standard fork feature.",
-        "operationId": "SimulateLimits",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "The limits of simulate requests on this node, and the simulate features it allows.",
-                  "properties": {
-                    "developer-api": {
-                      "description": "If true, requests may enable exec-trace-config and set the protocol future. A request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
-                      "type": "boolean"
-                    },
-                    "max-extra-opcode-budget": {
-                      "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
-                      "type": "integer",
-                      "x-go-type": "uint64"
-                    },
-                    "max-rounds": {
-                      "description": "The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).",
-                      "type": "integer",
-                      "x-go-type": "uint64"
-                    },
-                    "max-txn-groups": {
-                      "description": "The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).",
-                      "type": "integer",
-                      "x-go-type": "uint64"
-                    },
-                    "query": {
-                      "$ref": "#/components/schemas/QueryLimits"
-                    },
-                    "resource-limit-multiplier": {
-                      "description": "The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).",
-                      "type": "integer",
-                      "x-go-type": "uint64"
-                    },
-                    "time-limit-seconds": {
-                      "description": "The longest a request may run. A request without rounds that reaches it fails with 504; with rounds, the rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
-                      "type": "integer",
-                      "x-go-type": "uint64"
-                    },
-                    "time-travel": {
-                      "description": "If true, round and rounds may name any round since genesis. Otherwise only the last MaxAcctLookback rounds can be simulated (node config EnableTimeTravel).",
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "developer-api",
-                    "max-extra-opcode-budget",
-                    "max-rounds",
-                    "max-txn-groups",
-                    "resource-limit-multiplier",
-                    "time-limit-seconds",
-                    "time-travel"
-                  ],
-                  "type": "object"
-                }
-              }
-            },
-            "description": "The limits of simulate requests on this node. Non-standard fork feature."
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Invalid API Token"
-          },
-          "default": {
-            "content": {},
-            "description": "Unknown Error"
-          }
-        },
-        "summary": "Get the limits of simulate requests on this node.",
-        "tags": [
-          "dtalgorand"
-        ]
       }
     },
     "/versions": {
