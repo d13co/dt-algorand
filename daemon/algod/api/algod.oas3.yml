@@ -38,7 +38,7 @@
         "x-go-type": "basics.AssetIndex"
       },
       "at-round": {
-        "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+        "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
         "in": "query",
         "name": "round",
         "schema": {
@@ -4227,7 +4227,7 @@
             }
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -4364,7 +4364,7 @@
             "style": "form"
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -4491,7 +4491,7 @@
             }
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -4885,7 +4885,7 @@
             }
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -5012,7 +5012,7 @@
             }
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -5788,7 +5788,7 @@
             "x-go-type": "basics.AppIndex"
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -5890,7 +5890,7 @@
             }
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -6257,7 +6257,7 @@
             "style": "form"
           },
           {
-            "description": "Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis.",
+            "description": "Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis. This node marks an answer given as of this round with an `X-Algod-TT-Round` header with this round, but not a refusal of the round; stock algod, which serves only its last few rounds, sends no header.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -6786,7 +6786,7 @@
             "x-go-type": "basics.AssetIndex"
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -6879,7 +6879,7 @@
             "x-go-type": "basics.AssetIndex"
           },
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {
@@ -8621,7 +8621,7 @@
         "operationId": "GetSupply",
         "parameters": [
           {
-            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.",
+            "description": "Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.",
             "in": "query",
             "name": "round",
             "schema": {

@@ -2090,7 +2090,7 @@ type AccountInformationParams struct {
 	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
 	Format *AccountInformationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
 
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2111,7 +2111,7 @@ type AccountApplicationsInformationParams struct {
 	// Include Include additional items in the response. Use `params` to include full application parameters (global state, schema, etc.). Multiple values can be comma-separated. Defaults to returning only application IDs and local state.
 	Include *[]AccountApplicationsInformationParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2123,7 +2123,7 @@ type AccountApplicationInformationParams struct {
 	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
 	Format *AccountApplicationInformationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
 
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2174,7 +2174,7 @@ type AccountAssetsInformationParams struct {
 	// Next The next page of results. Use the next token provided by the previous results.
 	Next *string `form:"next,omitempty" json:"next,omitempty"`
 
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2183,7 +2183,7 @@ type AccountAssetInformationParams struct {
 	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
 	Format *AccountAssetInformationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
 
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2282,7 +2282,7 @@ type AccountVersionsParamsInclude string
 
 // GetApplicationByIDParams defines parameters for GetApplicationByID.
 type GetApplicationByIDParams struct {
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2291,7 +2291,7 @@ type GetApplicationBoxByNameParams struct {
 	// Name A box name, in the goal app call arg form 'encoding:value'. For ints, use the form 'int:1234'. For raw bytes, use the form 'b64:A=='. For printable strings, use the form 'str:hello'. For addresses, use the form 'addr:XYZ...'.
 	Name string `form:"name" json:"name"`
 
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2351,7 +2351,7 @@ type GetApplicationBoxesParams struct {
 	// Include Include additional items in the response. Use `values` to include box values. Multiple values can be comma-separated.
 	Include *[]GetApplicationBoxesParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 
-	// Round Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis.
+	// Round Return box data from the given round. The round must be within the node's available range, which with EnableTimeTravel is every round since genesis. This node marks an answer given as of this round with an `X-Algod-TT-Round` header with this round, but not a refusal of the round; stock algod, which serves only its last few rounds, sends no header.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
@@ -2432,13 +2432,13 @@ type ApplicationVersionsParamsInclude string
 
 // GetAssetByIDParams defines parameters for GetAssetByID.
 type GetAssetByIDParams struct {
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 
 // GetAssetHoldersParams defines parameters for GetAssetHolders.
 type GetAssetHoldersParams struct {
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 
 	// Limit Maximum number of holders to return, from 1 to 10,000. Defaults to 1,000.
@@ -2548,7 +2548,7 @@ type GetTransactionGroupLedgerStateDeltasForRoundParamsFormat string
 
 // GetSupplyParams defines parameters for GetSupply.
 type GetSupplyParams struct {
-	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round.
+	// Round Answer as of the end of this round instead of the latest round; a response that reports a round (`round`, or `current_round` for the supply) reports this one. Requires EnableTimeTravel, which keeps the state of every round since genesis; a node without it rejects the parameter (400), as it does a round after the latest. Defaults to the latest round. An answer given as of this round, a 404 included, carries an `X-Algod-TT-Round` header with this round; a refusal of the round does not, and neither does an answer from a node that ignores `round`, such as algod without time travel.
 	Round *basics.Round `form:"round,omitempty" json:"round,omitempty"`
 }
 

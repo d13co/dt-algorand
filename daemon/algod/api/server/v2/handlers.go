@@ -2080,7 +2080,15 @@ func (v2 *Handlers) GetApplicationBoxes(ctx echo.Context, applicationID basics.A
 		if errors.As(err, &roundOffErr) {
 			return badRequest(ctx, err, errRoundTooOld, v2.Log)
 		}
+		if params.Round != nil {
+			markRound(ctx, queryRound)
+		}
 		return internalError(ctx, err, errFailedLookingUpLedger, v2.Log)
+	}
+	// Mark only an answer at the round: with a limit of 0 (MaxAPIBoxPerApplication
+	// 0 and no limit), the ledger answers empty as of the latest round instead.
+	if params.Round != nil && rnd == queryRound {
+		markRound(ctx, queryRound)
 	}
 
 	prefixLen := len(keyPrefix)
@@ -2158,12 +2166,6 @@ func encodeBoxNameAsAppCallBytes(name []byte) string {
 // GetApplicationBoxByName returns the value of an application's box
 // (GET /v2/applications/{application-id}/box)
 func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basics.AppIndex, params model.GetApplicationBoxByNameParams) error {
-	ledger, err := v2.ledgerFor(ctx, params.Round)
-	if err != nil {
-		return v2.historyError(ctx, err)
-	}
-	lastRound := ledger.Latest()
-
 	encodedBoxName := params.Name
 	boxNameBytes, err := apps.NewAppCallBytes(encodedBoxName)
 	if err != nil {
@@ -2173,6 +2175,12 @@ func (v2 *Handlers) GetApplicationBoxByName(ctx echo.Context, applicationID basi
 	if err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
+
+	ledger, err := v2.ledgerFor(ctx, params.Round)
+	if err != nil {
+		return v2.historyError(ctx, err)
+	}
+	lastRound := ledger.Latest()
 
 	value, err := ledger.LookupKv(lastRound, apps.MakeBoxKey(uint64(applicationID), string(boxName)))
 	if err != nil {
