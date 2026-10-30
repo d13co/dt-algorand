@@ -5,6 +5,7 @@ on:
       - master
       - 'rel/**'
       - 'rel*'
+      - dtalgorand
   workflow_dispatch:
     inputs:
       full_coverage:
