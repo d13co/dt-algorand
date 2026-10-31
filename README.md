@@ -2,7 +2,7 @@
 
 An experimental fork of [go-algorand](https://github.com/algorand/go-algorand) that adds **time travel**: a node that keeps the value of every account, asset, app and box at every round since genesis, and serves the REST API and transaction simulation **at any past round**. On mainnet the history takes about 70 GB.
 
-It changes no consensus rule, but it is not an official Algorand release: the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](ledger/timetravel/README.md#limitations)). Releases follow upstream's stable releases: `v5.0.5-dt4` is upstream `5.0.5` plus fork revision 4. The revision counts the fork's releases and doesn't restart when the upstream base changes. Development happens on the `dtalgorand` branch.
+It changes no consensus rule, but it is not an official Algorand release: the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](ledger/timetravel/README.md#limitations)). Participating in consensus is disabled by default. Releases follow upstream's stable releases: `v5.0.5-dt4` is upstream `5.0.5` plus fork revision 4. The revision counts the fork's releases and doesn't restart when the upstream base changes. Development happens on the `dtalgorand` branch.
 
 ## Running a node
 
