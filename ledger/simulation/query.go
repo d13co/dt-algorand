@@ -93,6 +93,14 @@ func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 	}
 }
 
+// CheckEnabled returns an InvalidRequestError if l disables queries: MaxCalls is 0.
+func (l QueryLimits) CheckEnabled() error {
+	if l.MaxCalls == 0 {
+		return invalidQuery("query is disabled on this node (MaxAPIQueryCalls is 0)")
+	}
+	return nil
+}
+
 // CheckSize returns an InvalidRequestError if a request with the given numbers of calls and listed
 // rounds is over l: too many calls, rounds, or calls times rounds, where a request that lists no
 // rounds runs at one.
@@ -234,8 +242,8 @@ func defaultClearProgram(program []byte) ([]byte, error) {
 // Validate checks the parts of r that do not depend on the rounds it runs at. The errors are
 // InvalidRequestErrors.
 func (r QueryRequest) Validate(developerAPI bool) error {
-	if r.Limits.MaxCalls == 0 {
-		return invalidQuery("query is disabled on this node (MaxAPIQueryCalls is 0)")
+	if err := r.Limits.CheckEnabled(); err != nil {
+		return err
 	}
 	if (len(r.Program) == 0) == (r.AppID == 0) {
 		return invalidQuery("exactly one of program and app-id is required")

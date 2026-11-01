@@ -207,6 +207,10 @@ func TestQueryRESTRejected(t *testing.T) {
 		rec := postQuery(t, h, encodeQueryRequest(t, v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a")}, "msgpack"), "msgpack")
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), "disabled")
+		// Before it reads the body.
+		rec = postQuery(t, h, []byte("not a request"), "json")
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "disabled")
 	})
 
 	t.Run("too many calls in total", func(t *testing.T) {

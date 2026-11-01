@@ -21,13 +21,17 @@ package v2
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"unsafe"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/algorand/go-codec/codec"
 
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
@@ -108,25 +112,20 @@ func (v2 *Handlers) Query(ctx echo.Context, params model.QueryParams) error {
 		return badRequest(ctx, err, errFailedParsingFormatOption, v2.Log)
 	}
 
+	// Check before reading the body, and the sizes before decoding it or taking a slot. The node
+	// checks again, with the same limits.
+	cfg := v2.Node.Config()
+	limits := simulation.QueryLimitsFromConfig(cfg)
+	if err = limits.CheckEnabled(); err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
 	var body bytes.Buffer
 	if _, err = body.ReadFrom(http.MaxBytesReader(nil, ctx.Request().Body, MaxSimulateBytes)); err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
-	var decoded PreEncodedQueryRequest
-	if err = decode(protocol.CodecHandle, body.Bytes(), &decoded); err != nil {
-		decoded = PreEncodedQueryRequest{}
-		if err = decode(protocol.JSONStrictHandle, body.Bytes(), &decoded); err != nil {
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-	}
-	// Check before taking a slot. The node checks again, with the same limits.
-	cfg := v2.Node.Config()
-	limits := simulation.QueryLimitsFromConfig(cfg)
-	if limits.MaxCalls > 0 {
-		// Before converting the calls, which would allocate them again.
-		if err = limits.CheckSize(len(decoded.Calls), len(decoded.Rounds)); err != nil {
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
+	decoded, err := decodeQueryRequest(body.Bytes(), limits)
+	if err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	request, err := convertQueryRequest(decoded)
 	if err != nil {
@@ -172,6 +171,125 @@ func (v2 *Handlers) Query(ctx echo.Context, params model.QueryParams) error {
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}
 	return writeEncoded(ctx, contentType, data)
+}
+
+// queryRequestLists is PreEncodedQueryRequest with its lists left encoded, so that their entries
+// can be counted and checked against the limits before they are decoded. Its fields are those of
+// PreEncodedQueryRequest, in the same order, which a body encoded as an array relies on.
+type queryRequestLists struct {
+	Program      []byte                 `codec:"program,omitempty"`
+	ClearProgram []byte                 `codec:"clear-program,omitempty"`
+	GlobalSchema *PreEncodedQuerySchema `codec:"global-schema,omitempty"`
+	LocalSchema  *PreEncodedQuerySchema `codec:"local-schema,omitempty"`
+	AppID        basics.AppIndex        `codec:"app-id,omitempty"`
+	Sender       string                 `codec:"sender,omitempty"`
+	Rounds       codec.Raw              `codec:"rounds,omitempty"`
+	Protocol     string                 `codec:"protocol,omitempty"`
+	Budget       uint64                 `codec:"budget,omitempty"`
+	Calls        codec.Raw              `codec:"calls"`
+}
+
+// decodeQueryRequest decodes body, msgpack or else JSON, whatever its Content-Type. Its calls and
+// rounds are decoded only once their counts are within limits. As in a full decode, a key listed
+// twice keeps its last value; the earlier ones cost only a copy of their bytes.
+func decodeQueryRequest(body []byte, limits simulation.QueryLimits) (PreEncodedQueryRequest, error) {
+	var lists queryRequestLists
+	var handle codec.Handle = protocol.CodecHandle
+	if err := decode(handle, body, &lists); err != nil {
+		lists, handle = queryRequestLists{}, protocol.JSONStrictHandle
+		if err = decode(handle, body, &lists); err != nil {
+			return PreEncodedQueryRequest{}, err
+		}
+	}
+	isJSON := handle == protocol.JSONStrictHandle
+	calls, err := encodedListLen(lists.Calls, isJSON)
+	if err != nil {
+		return PreEncodedQueryRequest{}, fmt.Errorf("calls: %w", err)
+	}
+	rounds, err := encodedListLen(lists.Rounds, isJSON)
+	if err != nil {
+		return PreEncodedQueryRequest{}, fmt.Errorf("rounds: %w", err)
+	}
+	if err = limits.CheckSize(calls, rounds); err != nil {
+		return PreEncodedQueryRequest{}, err
+	}
+	r := PreEncodedQueryRequest{
+		Program:      lists.Program,
+		ClearProgram: lists.ClearProgram,
+		GlobalSchema: lists.GlobalSchema,
+		LocalSchema:  lists.LocalSchema,
+		AppID:        lists.AppID,
+		Sender:       lists.Sender,
+		Protocol:     lists.Protocol,
+		Budget:       lists.Budget,
+	}
+	if len(lists.Rounds) > 0 {
+		if err = decode(handle, lists.Rounds, &r.Rounds); err != nil {
+			return PreEncodedQueryRequest{}, fmt.Errorf("rounds: %w", err)
+		}
+	}
+	if len(lists.Calls) > 0 {
+		if err = decode(handle, lists.Calls, &r.Calls); err != nil {
+			return PreEncodedQueryRequest{}, fmt.Errorf("calls: %w", err)
+		}
+	}
+	return r, nil
+}
+
+// errNotList is the error of a list that is encoded as something else.
+var errNotList = errors.New("expected a list")
+
+// encodedListLen returns the number of entries of b, an encoded list: an array or nil, in JSON when
+// isJSON is set, else in msgpack. An empty b, a list left out, has none. For JSON it counts the
+// commas between entries, so it is never less than what a decode of b holds.
+func encodedListLen(b []byte, isJSON bool) (int, error) {
+	if !isJSON {
+		if len(b) == 0 || b[0] == 0xc0 { // nil
+			return 0, nil
+		}
+		switch c := b[0]; {
+		case c&0xf0 == 0x90: // fixarray
+			return int(c & 0x0f), nil
+		case c == 0xdc && len(b) >= 3: // array 16
+			return int(binary.BigEndian.Uint16(b[1:3])), nil
+		case c == 0xdd && len(b) >= 5: // array 32
+			return int(min(uint64(binary.BigEndian.Uint32(b[1:5])), math.MaxInt32)), nil
+		}
+		return 0, errNotList
+	}
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		return 0, nil
+	}
+	if len(b) < 2 || b[0] != '[' || b[len(b)-1] != ']' {
+		return 0, errNotList
+	}
+	if len(bytes.TrimSpace(b[1:len(b)-1])) == 0 {
+		return 0, nil
+	}
+	n, depth, inString, escaped := 1, 0, false, false
+	for _, c := range b {
+		switch {
+		case inString:
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '[' || c == '{':
+			depth++
+		case c == ']' || c == '}':
+			depth--
+		case c == ',' && depth == 1:
+			n++
+		}
+	}
+	return n, nil
 }
 
 // convertQueryRequest converts a decoded request. Its errors are the client's.
