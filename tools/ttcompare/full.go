@@ -56,8 +56,8 @@ func (c *comparer) runFull(pathA, pathB string) error {
 	if err = c.fullRecords(); err != nil {
 		return err
 	}
-	fmt.Printf("compared %d rounds and %d objects in %v: %d differences\n",
-		c.roundsChecked, c.objsChecked, time.Since(start).Round(time.Second), c.diffs)
+	fmt.Printf("compared %d rounds and %d objects (%d states and versions agree) in %v: %d differences\n",
+		c.roundsChecked, c.objsChecked, c.versionsChecked, time.Since(start).Round(time.Second), c.diffs)
 	return nil
 }
 
@@ -104,54 +104,70 @@ func (c *comparer) fullRounds() error {
 		}},
 	}
 	for _, ck := range checks {
-		ia, err := c.roundRange(c.a, ck.pfx)
-		if err != nil {
+		if err := c.compareRoundKeyspace(ck.pfx, ck.name, ck.cmp); err != nil {
 			return err
-		}
-		ib, err := c.roundRange(c.b, ck.pfx)
-		if err != nil {
-			ia.Close()
-			return err
-		}
-		round := func(it *pebble.Iterator) uint64 { return binary.BigEndian.Uint64(it.Key()[1:]) }
-		var missingA, missingB uint64
-		for ia.Valid() || ib.Valid() {
-			switch {
-			case !ib.Valid() || (ia.Valid() && round(ia) < round(ib)):
-				missingB++
-				c.diff("round %d: %s only in A", round(ia), ck.name)
-				ia.Next()
-			case !ia.Valid() || round(ib) < round(ia):
-				missingA++
-				c.diff("round %d: %s only in B", round(ib), ck.name)
-				ib.Next()
-			default:
-				if ck.pfx == pfxHeader {
-					c.roundsChecked++
-				}
-				ck.cmp(round(ia), ia.Value(), ib.Value())
-				ia.Next()
-				ib.Next()
-			}
-		}
-		err = firstErr(ia.Error(), ib.Error(), ia.Close(), ib.Close())
-		if err != nil {
-			return err
-		}
-		if missingA+missingB > 0 {
-			fmt.Printf("%s: %d rounds missing in A, %d missing in B\n", ck.name, missingA, missingB)
 		}
 	}
 	return nil
 }
 
-func firstErr(errs ...error) error {
-	for _, err := range errs {
+// compareRoundKeyspace merges the records of the per-round keyspace pfx of
+// both stores over [c.lo, c.hi], and compares those of the same round with cmp.
+func (c *comparer) compareRoundKeyspace(pfx byte, name string, cmp func(r uint64, a, b []byte)) error {
+	ia, err := c.roundRange(c.a, pfx)
+	if err != nil {
+		return err
+	}
+	defer ia.Close()
+	ib, err := c.roundRange(c.b, pfx)
+	if err != nil {
+		return err
+	}
+	defer ib.Close()
+	// valid is it.Valid(), failing on an iterator error or a malformed key
+	valid := func(it *pebble.Iterator) (bool, error) {
+		if !it.Valid() {
+			return false, it.Error()
+		}
+		if len(it.Key()) != 1+8 {
+			return false, fmt.Errorf("%w: bad %s key %x", timetravel.ErrCorrupt, name, it.Key())
+		}
+		return true, nil
+	}
+	round := func(it *pebble.Iterator) uint64 { return binary.BigEndian.Uint64(it.Key()[1:]) }
+	var missingA, missingB uint64
+	for {
+		okA, err := valid(ia)
 		if err != nil {
-			return err
+			return fmt.Errorf("store A: %w", err)
+		}
+		okB, err := valid(ib)
+		if err != nil {
+			return fmt.Errorf("store B: %w", err)
+		}
+		switch {
+		case !okA && !okB:
+			if missingA+missingB > 0 {
+				fmt.Printf("%s: %d rounds missing in A, %d missing in B\n", name, missingA, missingB)
+			}
+			return nil
+		case !okB || (okA && round(ia) < round(ib)):
+			missingB++
+			c.diff("round %d: %s only in A", round(ia), name)
+			ia.Next()
+		case !okA || round(ib) < round(ia):
+			missingA++
+			c.diff("round %d: %s only in B", round(ib), name)
+			ib.Next()
+		default:
+			if pfx == pfxHeader {
+				c.roundsChecked++
+			}
+			cmp(round(ia), ia.Value(), ib.Value())
+			ia.Next()
+			ib.Next()
 		}
 	}
-	return nil
 }
 
 // event is an object's state at a round: at c.lo, the state it starts the
@@ -223,6 +239,11 @@ func (es *eventStream) next() bool {
 		if !bytes.Equal(obj, es.obj) {
 			if es.baseDue && es.emitBase() {
 				return true // this record is read again by the next call
+			}
+			if !timetravel.ValidObjectKey(obj) {
+				es.finished = true
+				es.bad = fmt.Errorf("%w: bad object key in record key %x", timetravel.ErrCorrupt, k)
+				return false
 			}
 			es.obj = append(es.obj[:0], obj...)
 			es.prev = append(es.prev[:0], 'D')
@@ -334,8 +355,27 @@ func (c *comparer) fullRecords() error {
 		return fmt.Sprintf("version at round %d", e.rnd)
 	}
 
+	// advance moves es to its next event, failing at once on an error: a
+	// stream that stopped early would make every later event of the other
+	// look like a difference
+	advance := func(es *eventStream, name string) (bool, error) {
+		if es.next() {
+			return true, nil
+		}
+		if serr := es.err(); serr != nil {
+			return false, fmt.Errorf("store %s: %w", name, serr)
+		}
+		return false, nil
+	}
+	okA, err := advance(sa, "A")
+	if err != nil {
+		return err
+	}
+	okB, err := advance(sb, "B")
+	if err != nil {
+		return err
+	}
 	lastReport := time.Now()
-	okA, okB := sa.next(), sb.next()
 	for okA || okB {
 		events++
 		if events%(1<<20) == 0 && time.Since(lastReport) > 30*time.Second {
@@ -357,26 +397,29 @@ func (c *comparer) fullRecords() error {
 			seen(sa.ev.obj)
 			va, oka := sa.ev.value()
 			report(sa.ev.obj, "%s: only A has a %s (%s); B has none", describe(sa.ev.obj), at(&sa.ev), showValue(va, oka))
-			okA = sa.next()
+			okA, err = advance(sa, "A")
 		case 1:
 			seen(sb.ev.obj)
 			vb, okb := sb.ev.value()
 			report(sb.ev.obj, "%s: only B has a %s (%s); A has none", describe(sb.ev.obj), at(&sb.ev), showValue(vb, okb))
-			okB = sb.next()
+			okB, err = advance(sb, "B")
 		default:
 			seen(sa.ev.obj)
-			if !bytes.Equal(sa.ev.rec, sb.ev.rec) {
+			if bytes.Equal(sa.ev.rec, sb.ev.rec) {
+				c.versionsChecked++
+			} else {
 				va, oka := sa.ev.value()
 				vb, okb := sb.ev.value()
 				report(sa.ev.obj, "%s %s: A %s, B %s", describe(sa.ev.obj), at(&sa.ev), showValue(va, oka), showValue(vb, okb))
 			}
-			okA, okB = sa.next(), sb.next()
+			if okA, err = advance(sa, "A"); err == nil {
+				okB, err = advance(sb, "B")
+			}
+		}
+		if err != nil {
+			return err
 		}
 	}
-	if err := firstErr(sa.err(), sb.err()); err != nil {
-		return err
-	}
-	c.versionsChecked = int(events)
 
 	fmt.Printf("records: A %d (%d repeats), B %d (%d repeats)\n", sa.records, sa.repeats, sb.records, sb.repeats)
 	for k := 0; k < 256; k++ {

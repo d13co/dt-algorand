@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/data/basics"
@@ -136,7 +137,7 @@ func TestFullFindsDifferences(t *testing.T) {
 	a := buildStore(t, timetravel.Options{}, 500, nil)
 	b := buildStore(t, timetravel.Options{}, 500, func(rnd uint64) []timetravel.Change {
 		switch rnd {
-		case 250: // one account diverges for a round
+		case 250: // one account diverges until its next write, at 252
 			return []timetravel.Change{{Key: timetravel.AccountKey(basics.Address{5}), Value: []byte("x")}}
 		case 300: // an object only B has
 			return []timetravel.Change{{Key: timetravel.AccountKey(basics.Address{2}), Value: []byte("y")}}
@@ -148,5 +149,100 @@ func TestFullFindsDifferences(t *testing.T) {
 	c := compareFull(t, a, b)
 	// 3 change digests and 3 objects
 	require.Equal(t, 6, c.diffs)
-	require.Equal(t, 51, c.objsChecked-1) // and B's extra account
+	require.Equal(t, 52, c.objsChecked) // 50 accounts, the totals and B's extra account
+}
+
+// record is the key of obj's record at rnd.
+func record(obj []byte, rnd uint64) []byte {
+	return binary.BigEndian.AppendUint64(append([]byte{pfxRecord}, obj...), rnd)
+}
+
+// mutate writes to the store at path with f, past the store's API.
+func mutate(t *testing.T, path string, f func(db *pebble.DB)) {
+	s, err := timetravel.Open(path, timetravel.Options{})
+	require.NoError(t, err)
+	f(s.DB())
+	require.NoError(t, s.Close())
+}
+
+func set(t *testing.T, db *pebble.DB, key []byte, val string) {
+	require.NoError(t, db.Set(key, []byte(val), nil))
+}
+
+// dropHeadersBefore makes the store start at round r for commonRange.
+func dropHeadersBefore(t *testing.T, db *pebble.DB, r uint64) {
+	require.NoError(t, db.DeleteRange([]byte{pfxHeader}, binary.BigEndian.AppendUint64([]byte{pfxHeader}, r), nil))
+}
+
+// TestFullLaterFirstRound compares from a common first round after 0, where
+// each object starts from its state at that round.
+func TestFullLaterFirstRound(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	acct := func(b byte) []byte { return timetravel.AccountKey(basics.Address{b}) }
+	kv := timetravel.KvKey("zz") // sorts after every other object
+	a := buildStore(t, timetravel.Options{DedupEntries: -1}, 500, nil)
+	b := buildStore(t, timetravel.Options{}, 500, nil)
+	mutate(t, a, func(db *pebble.DB) {
+		dropHeadersBefore(t, db, 100)
+		// records before the first round only, with a repeat in A only
+		set(t, db, record(acct(1), 5), "Fq")
+		set(t, db, record(acct(1), 50), "Fq")
+		// the last object: before the first round, and a repeat after it
+		set(t, db, record(kv, 7), "Fv")
+		set(t, db, record(kv, 300), "Fv")
+		// deleted before the first round in A, never there in B
+		set(t, db, record(acct(3), 9), "Fz")
+		set(t, db, record(acct(3), 10), "D")
+	})
+	mutate(t, b, func(db *pebble.DB) {
+		set(t, db, record(acct(1), 5), "Fq")
+		set(t, db, record(kv, 99), "Fv")
+		// created after the last common round
+		set(t, db, record(acct(4), 900), "Fw")
+		// a tombstone as its first record, after the first round
+		set(t, db, record(acct(6), 200), "D")
+	})
+	c := compareFull(t, a, b)
+	require.Zero(t, c.diffs)
+	require.Equal(t, 401, c.roundsChecked)
+	require.Equal(t, 53, c.objsChecked) // and acct(1) and kv
+	c = compareFull(t, b, a)
+	require.Zero(t, c.diffs)
+	require.Equal(t, 53, c.objsChecked)
+
+	// states at the first round that differ
+	mutate(t, b, func(db *pebble.DB) {
+		set(t, db, record(acct(1), 5), "Fr")
+		set(t, db, record(kv, 99), "Fu")
+	})
+	c = compareFull(t, a, b)
+	require.Equal(t, 2, c.diffs)
+}
+
+// TestFullCorrupt checks that a malformed record stops the comparison before
+// it reports the other store's later records as differences.
+func TestFullCorrupt(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	for name, corrupt := range map[string]func(db *pebble.DB){
+		"record":     func(db *pebble.DB) { set(t, db, record(timetravel.AccountKey(basics.Address{0}), 3), "Dx") },
+		"object key": func(db *pebble.DB) { set(t, db, record([]byte("a-short"), 3), "F") },
+		"round key": func(db *pebble.DB) { // sorts between rounds 50 and 51
+			set(t, db, append(binary.BigEndian.AppendUint64([]byte{pfxHeader}, 50), 0), "")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := buildStore(t, timetravel.Options{}, 100, nil)
+			b := buildStore(t, timetravel.Options{}, 100, nil)
+			mutate(t, a, corrupt)
+			c := &comparer{maxDiffs: 10, seenObjs: map[string]bool{}}
+			err := c.runFull(a, b)
+			require.ErrorIs(t, err, timetravel.ErrCorrupt)
+			require.ErrorContains(t, err, "store A")
+			require.Zero(t, c.diffs)
+		})
+	}
 }
