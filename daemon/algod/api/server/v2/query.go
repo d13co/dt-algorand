@@ -122,10 +122,11 @@ func (v2 *Handlers) Query(ctx echo.Context, params model.QueryParams) error {
 	// Check before taking a slot. The node checks again, with the same limits.
 	cfg := v2.Node.Config()
 	limits := simulation.QueryLimitsFromConfig(cfg)
-	if limits.MaxCalls > 0 && len(decoded.Calls) > limits.MaxCalls {
-		// Before converting them, which would allocate them again.
-		err = fmt.Errorf("too many calls: got %d, the limit is %d", len(decoded.Calls), limits.MaxCalls)
-		return badRequest(ctx, err, err.Error(), v2.Log)
+	if limits.MaxCalls > 0 {
+		// Before converting the calls, which would allocate them again.
+		if err = limits.CheckSize(len(decoded.Calls), len(decoded.Rounds)); err != nil {
+			return badRequest(ctx, err, err.Error(), v2.Log)
+		}
 	}
 	request, err := convertQueryRequest(decoded)
 	if err != nil {

@@ -65,6 +65,9 @@ type QueryLimits struct {
 	MaxCallStateBytes uint64
 	// MaxRounds is the most rounds a request may list.
 	MaxRounds int
+	// MaxTotalCalls is the most calls times listed rounds a request may run. 0 means no limit beyond
+	// MaxCalls times MaxRounds.
+	MaxTotalCalls int
 	// Parallelism is the most workers that run the calls of a request at once.
 	Parallelism int
 }
@@ -72,15 +75,40 @@ type QueryLimits struct {
 // QueryLimitsFromConfig returns the query limits of a node configured with cfg, clamped as the
 // config documents. The node and GET /v2/capabilities both take them from here.
 func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
+	maxCalls := min(cfg.MaxAPIQueryCalls, math.MaxInt32)
+	maxRounds := max(1, min(cfg.MaxAPIQueryRounds, MaxQueryRounds))
+	maxTotalCalls := min(maxCalls*maxRounds, math.MaxInt32)
+	if cfg.MaxAPIQueryTotalCalls > 0 {
+		maxTotalCalls = min(maxTotalCalls, cfg.MaxAPIQueryTotalCalls)
+	}
 	return QueryLimits{
-		MaxCalls:          int(min(cfg.MaxAPIQueryCalls, math.MaxInt32)),
+		MaxCalls:          int(maxCalls),
 		MaxCallBudget:     int(max(1, min(cfg.MaxAPIQueryCallBudget, MaxExtraOpcodeBudgetCeiling))),
 		MaxCallLogBytes:   int(min(cfg.MaxAPIQueryCallLogBytes, math.MaxInt32)),
 		MaxResponseBytes:  cfg.MaxAPIQueryResponseBytes,
 		MaxCallStateBytes: cfg.MaxAPIQueryCallStateBytes,
-		MaxRounds:         int(max(1, min(cfg.MaxAPIQueryRounds, MaxQueryRounds))),
+		MaxRounds:         int(maxRounds),
+		MaxTotalCalls:     int(maxTotalCalls),
 		Parallelism:       max(1, min(cfg.QueryParallelism, MaxQueryRounds)),
 	}
+}
+
+// CheckSize returns an InvalidRequestError if a request with the given numbers of calls and listed
+// rounds is over l: too many calls, rounds, or calls times rounds, where a request that lists no
+// rounds runs at one.
+func (l QueryLimits) CheckSize(calls, rounds int) error {
+	if calls > l.MaxCalls {
+		return invalidQuery("too many calls: got %d, the limit is %d", calls, l.MaxCalls)
+	}
+	if maxRounds := max(1, l.MaxRounds); rounds > maxRounds {
+		return invalidQuery("too many rounds: got %d, the limit is %d", rounds, maxRounds)
+	}
+	// In int64: a 32-bit int could overflow.
+	if total := int64(calls) * int64(max(1, rounds)); l.MaxTotalCalls > 0 && total > int64(l.MaxTotalCalls) {
+		return invalidQuery("too many calls in total: %d calls at %d rounds is %d, the limit is %d (MaxAPIQueryTotalCalls)",
+			calls, max(1, rounds), total, l.MaxTotalCalls)
+	}
+	return nil
 }
 
 // QueryCall is one call of a QueryRequest: the args and refs of its app call. The refs are only
@@ -232,11 +260,8 @@ func (r QueryRequest) Validate(developerAPI bool) error {
 	if len(r.Calls) == 0 {
 		return invalidQuery("expected at least 1 call, got 0")
 	}
-	if len(r.Calls) > r.Limits.MaxCalls {
-		return invalidQuery("too many calls: got %d, the limit is %d", len(r.Calls), r.Limits.MaxCalls)
-	}
-	if maxRounds := max(1, r.Limits.MaxRounds); len(r.Rounds) > maxRounds {
-		return invalidQuery("too many rounds: got %d, the limit is %d", len(r.Rounds), maxRounds)
+	if err := r.Limits.CheckSize(len(r.Calls), len(r.Rounds)); err != nil {
+		return err
 	}
 	if r.Budget < 0 {
 		return invalidQuery("budget %d is negative", r.Budget)

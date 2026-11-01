@@ -209,6 +209,23 @@ func TestQueryRESTRejected(t *testing.T) {
 		require.Contains(t, rec.Body.String(), "disabled")
 	})
 
+	t.Run("too many calls in total", func(t *testing.T) {
+		h := newSimRouter(t, newSimNode(t, env, func(c *config.Local) { c.MaxAPIQueryTotalCalls = 4 }))
+		require.Equal(t, uint64(4), getCapabilities(t, h).Query.MaxTotalCalls)
+		// 2 calls at 2 rounds, a round listed twice counting twice, is the limit.
+		ok := v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a", "b"), Rounds: []basics.Round{latest, latest}}
+		decodeQueryResponse(t, postQuery(t, h, encodeQueryRequest(t, ok, "msgpack"), "msgpack"), "msgpack")
+		// 5 calls at the latest round, by default, are over it, as are 3 calls at 2 rounds.
+		for _, tooMany := range []v2.PreEncodedQueryRequest{
+			{Program: program, Calls: queryCalls("a", "b", "c", "d", "e")},
+			{Program: program, Calls: queryCalls("a", "b", "c"), Rounds: []basics.Round{latest, latest - 1}},
+		} {
+			rec := postQuery(t, h, encodeQueryRequest(t, tooMany, "msgpack"), "msgpack")
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "MaxAPIQueryTotalCalls")
+		}
+	})
+
 	t.Run("response too large", func(t *testing.T) {
 		// A call logs 9 bytes in 2 logs, counted as 9 + 2 × 48 = 105.
 		h := newSimRouter(t, newSimNode(t, env, func(c *config.Local) { c.MaxAPIQueryResponseBytes = 250 }))

@@ -3114,6 +3114,11 @@
             "description": "The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).",
             "type": "integer",
             "x-go-type": "uint64"
+          },
+          "max-total-calls": {
+            "description": "The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.",
+            "type": "integer",
+            "x-go-type": "uint64"
           }
         },
         "required": [
@@ -3122,7 +3127,8 @@
           "max-call-state-bytes",
           "max-calls",
           "max-response-bytes",
-          "max-rounds"
+          "max-rounds",
+          "max-total-calls"
         ],
         "type": "object"
       },
@@ -3214,7 +3220,7 @@
             "x-go-type": "uint64"
           },
           "calls": {
-            "description": "The calls, at most max-calls.",
+            "description": "The calls, at most max-calls, and at most max-total-calls divided by the entries of rounds.",
             "items": {
               "$ref": "#/components/schemas/QueryCall"
             },

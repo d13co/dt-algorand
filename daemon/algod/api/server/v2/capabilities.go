@@ -60,6 +60,7 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxCallStateBytes: q.MaxCallStateBytes,
 			MaxResponseBytes:  q.MaxResponseBytes,
 			MaxRounds:         uint64(q.MaxRounds),
+			MaxTotalCalls:     uint64(q.MaxTotalCalls),
 		}
 	}
 	return model.CapabilitiesResponse{

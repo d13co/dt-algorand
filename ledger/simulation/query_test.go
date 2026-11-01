@@ -349,6 +349,7 @@ func TestQueryValidate(t *testing.T) {
 		{"no calls", simulation.QueryRequest{Program: program}, "at least 1 call"},
 		{"too many calls", simulation.QueryRequest{Program: program, Calls: many}, "too many calls"},
 		{"too many rounds", simulation.QueryRequest{Program: program, Calls: many[:1], Rounds: tooManyRounds}, "too many rounds"},
+		{"too many calls in total", simulation.QueryRequest{Program: program, Calls: many[:limits.MaxTotalCalls/2+1], Rounds: tooManyRounds[:2]}, "too many calls in total"},
 		{"budget over", simulation.QueryRequest{Program: program, Calls: many[:1], Budget: limits.MaxCallBudget + 1}, "over the limit"},
 		{"budget negative", simulation.QueryRequest{Program: program, Calls: many[:1], Budget: -1}, "negative"},
 		{"old program", simulation.QueryRequest{Program: assemble(t, "#pragma version 2\nint 1"), Calls: many[:1]}, "send a clear-program"},

@@ -1143,6 +1143,9 @@ type QueryLimits struct {
 
 	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
 	MaxRounds uint64 `json:"max-rounds"`
+
+	// MaxTotalCalls The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.
+	MaxTotalCalls uint64 `json:"max-total-calls"`
 }
 
 // QueryProtocolNote A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
@@ -1186,7 +1189,7 @@ type QueryRequest struct {
 	// Budget The opcode budget of each call, shared by the app it runs and the apps it calls. Defaults to, and may be at most, max-call-budget.
 	Budget *uint64 `json:"budget,omitempty"`
 
-	// Calls The calls, at most max-calls.
+	// Calls The calls, at most max-calls, and at most max-total-calls divided by the entries of rounds.
 	Calls []QueryCall `json:"calls"`
 
 	// ClearProgram The clear state program of the app each call creates. Defaults to pushint 1 at the version of program, which must then be v3 or later.

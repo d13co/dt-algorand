@@ -158,7 +158,7 @@ Request fields:
 | `rounds` | rounds to query, 0 for the latest; defaults to the latest; at most `max-rounds` entries, duplicates included; a round after the latest is a 400 |
 | `protocol` | the protocol each round runs ([A later protocol at a past round](#a-later-protocol-at-a-past-round)); defaults to `latest`; `round` runs each round under the protocol it really had |
 | `budget` | opcode budget of each call, shared by the apps it calls; defaults to, and may be at most, `max-call-budget`. At a round before cost pooling (protocols before v30, with `protocol: round`) each program has the protocol's budget instead, as in simulate |
-| `calls` | `{args, accounts, foreign-apps, foreign-assets, boxes}`; the references are only needed by programs before v9, which address resources by index. A box's `app` 0 is the called app; an app not in `foreign-apps` is added to it |
+| `calls` | at most `max-calls`, and at most `max-total-calls` calls times `rounds` entries (1 when it lists none, duplicates included); each `{args, accounts, foreign-apps, foreign-assets, boxes}`; the references are only needed by programs before v9, which address resources by index. A box's `app` 0 is the called app; an app not in `foreign-apps` is added to it |
 
 Each call:
 
@@ -202,7 +202,7 @@ The simulate responses were decoded into algosdk's `SimulateResponse`, the query
 ```json
 { "time-travel": true, "developer-api": false, "time-limit-seconds": 108,
   "simulate": { "max-txn-groups": 16, "max-extra-opcode-budget": 320000 },
-  "query": { "max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16 } }
+  "query": { "max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024 } }
 ```
 
 | field | node config | meaning |
@@ -212,7 +212,7 @@ The simulate responses were decoded into algosdk's `SimulateResponse`, the query
 | `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest an expensive request (simulate, query, `/v2/deltas/{round}`, the versions endpoints) may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
 | `simulate.max-txn-groups` | `MaxAPISimulateGroups` | most groups in `txn-groups`; a config of 0 counts as 1 |
 | `simulate.max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
-| `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-call-state-bytes` (0: no limit), `max-response-bytes` (0: no limit; the answer is built in memory while the request holds its slot, so a running request can take two to three times this much) and `max-rounds` (a config of 0 counts as 1); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint: it then answers 400 (a stock algod answers 404) |
+| `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-call-state-bytes` (0: no limit), `max-response-bytes` (0: no limit; the answer is built in memory while the request holds its slot, so a running request can take two to three times this much), `max-rounds` (a config of 0 counts as 1) and `max-total-calls` (`MaxAPIQueryTotalCalls`, default 1024: the calls times the `rounds` entries, so 1024 calls at one round or 64 at 16; at most `max-calls` times `max-rounds`, which a config of 0 means); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint: it then answers 400 (a stock algod answers 404) |
 
 The response holds the values after these rules, so `time-limit-seconds` and three of `query`'s are the only numbers that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 
