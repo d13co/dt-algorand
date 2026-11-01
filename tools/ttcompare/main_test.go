@@ -17,6 +17,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
 	"path/filepath"
@@ -95,4 +96,57 @@ func TestCompareFindsDifferences(t *testing.T) {
 	})
 	c := compare(t, a, b)
 	require.Positive(t, c.diffs)
+}
+
+func compareFull(t *testing.T, a, b string) *comparer {
+	c := &comparer{maxDiffs: 10, seenObjs: map[string]bool{}}
+	require.NoError(t, c.runFull(a, b))
+	return c
+}
+
+func TestFullIgnoresNoops(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	// A keeps every repeated write, plus a tombstone of an object that never
+	// had a value (as one created and deleted in a round leaves); B skips the
+	// repeats, and is 100 rounds ahead
+	a := buildStore(t, timetravel.Options{DedupEntries: -1}, 500, nil)
+	s, err := timetravel.Open(a, timetravel.Options{})
+	require.NoError(t, err)
+	key := append([]byte{pfxRecord}, timetravel.AccountKey(basics.Address{1})...)
+	require.NoError(t, s.DB().Set(binary.BigEndian.AppendUint64(key, 7), []byte{'D'}, nil))
+	require.NoError(t, s.Close())
+	b := buildStore(t, timetravel.Options{}, 600, nil)
+	c := compareFull(t, a, b)
+	require.Zero(t, c.diffs)
+	require.Equal(t, 501, c.roundsChecked)
+	require.Equal(t, 51, c.objsChecked) // 50 accounts and the totals
+	require.Positive(t, c.versionsChecked)
+
+	// the same the other way around
+	c = compareFull(t, b, a)
+	require.Zero(t, c.diffs)
+}
+
+func TestFullFindsDifferences(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	a := buildStore(t, timetravel.Options{}, 500, nil)
+	b := buildStore(t, timetravel.Options{}, 500, func(rnd uint64) []timetravel.Change {
+		switch rnd {
+		case 250: // one account diverges for a round
+			return []timetravel.Change{{Key: timetravel.AccountKey(basics.Address{5}), Value: []byte("x")}}
+		case 300: // an object only B has
+			return []timetravel.Change{{Key: timetravel.AccountKey(basics.Address{2}), Value: []byte("y")}}
+		case 400: // an account deleted in B only
+			return []timetravel.Change{{Key: timetravel.AccountKey(basics.Address{10}), Deleted: true}}
+		}
+		return nil
+	})
+	c := compareFull(t, a, b)
+	// 3 change digests and 3 objects
+	require.Equal(t, 6, c.diffs)
+	require.Equal(t, 51, c.objsChecked-1) // and B's extra account
 }
