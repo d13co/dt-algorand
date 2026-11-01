@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -239,9 +240,7 @@ func TestSimulateRemovedFields(t *testing.T) {
 	// The request as a map, so that it can carry fields PreEncodedSimulateRequest no longer has.
 	body := func(format string, extra map[string]any) []byte {
 		request := map[string]any{"txn-groups": []map[string]any{{"txns": []transactions.SignedTxn{stxn}}}}
-		for k, v := range extra {
-			request[k] = v
-		}
+		maps.Copy(request, extra)
 		if format == "json" {
 			return protocol.EncodeJSON(request)
 		}
