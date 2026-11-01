@@ -57,22 +57,19 @@ func TestSimulateTimeLimit(t *testing.T) {
 	for range 3 {
 		env.TransferAlgos(sender.Addr, sender.Addr, 0)
 	}
-	latest := env.Ledger.Latest()
 	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
-	rounds := single
-	rounds.Rounds = []basics.Round{latest - 2, latest - 1, latest}
 
 	oneSecond := func(cfg *config.Local) { cfg.RestWriteTimeoutSeconds = 1 }
-	newHandler := func(n *roundsNode) *v2.Handlers {
+	newHandler := func(n *simNode) *v2.Handlers {
 		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: semaphore.NewWeighted(4)}
 	}
 
 	t.Run("single round", func(t *testing.T) {
 		t.Parallel()
-		n := newRoundsNode(t, env, oneSecond)
-		n.slowAt = map[basics.Round]bool{0: true}
+		n := newSimNode(t, env, oneSecond)
+		n.slow = true
 		start := time.Now()
-		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), single)
+		rec, err := simulateDirect(context.Background(), t, newHandler(n), single)
 		require.NoError(t, err)
 		// the limit is half of a 1 s timeout
 		require.GreaterOrEqual(t, time.Since(start), 500*time.Millisecond)
@@ -80,34 +77,11 @@ func TestSimulateTimeLimit(t *testing.T) {
 		require.Contains(t, rec.Body.String(), "time limit (RestWriteTimeoutSeconds)")
 	})
 
-	t.Run("rounds", func(t *testing.T) {
-		t.Parallel()
-		n := newRoundsNode(t, env, oneSecond)
-		n.slowAt = map[basics.Round]bool{latest - 1: true}
-		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), rounds)
-		require.NoError(t, err)
-		response := decodeSimulateResponse(t, rec, "json")
-		results := *response.RoundResults
-		require.Len(t, results, 3)
-		// The round that finished keeps its result.
-		require.Nil(t, results[0].Error)
-		require.Equal(t, rounds.Rounds[0], results[0].LastRound)
-		require.Len(t, results[0].TxnGroups, 1)
-		// The rounds run one after another: the slow one stopped at the time limit, and the one after
-		// it never started.
-		for _, i := range []int{1, 2} {
-			require.NotNil(t, results[i].Error, i)
-			require.Equal(t, "not simulated: the request reached the node's time limit (RestWriteTimeoutSeconds)", *results[i].Error)
-			require.Equal(t, rounds.Rounds[i], results[i].LastRound)
-		}
-		require.Equal(t, int64(2), n.calls.Load())
-	})
-
 	t.Run("counted from arrival", func(t *testing.T) {
 		t.Parallel()
 		// A request that arrived 400 ms ago, e.g. with a slow body, has 100 ms of its 500 ms left.
-		n := newRoundsNode(t, env, oneSecond)
-		n.slowAt = map[basics.Round]bool{0: true}
+		n := newSimNode(t, env, oneSecond)
+		n.slow = true
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(protocol.EncodeReflect(&single)))
 		rec := httptest.NewRecorder()
 		c := echo.New().NewContext(req, rec)
@@ -123,27 +97,25 @@ func TestSimulateTimeLimit(t *testing.T) {
 
 	t.Run("no time limit", func(t *testing.T) {
 		t.Parallel()
-		n := newRoundsNode(t, env, func(cfg *config.Local) { cfg.RestWriteTimeoutSeconds = 0 })
+		n := newSimNode(t, env, func(cfg *config.Local) { cfg.RestWriteTimeoutSeconds = 0 })
 		n.delay = 1100 * time.Millisecond
-		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), single)
+		rec, err := simulateDirect(context.Background(), t, newHandler(n), single)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	})
 
 	t.Run("client gone", func(t *testing.T) {
 		t.Parallel()
-		for _, request := range []v2.PreEncodedSimulateRequest{single, rounds} {
-			n := newRoundsNode(t, env)
-			n.slowAt = map[basics.Round]bool{0: true, latest - 1: true}
-			ctx, cancel := context.WithCancel(context.Background())
-			time.AfterFunc(100*time.Millisecond, cancel)
-			start := time.Now()
-			rec, err := simulateRoundsDirect(ctx, t, newHandler(n), request)
-			require.NoError(t, err)
-			require.Less(t, time.Since(start), 5*time.Second)
-			require.Zero(t, rec.Body.Len())
-			require.False(t, rec.Flushed)
-		}
+		n := newSimNode(t, env)
+		n.slow = true
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		start := time.Now()
+		rec, err := simulateDirect(ctx, t, newHandler(n), single)
+		require.NoError(t, err)
+		require.Less(t, time.Since(start), 5*time.Second)
+		require.Zero(t, rec.Body.Len())
+		require.False(t, rec.Flushed)
 	})
 }
 
@@ -154,61 +126,52 @@ func TestSimulateBusy(t *testing.T) {
 	t.Parallel()
 
 	env := simulationtesting.PrepareSimulatorTest(t)
-	// the subtests run in parallel, after this function returns
-	t.Cleanup(env.Close)
+	defer env.Close()
 	sender := env.Accounts[0]
 	env.TransferAlgos(sender.Addr, sender.Addr, 0)
-	latest := env.Ledger.Latest()
-	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
-	rounds := single
-	rounds.Rounds = []basics.Round{latest - 1, latest}
+	request := oneGroupRequest(roundLoggerCall(env, sender, 1))
 
-	for name, request := range map[string]v2.PreEncodedSimulateRequest{"single round": single, "rounds": rounds} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			n := newRoundsNode(t, env)
-			limiter := semaphore.NewWeighted(2)
-			handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
+	n := newSimNode(t, env)
+	limiter := semaphore.NewWeighted(2)
+	handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
 
-			// Every slot is taken.
-			require.True(t, limiter.TryAcquire(2))
-			start := time.Now()
-			rec, err := simulateRoundsDirect(context.Background(), t, handler, request)
-			require.NoError(t, err)
-			require.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
-			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-			require.Equal(t, "1", rec.Header().Get("Retry-After"))
-			require.Contains(t, rec.Body.String(), "the node is busy")
-			require.Zero(t, n.calls.Load())
+	// Every slot is taken.
+	require.True(t, limiter.TryAcquire(2))
+	start := time.Now()
+	rec, err := simulateDirect(context.Background(), t, handler, request)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, time.Since(start), 250*time.Millisecond)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Equal(t, "1", rec.Header().Get("Retry-After"))
+	require.Contains(t, rec.Body.String(), "the node is busy")
+	require.Zero(t, n.calls.Load())
 
-			// A slot freed while the request waits is taken.
-			time.AfterFunc(50*time.Millisecond, func() { limiter.Release(1) })
-			rec, err = simulateRoundsDirect(context.Background(), t, handler, request)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			require.Empty(t, rec.Header().Get("Retry-After"))
+	// A slot freed while the request waits is taken.
+	time.AfterFunc(50*time.Millisecond, func() { limiter.Release(1) })
+	rec, err = simulateDirect(context.Background(), t, handler, request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Empty(t, rec.Header().Get("Retry-After"))
 
-			// Every slot the request took was given back.
-			limiter.Release(1)
-			require.True(t, limiter.TryAcquire(2))
+	// Every slot the request took was given back.
+	limiter.Release(1)
+	require.True(t, limiter.TryAcquire(2))
 
-			// An invalid request is refused at once, busy or not.
-			invalid := request
-			invalid.ExtraOpcodeBudget = 1 << 40
-			ran := n.calls.Load()
-			start = time.Now()
-			rec, err = simulateRoundsDirect(context.Background(), t, handler, invalid)
-			require.NoError(t, err)
-			require.Less(t, time.Since(start), 250*time.Millisecond)
-			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
-			require.Contains(t, rec.Body.String(), "extra budget")
-			require.Equal(t, ran, n.calls.Load())
-		})
-	}
+	// An invalid request is refused at once, busy or not.
+	invalid := request
+	invalid.ExtraOpcodeBudget = 1 << 40
+	ran := n.calls.Load()
+	start = time.Now()
+	rec, err = simulateDirect(context.Background(), t, handler, invalid)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 250*time.Millisecond)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "extra budget")
+	require.Equal(t, ran, n.calls.Load())
 }
 
-// TestSimulateTracedLimits checks the limits of a request with an execution trace: no rounds, and at
-// most upstream's extra opcode budget whatever the node allows. Several groups and a past round,
+// TestSimulateTracedLimits checks the limits of a request with an execution trace: at most
+// upstream's extra opcode budget whatever the node allows. Several groups and a past round,
 // read from the time travel history, stay allowed.
 func TestSimulateTracedLimits(t *testing.T) {
 	partitiontest.PartitionTest(t)
@@ -227,12 +190,12 @@ func TestSimulateTracedLimits(t *testing.T) {
 	// older than the MaxAcctLookback rounds a node without time travel keeps
 	past := latest - 8
 
-	n := newRoundsNode(t, env, func(c *config.Local) {
+	n := newSimNode(t, env, func(c *config.Local) {
 		c.EnableDeveloperAPI = true
 		c.EnableTimeTravel = true
 		c.MaxAPISimulateExtraOpcodeBudget = 1_000_000
 	})
-	router := newRoundsRouter(t, n)
+	router := newSimRouter(t, n)
 	traced := v2.PreEncodedSimulateRequest{
 		TxnGroups: []v2.PreEncodedSimulateRequestTransactionGroup{
 			{Txns: []transactions.SignedTxn{roundLoggerCall(env, sender, 1)}},
@@ -267,16 +230,6 @@ func TestSimulateTracedLimits(t *testing.T) {
 	over.ExecTraceConfig = simulation.ExecTraceConfig{}
 	rec = post(over)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-
-	// rounds
-	rounds := traced
-	rounds.Round = 0
-	rounds.Rounds = []basics.Round{past, latest}
-	calls := n.calls.Load()
-	rec = post(rounds)
-	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
-	require.Contains(t, rec.Body.String(), "exec-trace-config cannot be used with rounds")
-	require.Equal(t, calls, n.calls.Load(), "refused before any round is simulated")
 }
 
 // deltaLedger serves state deltas the way a time travel ledger rebuilding an old round does:

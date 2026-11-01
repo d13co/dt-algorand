@@ -588,15 +588,10 @@ type Local struct {
 	// guarantees in terms of functionality or future support.
 	EnableExperimentalAPI bool `version[26]:"false"`
 
-	// SimulateResourceLimitMultiplier scales the limits simulate places on unnamed resources
-	// (allow-unnamed-resources): accounts, assets, apps, boxes, holdings, locals and the box I/O budget
-	// they bring. 1 keeps the consensus limits, which size the reported resources for a real group.
-	// Larger values let simulate read more state per call, but the resources it reports may no longer
-	// fit in a submittable group. Values below 1 count as 1; values above 1024 count as 1024.
-	// The opcode budget bounds the work a call can do, but the multiplier bounds how many resources
-	// simulate records: at high values one response can list hundreds of thousands of
-	// unnamed-resources-accessed entries, with the memory and response size that brings.
-	// Non-standard fork feature.
+	// SimulateResourceLimitMultiplier is not used: simulate keeps the consensus limits on unnamed
+	// resources. POST /v2/query, which has no such limits, replaced it. Non-standard fork feature.
+	//
+	// Deprecated: no effect.
 	SimulateResourceLimitMultiplier uint64 `version[39]:"1"`
 
 	// MaxAPISimulateGroups is the most transaction groups one simulate request may hold. Values
@@ -611,24 +606,24 @@ type Local struct {
 	// fork feature.
 	MaxAPISimulateExtraOpcodeBudget uint64 `version[39]:"320000"`
 
-	// MaxAPISimulateRounds is the most rounds one simulate request may list in "rounds", which simulates
-	// the request once per distinct listed round; duplicates count against the limit. 0 disables "rounds";
-	// values above simulation.MaxSimulateRounds (256) count as that. Non-standard fork feature.
+	// MaxAPISimulateRounds is not used: simulate no longer takes "rounds", which POST /v2/query
+	// replaced (MaxAPIQueryRounds). Non-standard fork feature.
+	//
+	// Deprecated: no effect.
 	MaxAPISimulateRounds uint64 `version[39]:"16"`
 
-	// SimulateRoundsParallelism is not used: the rounds of a "rounds" simulate request run one after another.
-	// Non-standard fork feature.
+	// SimulateRoundsParallelism is not used: simulate no longer takes "rounds". Non-standard fork
+	// feature.
 	//
 	// Deprecated: no effect.
 	SimulateRoundsParallelism int `version[39]:"4"`
 
 	// SimulateParallelism is the most simulations that run at once across the node: one for each simulate
-	// request, whose "rounds" run one after another in its slot, and one for each running worker of a POST
-	// /v2/query request. A request that can't get a slot within 250 ms is refused with 503 and Retry-After, so
-	// a load balancer can send it to another node. 0 means GOMAXPROCS, the CPUs the process may use, and a
-	// negative value no limit. This applies whether or not EnableEffortHeader is set, and is new: upstream
-	// and earlier builds of this fork queue simulate requests without limit, which -1 restores. Non-standard
-	// fork feature.
+	// request, and one for each running worker of a POST /v2/query request. A request that can't get a
+	// slot within 250 ms is refused with 503 and Retry-After, so a load balancer can send it to another
+	// node. 0 means GOMAXPROCS, the CPUs the process may use, and a negative value no limit. This applies
+	// whether or not EnableEffortHeader is set, and is new: upstream and earlier builds of this fork queue
+	// simulate requests without limit, which -1 restores. Non-standard fork feature.
 	SimulateParallelism int `version[39]:"0"`
 
 	// MaxAPIQueryCalls is the most calls one POST /v2/query request may hold; each runs at every round of the
@@ -678,7 +673,7 @@ type Local struct {
 	// travel history), scanned (entries read by scans), response-bytes (the answer's size before compression;
 	// 0 for reads at a past round, which are billed on lookups) and eval-us (time spent). Answers given
 	// before any work (503 when busy, most 400s) don't carry it; a 400 from the simulator's checks of a
-	// request without rounds carries what was counted so far. Meant for a load balancer that bills on it and
+	// request carries what was counted so far. Meant for a load balancer that bills on it and
 	// removes it before answering clients. Non-standard fork feature.
 	EnableEffortHeader bool `version[39]:"false"`
 

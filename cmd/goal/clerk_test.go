@@ -104,8 +104,7 @@ func TestDeterminePathToSourceFromSourceMap(t *testing.T) {
 	}
 }
 
-// TestMakeSimulateRequestGroups checks that goal clerk simulate splits a txn file into groups and
-// passes --parallel-groups and --protocol on.
+// TestMakeSimulateRequestGroups checks that goal clerk simulate splits a txn file into groups.
 func TestMakeSimulateRequestGroups(t *testing.T) { // nolint:paralleltest // Sets the command's flag variables.
 	partitiontest.PartitionTest(t)
 
@@ -124,16 +123,10 @@ func TestMakeSimulateRequestGroups(t *testing.T) { // nolint:paralleltest // Set
 	file := filepath.Join(t.TempDir(), "txns")
 	require.NoError(t, os.WriteFile(file, data, 0600))
 
-	defer func(name string, parallel bool, proto string) {
-		txFilename, simulateParallelGroups, simulateProtocol = name, parallel, proto
-	}(txFilename, simulateParallelGroups, simulateProtocol)
+	defer func(name string) { txFilename = name }(txFilename)
 	txFilename = file
-	simulateParallelGroups = true
-	simulateProtocol = "latest"
 
 	request := makeSimulateRequest(decodeTxnsFromFile(txFilename))
-	require.True(t, request.ParallelGroups)
-	require.Equal(t, "latest", request.Protocol)
 	require.Len(t, request.TxnGroups, 2)
 	require.Equal(t, group, request.TxnGroups[0].Txns)
 	require.Equal(t, []transactions.SignedTxn{ungrouped}, request.TxnGroups[1].Txns)

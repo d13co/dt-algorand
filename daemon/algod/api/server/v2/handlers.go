@@ -117,7 +117,7 @@ type Handlers struct {
 	KeygenLimiter *semaphore.Weighted
 
 	// SimulateLimiter limits the simulations that run at once across the node (SimulateParallelism):
-	// one per simulate request, whose "rounds" run one after another in its slot. Nil means no limit.
+	// one per simulate request. Nil means no limit.
 	// Non-standard fork feature.
 	SimulateLimiter *semaphore.Weighted
 }
@@ -1560,14 +1560,12 @@ type PreEncodedSimulateTxnGroupResult struct {
 
 // PreEncodedSimulateResponse mirrors model.SimulateResponse
 type PreEncodedSimulateResponse struct {
-	Version          uint64                             `codec:"version"`
-	LastRound        basics.Round                       `codec:"last-round"`
-	TxnGroups        []PreEncodedSimulateTxnGroupResult `codec:"txn-groups"`
-	EvalOverrides    *model.SimulationEvalOverrides     `codec:"eval-overrides,omitempty"`
-	ExecTraceConfig  simulation.ExecTraceConfig         `codec:"exec-trace-config,omitempty"`
-	InitialStates    *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
-	ProtocolOverride *model.SimulateProtocolOverride    `codec:"protocol-override,omitempty"`
-	RoundResults     *[]PreEncodedSimulateRoundResult   `codec:"round-results,omitempty"`
+	Version         uint64                             `codec:"version"`
+	LastRound       basics.Round                       `codec:"last-round"`
+	TxnGroups       []PreEncodedSimulateTxnGroupResult `codec:"txn-groups"`
+	EvalOverrides   *model.SimulationEvalOverrides     `codec:"eval-overrides,omitempty"`
+	ExecTraceConfig simulation.ExecTraceConfig         `codec:"exec-trace-config,omitempty"`
+	InitialStates   *model.SimulateInitialStates       `codec:"initial-states,omitempty"`
 }
 
 // PreEncodedSimulateRequestTransactionGroup mirrors model.SimulateRequestTransactionGroup
@@ -1579,17 +1577,82 @@ type PreEncodedSimulateRequestTransactionGroup struct {
 type PreEncodedSimulateRequest struct {
 	TxnGroups             []PreEncodedSimulateRequestTransactionGroup `codec:"txn-groups"`
 	Round                 basics.Round                                `codec:"round,omitempty"`
-	Rounds                []basics.Round                              `codec:"rounds,omitempty"`
 	AllowEmptySignatures  bool                                        `codec:"allow-empty-signatures,omitempty"`
 	AllowMoreLogging      bool                                        `codec:"allow-more-logging,omitempty"`
 	AllowUnnamedResources bool                                        `codec:"allow-unnamed-resources,omitempty"`
 	ExtraOpcodeBudget     int                                         `codec:"extra-opcode-budget,omitempty"`
 	ExecTraceConfig       simulation.ExecTraceConfig                  `codec:"exec-trace-config,omitempty"`
 	FixSigners            bool                                        `codec:"fix-signers,omitempty"`
-	ParallelGroups        bool                                        `codec:"parallel-groups,omitempty"`
-	SkipValidityWindow    bool                                        `codec:"skip-validity-window,omitempty"`
-	RewriteValidityWindow bool                                        `codec:"rewrite-validity-window,omitempty"`
-	Protocol              string                                      `codec:"protocol,omitempty"`
+}
+
+// removedSimulateFields are the simulate request fields that earlier releases of the fork took and
+// POST /v2/query replaced. A request that sets one is refused rather than simulated without it.
+// They decode as any type, so that a value of the wrong type is refused with the same error.
+// Non-standard fork feature.
+type removedSimulateFields struct {
+	Rounds                any `codec:"rounds,omitempty"`
+	ParallelGroups        any `codec:"parallel-groups,omitempty"`
+	SkipValidityWindow    any `codec:"skip-validity-window,omitempty"`
+	RewriteValidityWindow any `codec:"rewrite-validity-window,omitempty"`
+	Protocol              any `codec:"protocol,omitempty"`
+}
+
+// removedFieldSet reports whether a removed field's decoded value asks for something: null, false,
+// 0, "" and an empty array or map don't.
+func removedFieldSet(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case string:
+		return v != ""
+	case []byte:
+		return len(v) > 0
+	case int64:
+		return v != 0
+	case uint64:
+		return v != 0
+	case float64:
+		return v != 0
+	case []any:
+		return len(v) > 0
+	case map[any]any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	}
+	return true
+}
+
+// check returns an error naming the removed fields that r sets, or nil when it sets none.
+func (r removedSimulateFields) check() error {
+	var set []string
+	for _, f := range []struct {
+		name  string
+		value any
+	}{
+		{"rounds", r.Rounds},
+		{"parallel-groups", r.ParallelGroups},
+		{"skip-validity-window", r.SkipValidityWindow},
+		{"rewrite-validity-window", r.RewriteValidityWindow},
+		{"protocol", r.Protocol},
+	} {
+		if removedFieldSet(f.value) {
+			set = append(set, f.name)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf("simulate no longer takes %s: use POST /v2/query for read-only calls at several rounds, in isolation or under another protocol", strings.Join(set, ", "))
+}
+
+// simulateRequestBody is what a simulate request body decodes into: the request, plus the removed
+// fields so that a request that sets one gets an error that names it.
+type simulateRequestBody struct {
+	PreEncodedSimulateRequest
+	removedSimulateFields
 }
 
 // SimulateTransaction simulates broadcasting a raw transaction to the network, returning relevant simulation results.
@@ -1619,14 +1682,18 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 	}
 	requestData := requestBuffer.Bytes()
 
-	var simulateRequest PreEncodedSimulateRequest
-	err = decode(protocol.CodecHandle, requestData, &simulateRequest)
+	var body simulateRequestBody
+	err = decode(protocol.CodecHandle, requestData, &body)
 	if err != nil {
-		err = decode(protocol.JSONStrictHandle, requestData, &simulateRequest)
+		err = decode(protocol.JSONStrictHandle, requestData, &body)
 		if err != nil {
 			return badRequest(ctx, err, err.Error(), v2.Log)
 		}
 	}
+	if err = body.removedSimulateFields.check(); err != nil {
+		return badRequest(ctx, err, err.Error(), v2.Log)
+	}
+	simulateRequest := body.PreEncodedSimulateRequest
 
 	for _, txgroup := range simulateRequest.TxnGroups {
 		if len(txgroup.Txns) == 0 {
@@ -1637,15 +1704,6 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 			err = fmt.Errorf("transaction group size %d exceeds protocol max %d", len(txgroup.Txns), proto.MaxTxGroupSize)
 			return badRequest(ctx, err, err.Error(), v2.Log)
 		}
-	}
-	if len(simulateRequest.Rounds) > 0 {
-		return v2.simulateRounds(ctx, handle, contentType, stat, simulateRequest)
-	}
-	// The validity window modes exist to run the same txns across rounds further apart than
-	// MaxTxnLife. Non-standard fork features.
-	if simulateRequest.SkipValidityWindow || simulateRequest.RewriteValidityWindow {
-		err = errors.New("skip-validity-window and rewrite-validity-window require rounds")
-		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Simulate transaction
 	simulationResult, answered, err := v2.simulateOnce(ctx, convertSimulationRequest(simulateRequest))
@@ -1663,12 +1721,7 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 	}
 
 	response := convertSimulationResult(simulationResult)
-	return v2.writeSimulateResponse(ctx, handle, contentType, &response)
-}
-
-// writeSimulateResponse encodes response with handle and writes it with status 200.
-func (v2 *Handlers) writeSimulateResponse(ctx echo.Context, handle codec.Handle, contentType string, response *PreEncodedSimulateResponse) error {
-	responseData, err := encode(handle, response)
+	responseData, err := encode(handle, &response)
 	if err != nil {
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}

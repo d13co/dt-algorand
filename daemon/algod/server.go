@@ -118,11 +118,6 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			cfg.RestConnectionsSoftLimit, cfg.RestConnectionsHardLimit)
 		cfg.RestConnectionsSoftLimit = cfg.RestConnectionsHardLimit
 	}
-	if cfg.SimulateResourceLimitMultiplier > simulation.MaxResourceLimitMultiplier {
-		s.log.Warnf(
-			"SimulateResourceLimitMultiplier %d exceeds the maximum %d; simulate uses %d",
-			cfg.SimulateResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier)
-	}
 	if cfg.MaxAPISimulateGroups > simulation.MaxSimulateGroups {
 		s.log.Warnf(
 			"MaxAPISimulateGroups %d exceeds the maximum %d; simulate uses %d",
@@ -132,11 +127,6 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 		s.log.Warnf(
 			"MaxAPISimulateExtraOpcodeBudget %d exceeds the maximum %d; simulate uses %d",
 			cfg.MaxAPISimulateExtraOpcodeBudget, simulation.MaxExtraOpcodeBudgetCeiling, simulation.MaxExtraOpcodeBudgetCeiling)
-	}
-	if cfg.MaxAPISimulateRounds > simulation.MaxSimulateRounds {
-		s.log.Warnf(
-			"MaxAPISimulateRounds %d exceeds the maximum %d; simulate uses %d",
-			cfg.MaxAPISimulateRounds, simulation.MaxSimulateRounds, simulation.MaxSimulateRounds)
 	}
 	if cfg.IncomingConnectionsLimit < 0 {
 		return fmt.Errorf(

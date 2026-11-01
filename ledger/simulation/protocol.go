@@ -16,8 +16,8 @@
 
 package simulation
 
-// Protocol override: simulate round R as if an upgrade to a later protocol took effect at R+1.
-// Non-standard fork feature.
+// Protocol override: query round R as if an upgrade to a later protocol took effect at R+1
+// (QueryRequest.Protocol). Non-standard fork feature.
 
 import (
 	"errors"
@@ -34,13 +34,13 @@ import (
 	"github.com/algorand/go-algorand/protocol"
 )
 
-// ProtocolLatest names, in Request.Protocol, the protocol of the block after the node's latest one:
+// ProtocolLatest names, in QueryRequest.Protocol, the protocol of the block after the node's latest one:
 // the protocol of the latest block, or the one an upgrade switches to right after it.
 const ProtocolLatest = "latest"
 
-// ProtocolOverride reports how Request.Protocol applied to a simulated round.
+// ProtocolOverride reports how QueryRequest.Protocol applied to a queried round.
 type ProtocolOverride struct {
-	// From is the protocol the round after the simulated one really had.
+	// From is the protocol the round after the queried one really had.
 	From protocol.ConsensusVersion
 	// To is the requested protocol, with aliases resolved.
 	To protocol.ConsensusVersion
@@ -101,7 +101,7 @@ var hitNoteMessages = map[string]string{
 	noteAppVersion:           "AppVersion was read; app versions are only counted from the upgrade on, so it is 0 for apps updated before",
 }
 
-// shortProtocolNames are the vNN names Request.Protocol accepts for mainline protocols.
+// shortProtocolNames are the vNN names QueryRequest.Protocol accepts for mainline protocols.
 var shortProtocolNames = map[string]protocol.ConsensusVersion{
 	"v24": protocol.ConsensusV24,
 	"v25": protocol.ConsensusV25,
@@ -131,7 +131,7 @@ var extraUpgrades = map[protocol.ConsensusVersion][]protocol.ConsensusVersion{
 	protocol.ConsensusV41: {protocol.ConsensusVFnet5},
 }
 
-// parseProtocol resolves a Request.Protocol name other than ProtocolLatest: a vNN name, or a key
+// parseProtocol resolves a QueryRequest.Protocol name other than ProtocolLatest: a vNN name, or a key
 // of config.Consensus.
 func parseProtocol(name string) (protocol.ConsensusVersion, error) {
 	if v, ok := shortProtocolNames[name]; ok {
@@ -144,8 +144,8 @@ func parseProtocol(name string) (protocol.ConsensusVersion, error) {
 	return v, nil
 }
 
-// validateProtocol checks Request.Protocol. Only nodes with the developer API simulate under
-// vFuture: it is the protocol of no production network.
+// validateProtocol checks QueryRequest.Protocol. Only nodes with the developer API run vFuture: it
+// is the protocol of no production network.
 func validateProtocol(name string, developerAPI bool) error {
 	if name == "" || name == ProtocolLatest {
 		return nil
@@ -215,10 +215,10 @@ func upgradeAt(hdr bookkeeping.BlockHeader, target protocol.ConsensusVersion) bo
 	return hdr
 }
 
-// overrideProtocol works out how the protocol name (Request.Protocol, QueryRequest.Protocol)
-// applies to the round after prevHdr, whose header it is, with latest the node's latest round.
-// ProtocolLatest is the protocol of the block after latest. When it applies, it sets l to switch to
-// it, and returns the protocolGaps for the tracers.
+// overrideProtocol works out how the protocol name (QueryRequest.Protocol) applies to the round
+// after prevHdr, whose header it is, with latest the node's latest round. ProtocolLatest is the
+// protocol of the block after latest. When it applies, it sets l to switch to it, and returns the
+// protocolGaps for the query tracers.
 func (l *simulatorLedger) overrideProtocol(name string, prevHdr bookkeeping.BlockHeader, latest basics.Round) (*ProtocolOverride, *protocolGaps, error) {
 	var target protocol.ConsensusVersion
 	if name == ProtocolLatest {
@@ -347,8 +347,7 @@ func staticNotes(realNext, target config.ConsensusParams) []ProtocolNote {
 }
 
 // protocolGaps is what a tracer needs to tell when an opcode reads data the chain never produced,
-// for a simulation under a protocol override. It is only read, and shared by the tracers of a
-// request.
+// for a query under a protocol override. It is only read, and shared by the tracers of a round.
 type protocolGaps struct {
 	// realNext are the parameters of the protocol the simulated round's next block really ran.
 	realNext config.ConsensusParams

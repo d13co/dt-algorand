@@ -17,13 +17,16 @@
 package simulation_test
 
 import (
+	"encoding/binary"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-algorand/agreement"
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/simulation"
@@ -31,6 +34,25 @@ import (
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
+
+// addEmptyBlocks adds n blocks without transactions to env's ledger. Their seeds are not zero, so
+// heartbeats can use them.
+func addEmptyBlocks(t *testing.T, env *simulationtesting.Environment, n int) {
+	t.Helper()
+	for range n {
+		hdr := env.TxnInfo.LatestHeader
+		blk := bookkeeping.MakeBlock(hdr)
+		blk.TxnCounter = hdr.TxnCounter
+		binary.BigEndian.PutUint64(blk.BlockHeader.Seed[:], uint64(blk.Round()))
+		blk.BlockHeader.Seed[31] = 1
+		require.NoError(t, env.Ledger.AddBlock(blk, agreement.Certificate{}))
+		env.TxnInfo.LatestHeader = blk.BlockHeader
+	}
+}
+
+func oneTxn(stxn transactions.SignedTxn) [][]transactions.SignedTxn {
+	return [][]transactions.SignedTxn{{stxn}}
+}
 
 // sponsorCloserApp sponsors the size of app Applications 1 with an inner update on "update", and
 // closes its own account to Accounts 1 with an inner payment on "close".
@@ -150,18 +172,16 @@ func testSimulatePastRoundClose(t *testing.T, cv protocol.ConsensusVersion) {
 		txn  transactions.SignedTxn
 	}{{"pay", pay}, {"inner pay", innerPay}} {
 		t.Run(tc.name, func(t *testing.T) {
-			eachGroupMode(t, func(t *testing.T, parallel bool) {
-				for _, rnd := range []basics.Round{0, latest} {
-					result := simulateGroups(t, env, simulation.Request{Round: rnd, TxnGroups: oneTxn(tc.txn), ParallelGroups: parallel})
-					require.Contains(t, result.TxnGroups[0].FailureMessage, latestErr, "round %d", rnd)
-				}
-				result := simulateGroups(t, env, simulation.Request{Round: past, TxnGroups: oneTxn(tc.txn), ParallelGroups: parallel})
-				if pastErr != "" {
-					require.Contains(t, result.TxnGroups[0].FailureMessage, pastErr)
-				} else {
-					requireGroupSucceeded(t, result, 0)
-				}
-			})
+			for _, rnd := range []basics.Round{0, latest} {
+				result := simulateGroups(t, env, simulation.Request{Round: rnd, TxnGroups: oneTxn(tc.txn)})
+				require.Contains(t, result.TxnGroups[0].FailureMessage, latestErr, "round %d", rnd)
+			}
+			result := simulateGroups(t, env, simulation.Request{Round: past, TxnGroups: oneTxn(tc.txn)})
+			if pastErr != "" {
+				require.Contains(t, result.TxnGroups[0].FailureMessage, pastErr)
+			} else {
+				requireGroupSucceeded(t, result, 0)
+			}
 		})
 	}
 

@@ -328,16 +328,21 @@ int 1`,
 	for i, txgroup := range request.TxnGroups {
 		groups[i] = transactions.WrapSignedTxnsWithAD(txgroup)
 	}
-	tracer := makeEvalTracer(s.ledger.start, groups, request)
+	// The tracer is checked at the end of each group, before the next one starts.
+	var tracer *evalTracer
+	var checked []int
+	request.hooks = &testHooks{afterGroup: func(g int, _ error) {
+		checked = append(checked, g)
+		requireTracerBalanced(t, tracer, fmt.Sprintf("after group %d", g))
+	}}
+	tracer = makeEvalTracer(s.ledger.start, groups, request)
 	evaluator, err := s.ledger.StartEvaluator(hdr, 3, 0, tracer)
 	require.NoError(t, err)
 
-	for g := range groups {
-		_, _, err := s.runGroups(hdr, tracer, evaluator, []int{g}, false)
-		require.NoError(t, err)
-		require.Equal(t, g, tracer.groupIdx)
-		requireTracerBalanced(t, tracer, fmt.Sprintf("after group %d", g))
-	}
+	_, _, err = s.runGroups(hdr, tracer, evaluator)
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 1, 2}, checked)
+	requireTracerBalanced(t, tracer, "after the last group")
 	require.Contains(t, tracer.result.TxnGroups[0].FailureMessage, "overspend")
 	require.Empty(t, tracer.result.TxnGroups[1].FailureMessage)
 	require.NotEmpty(t, tracer.result.TxnGroups[1].Txns[0].Trace.ApprovalProgramTrace)

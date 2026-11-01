@@ -67,10 +67,8 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 		DeveloperApi:     cfg.EnableDeveloperAPI,
 		TimeLimitSeconds: timeLimitSeconds(requestTimeLimit(cfg)),
 		Simulate: model.SimulateLimits{
-			MaxTxnGroups:            uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
-			MaxRounds:               uint64(effectiveMaxSimulateRounds(cfg.MaxAPISimulateRounds)),
-			MaxExtraOpcodeBudget:    uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
-			ResourceLimitMultiplier: uint64(simulation.EffectiveResourceLimitMultiplier(limits.ResourceLimitMultiplier)),
+			MaxTxnGroups:         uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
+			MaxExtraOpcodeBudget: uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
 		},
 		Query: query,
 	}

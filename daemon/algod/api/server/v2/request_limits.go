@@ -186,7 +186,7 @@ func answerAdmission(ctx echo.Context, err error, log logging.Logger) error {
 	return internalError(ctx, err, err.Error(), log)
 }
 
-// simulateOnce simulates a request without rounds in a slot of the node's simulate limiter, under
+// simulateOnce simulates a request in a slot of the node's simulate limiter, under
 // requestContext. answered reports that it already answered the request (busy, client gone or time
 // limit), with err the handler's return value; otherwise err is the simulation's error.
 func (v2 *Handlers) simulateOnce(ctx echo.Context, request simulation.Request) (result simulation.Result, answered bool, err error) {

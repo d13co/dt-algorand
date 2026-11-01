@@ -89,7 +89,7 @@ func TestShortProtocolNames(t *testing.T) {
 	t.Parallel()
 
 	require.Contains(t, slices.Collect(maps.Values(shortProtocolNames)), protocol.ConsensusCurrentVersion,
-		"add the current protocol to shortProtocolNames, and to the docs of protocol in algod.oas2.json, goal clerk simulate and ledger/timetravel/README.md")
+		"add the current protocol to shortProtocolNames, and to the docs of protocol in algod.oas2.json and ledger/timetravel/README.md")
 	for name, v := range shortProtocolNames {
 		_, ok := config.Consensus[v]
 		require.True(t, ok, name)

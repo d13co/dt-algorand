@@ -72,7 +72,7 @@ func TestCapabilitiesJSON(t *testing.T) {
 
 	require.JSONEq(t, `{
 		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
-		"simulate": {"max-txn-groups": 16, "max-rounds": 16, "max-extra-opcode-budget": 320000, "resource-limit-multiplier": 1},
+		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000},
 		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16}
 	}`, string(capabilitiesJSON(t, capabilitiesRouter(t, config.GetDefaultLocal()))))
 }
@@ -83,7 +83,7 @@ func TestCapabilities(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxRounds: 16, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1}
+	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
 	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16}
 	for _, tc := range []struct {
 		name      string
@@ -108,39 +108,40 @@ func TestCapabilities(t *testing.T) {
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
-			c.MaxAPISimulateRounds = 0
 			c.MaxAPISimulateExtraOpcodeBudget = 0
-			c.SimulateResourceLimitMultiplier = 0
 			c.RestWriteTimeoutSeconds = 0
 		}, model.CapabilitiesResponse{
-			Simulate: model.SimulateLimits{MaxTxnGroups: 1, MaxRounds: 0, MaxExtraOpcodeBudget: 320_000, ResourceLimitMultiplier: 1},
+			Simulate: model.SimulateLimits{MaxTxnGroups: 1, MaxExtraOpcodeBudget: 320_000},
 			Query:    defaultQuery,
 		}},
 		{"above the ceilings", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 1_000_000
-			c.MaxAPISimulateRounds = 1_000_000
 			c.MaxAPISimulateExtraOpcodeBudget = 1 << 40
-			c.SimulateResourceLimitMultiplier = 1_000_000
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108,
 			Simulate: model.SimulateLimits{
-				MaxTxnGroups: simulation.MaxSimulateGroups, MaxRounds: simulation.MaxSimulateRounds,
-				MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling, ResourceLimitMultiplier: simulation.MaxResourceLimitMultiplier,
+				MaxTxnGroups:         simulation.MaxSimulateGroups,
+				MaxExtraOpcodeBudget: simulation.MaxExtraOpcodeBudgetCeiling,
 			},
 			Query: defaultQuery,
 		}},
 		{"set values and features", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 3
-			c.MaxAPISimulateRounds = 5
 			c.MaxAPISimulateExtraOpcodeBudget = 1_000
-			c.SimulateResourceLimitMultiplier = 8
 			c.EnableTimeTravel = true
 			c.EnableDeveloperAPI = true
 			c.RestWriteTimeoutSeconds = 65
 		}, model.CapabilitiesResponse{
 			TimeTravel: true, DeveloperApi: true, TimeLimitSeconds: 58,
-			Simulate: model.SimulateLimits{MaxTxnGroups: 3, MaxRounds: 5, MaxExtraOpcodeBudget: 1_000, ResourceLimitMultiplier: 8},
+			Simulate: model.SimulateLimits{MaxTxnGroups: 3, MaxExtraOpcodeBudget: 1_000},
 			Query:    defaultQuery,
+		}},
+		{"deprecated settings", func(c *config.Local) {
+			c.MaxAPISimulateRounds = 5
+			c.SimulateRoundsParallelism = 8
+			c.SimulateResourceLimitMultiplier = 8
+		}, model.CapabilitiesResponse{
+			TimeLimitSeconds: 108, Simulate: defaultSimulate, Query: defaultQuery,
 		}},
 		{"short write timeout", func(c *config.Local) {
 			c.RestWriteTimeoutSeconds = 1
@@ -161,7 +162,7 @@ func TestCapabilities(t *testing.T) {
 // the simulate limits it reports.
 func simulateLimitsNode(t *testing.T, env simulationtesting.Environment, configure func(*config.Local)) (http.Handler, model.SimulateLimits) {
 	t.Helper()
-	h := newRoundsRouter(t, newRoundsNode(t, env, configure))
+	h := newSimRouter(t, newSimNode(t, env, configure))
 	return h, getCapabilities(t, h).Simulate
 }
 
@@ -198,7 +199,6 @@ func TestSimulateLimitsEnforced(t *testing.T) {
 	// The subtests run after this function returns.
 	t.Cleanup(env.Close)
 	sender := env.Accounts[0]
-	latest := env.Ledger.Latest()
 
 	pay := func(note uint64) *txntest.Txn {
 		txn := env.TxnInfo.NewTxn(txntest.Txn{
@@ -243,33 +243,12 @@ func TestSimulateLimitsEnforced(t *testing.T) {
 		}
 	})
 
-	t.Run("rounds", func(t *testing.T) {
-		t.Parallel()
-		withRounds := func(n uint64) v2.PreEncodedSimulateRequest {
-			request := groups(1)
-			// Duplicates count against the limit.
-			for range n {
-				request.Rounds = append(request.Rounds, latest)
-			}
-			return request
-		}
-		for _, m := range []uint64{0, 1, 16, 1_000} {
-			h, limits := simulateLimitsNode(t, env, func(c *config.Local) { c.MaxAPISimulateRounds = m })
-			if limits.MaxRounds == 0 {
-				requireRejected(t, h, withRounds(1), "rounds is disabled")
-				continue
-			}
-			response := requireSimulated(t, h, withRounds(limits.MaxRounds))
-			require.Len(t, *response.RoundResults, int(limits.MaxRounds))
-			requireRejected(t, h, withRounds(limits.MaxRounds+1), "too many rounds")
-		}
-	})
-
-	t.Run("resource limit multiplier", func(t *testing.T) {
+	t.Run("unnamed resources", func(t *testing.T) {
 		t.Parallel()
 		proto := env.TxnInfo.CurrentProtocolParams()
 		// In a full group, an app call that lists no resources may reach MaxAppTotalTxnReferences
-		// unnamed accounts times the multiplier: its account limit is no lower.
+		// unnamed accounts: its account limit is no lower. SimulateResourceLimitMultiplier no
+		// longer raises it.
 		require.LessOrEqual(t, proto.MaxAppTotalTxnReferences, proto.MaxAppTxnAccounts+proto.MaxAppTxnForeignApps)
 		// accounts returns a full group whose app call reads the balance of n accounts that no
 		// transaction names, with the most extra budget the default config allows.
@@ -323,8 +302,8 @@ int 1`,
 			return request
 		}
 		for _, m := range []uint64{0, 1, 3, 1 << 20} {
-			h, limits := simulateLimitsNode(t, env, func(c *config.Local) { c.SimulateResourceLimitMultiplier = m })
-			n := int(limits.ResourceLimitMultiplier) * proto.MaxAppTotalTxnReferences
+			h, _ := simulateLimitsNode(t, env, func(c *config.Local) { c.SimulateResourceLimitMultiplier = m })
+			n := proto.MaxAppTotalTxnReferences
 
 			group := requireSimulated(t, h, accounts(n)).TxnGroups[0]
 			require.Nil(t, group.FailureMessage, "multiplier %d: %v", m, failure(group))

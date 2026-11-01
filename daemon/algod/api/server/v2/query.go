@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"unsafe"
 
 	"github.com/labstack/echo/v4"
@@ -33,6 +34,7 @@ import (
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/protocol"
+	"github.com/algorand/go-algorand/util"
 )
 
 // PreEncodedQuerySchema mirrors model.ApplicationStateSchema
@@ -271,4 +273,23 @@ func convertQueryResult(result simulation.QueryResult) PreEncodedQueryResponse {
 		response.Rounds[i] = out
 	}
 	return response
+}
+
+// convertProtocolOverride converts how a query's protocol applied to a round.
+func convertProtocolOverride(po *simulation.ProtocolOverride) *model.SimulateProtocolOverride {
+	if po == nil {
+		return nil
+	}
+	notes := util.Map(po.Notes, func(n simulation.ProtocolNote) model.SimulateProtocolNote {
+		hits := util.Map(n.Hits, func(h simulation.NoteHit) model.SimulateProtocolNoteHit {
+			return model.SimulateProtocolNoteHit{Group: h.Group, Path: slices.Clone[[]int, int](h.Path)}
+		})
+		return model.SimulateProtocolNote{Code: n.Code, Message: n.Message, Hits: sliceOrNil(hits)}
+	})
+	return &model.SimulateProtocolOverride{
+		From:    string(po.From),
+		To:      string(po.To),
+		Applied: po.Applied,
+		Notes:   sliceOrNil(notes),
+	}
 }

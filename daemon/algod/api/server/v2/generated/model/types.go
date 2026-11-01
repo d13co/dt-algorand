@@ -1168,7 +1168,7 @@ type QueryRequest struct {
 	// Program The approval program of the app each call creates, at the id the next block would give it. Extra program pages follow from its length.
 	Program *[]byte `json:"program,omitempty"`
 
-	// Protocol The protocol the round after each queried one runs, as in simulate: latest (the default), a consensus version or vNN name of a later protocol, or round for the protocol the chain really ran. future needs the developer API.
+	// Protocol The protocol the round after each queried one runs, as if an upgrade to it took effect right after the queried round: its programs, limits and other parameters apply, to programs deployed earlier too. latest (the default) is the protocol of the block after the node's latest one (the latest block's, or the one an upgrade switches to right after it). A consensus version string or a short name for a mainline one (v24 to v43) must be a later protocol of the chain than the one the round really ran, or future (vFuture, only with EnableDeveloperAPI). round runs the protocol the chain really ran. Data the chain never recorded under the old protocol (block proposers and fees collected before incentives, SHA-512 block hashes, app versions, ...) reads as it would right after a real upgrade, usually zero; the round's protocol in the response says where.
 	Protocol *string `json:"protocol,omitempty"`
 
 	// Rounds The rounds to query, at most max-rounds entries, duplicates included; 0 is the latest round. Defaults to the latest round. A round after the latest one is a 400.
@@ -1186,7 +1186,7 @@ type QueryRoundResult struct {
 	// Error Why the round could not be queried: outside the history, a protocol it can't run under, or a failure of the node to read it while the calls ran. There are no calls then.
 	Error *string `json:"error,omitempty"`
 
-	// Protocol How the request's protocol applied to the simulated round. Non-standard fork feature.
+	// Protocol How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.
 	Protocol *SimulateProtocolOverride `json:"protocol,omitempty"`
 
 	// Round The queried round: the calls run in the round after it, on the state it left.
@@ -1204,7 +1204,7 @@ type ScratchChange struct {
 
 // SimulateInitialStates Initial states of resources that were accessed during simulation.
 type SimulateInitialStates struct {
-	// AppInitialStates The initial states of accessed application before simulation. The order of this array is arbitrary. With several transaction groups, these are the states before the first group, recorded the first time any group accessed them. Apps created during the simulation are left out; with parallel-groups, several groups may create the same app ID.
+	// AppInitialStates The initial states of accessed application before simulation. The order of this array is arbitrary. With several transaction groups, these are the states before the first group, recorded the first time any group accessed them. Apps created during the simulation are left out.
 	AppInitialStates *[]ApplicationInitialStates `json:"app-initial-states,omitempty"`
 }
 
@@ -1213,43 +1213,37 @@ type SimulateLimits struct {
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
 
-	// MaxRounds The most entries a request may list in rounds, duplicates included. 0 means rounds is disabled (node config MaxAPISimulateRounds).
-	MaxRounds uint64 `json:"max-rounds"`
-
 	// MaxTxnGroups The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).
 	MaxTxnGroups uint64 `json:"max-txn-groups"`
-
-	// ResourceLimitMultiplier The factor applied to the consensus limits on unnamed resources with allow-unnamed-resources: each app call's account, asset, app, box and total reference limits, those of the empty slots of a group shorter than the maximum, the limit on holdings and local states, and the box I/O budget the box references bring. 1 means the consensus limits. Above 1, the reported unnamed-resources-accessed may not fit in a group that can be submitted (node config SimulateResourceLimitMultiplier).
-	ResourceLimitMultiplier uint64 `json:"resource-limit-multiplier"`
 }
 
-// SimulateProtocolNote A note about simulating under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
+// SimulateProtocolNote A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
 type SimulateProtocolNote struct {
 	Code string `json:"code"`
 
-	// Hits The transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.
+	// Hits The calls and inner transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.
 	Hits    *[]SimulateProtocolNoteHit `json:"hits,omitempty"`
 	Message string                     `json:"message"`
 }
 
-// SimulateProtocolNoteHit A transaction that hit a protocol note. Non-standard fork feature.
+// SimulateProtocolNoteHit A call or inner transaction that hit a protocol note. Non-standard fork feature.
 type SimulateProtocolNoteHit struct {
-	// Group The 0-based index of the transaction group in the request.
+	// Group The 0-based index of the call in the request.
 	Group int `json:"group"`
 
-	// Path The path of the transaction in its group, as in failed-at. A logic signature's hit has the path of its top-level transaction.
+	// Path The path of the transaction in the call's group, as in simulate's failed-at: [0] for the call, [0, i] for its inner transaction i, and so on.
 	Path []int `json:"path"`
 }
 
-// SimulateProtocolOverride How the request's protocol applied to the simulated round. Non-standard fork feature.
+// SimulateProtocolOverride How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.
 type SimulateProtocolOverride struct {
-	// Applied False when from is already to: the round was simulated as it is.
+	// Applied False when from is already to: the round was queried as it is.
 	Applied bool `json:"applied"`
 
-	// From The protocol the round after the simulated one really ran.
+	// From The protocol the round after the queried one really ran.
 	From string `json:"from"`
 
-	// Notes Where the simulation under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.
+	// Notes Where running under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.
 	Notes *[]SimulateProtocolNote `json:"notes,omitempty"`
 
 	// To The requested protocol, with aliases resolved.
@@ -1276,25 +1270,10 @@ type SimulateRequest struct {
 	// FixSigners If true, signers for transactions that are missing signatures will be fixed during evaluation.
 	FixSigners *bool `json:"fix-signers,omitempty"`
 
-	// ParallelGroups If true, every transaction group is simulated alone against the state at the start round, concurrently, instead of as consecutive groups of one block. See txn-groups. Non-standard fork feature.
-	ParallelGroups *bool `json:"parallel-groups,omitempty"`
-
-	// Protocol If provided, the simulated round runs this consensus protocol, as if an upgrade to it took effect right after the round the simulation starts from: its programs, limits, fees and other parameters apply, to programs deployed earlier too. Accepts a consensus version string, a short name for a mainline one (v24 to v43), or latest for the protocol of the block after the node's latest one (the latest block's, or the one an upgrade switches to right after it). It must be a later protocol of the chain than the one the simulated round really ran, or future (vFuture, only with EnableDeveloperAPI). Data the chain never recorded under the old protocol (block proposers and fees collected before incentives, SHA-512 block hashes, app versions, ...) reads as it would right after a real upgrade, usually zero; protocol-override in the response says where. With rounds, it applies to every round, and each round-results entry has its own protocol-override instead of the top-level one. Non-standard fork feature.
-	Protocol *string `json:"protocol,omitempty"`
-
-	// RewriteValidityWindow If true, at every round each top-level transaction's window is moved to the simulated block, keeping its width: first-valid becomes the round after the start round and last-valid first-valid plus the original last-valid minus first-valid. Valid group IDs are recomputed. Transaction IDs change, so the signatures over every changed transaction (sig, msig, the PQ signature bytes) are dropped and allow-empty-signatures is required; logic signatures are kept. Transactions that differ only by their window become identical, so a later one is a duplicate: give them distinct notes. All the normal checks then apply to the rewritten transactions, which the results echo: clients should not match results by transaction ID, and the echoed transactions cannot be submitted as they are. Heartbeat transactions keep their window, and their signature unless their group ID changes. With fix-signers, the signer of every transaction whose signature was dropped is fixed from the ledger. Reading a block after the start round fails. Only with rounds, and not with skip-validity-window. Non-standard fork feature.
-	RewriteValidityWindow *bool `json:"rewrite-validity-window,omitempty"`
-
-	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round. A non-zero round cannot be combined with rounds; 0 is the same as omitting it.
+	// Round If provided, specifies the round preceding the simulation. State changes through this round will be used to run this simulation. Usually only the 4 most recent rounds will be available (controlled by the node config value MaxAcctLookback), or every round since genesis with EnableTimeTravel. If not specified, defaults to the latest available round.
 	Round *basics.Round `json:"round,omitempty"`
 
-	// Rounds If provided and not empty, the request is simulated once per listed round, each entry meaning what round means, and the results are returned in round-results, one per entry in this order, while the top-level last-round is 0 and txn-groups is empty. A 0 entry is resolved once, to the node's last round when the request starts, so it can differ from the latest round a single-round request (round 0 or no round) uses, which is resolved when its own simulation starts. A round listed several times is simulated once. The node config value MaxAPISimulateRounds limits how many entries a request may list, duplicates included (0 disables rounds; at most 256). Problems with the request as a whole fail the whole request, while a round that cannot be simulated (not available, or a group that is invalid under that round's protocol) is reported in that entry's error, where a single-round request would fail. Non-standard fork feature.
-	Rounds *[]basics.Round `json:"rounds,omitempty"`
-
-	// SkipValidityWindow If true, transactions are evaluated as sent at every round, even outside their first-valid..last-valid window: the round-range check and the check for a transaction ID confirmed earlier are skipped. Leases (confirmed and earlier in the block), duplicates in the block, the genesis ID and hash, well-formedness (last-valid at least first-valid, a window of at most MaxTxnLife rounds) and fees are still checked. Programs see the original first-valid and last-valid, so block, txn FirstValidTime and inner transactions stay tied to the original window, and reading a block after the start round fails. A transaction confirmed with a lease still fails on its own lease while that lease is live. Leases confirmed before the node's last MaxTxnLife rounds are not detected. Only with rounds, and not with rewrite-validity-window. Non-standard fork feature.
-	SkipValidityWindow *bool `json:"skip-validity-window,omitempty"`
-
-	// TxnGroups The transaction groups to simulate. The node config value MaxAPISimulateGroups limits how many; more than one group is a non-standard fork feature. By default the groups run in order as consecutive groups of one simulated block: each group sees the effects of the groups before it, a transaction or lease used by an earlier group is a duplicate, and the groups share the block's byte limit, so a group that does not fit fails while a smaller later group may still fit. A group that fails is rolled back and the later groups still run, except after a failed post-evaluation check (placeholder PQ signatures with fix-signers), which runs once the group is applied, or after a group left the evaluator state corrupted: every later group is then reported as not simulated, with the index of the group that stopped them. Group indexes in these messages and failed-at paths are 0-based. A request with a StateProof transaction is rejected as a whole. With parallel-groups, every group is simulated alone against the state at the start round: groups do not see each other's effects, duplicate transactions and leases are not detected across groups, and several groups may create the same app or asset ID.
+	// TxnGroups The transaction groups to simulate. The node config value MaxAPISimulateGroups limits how many; more than one group is a non-standard fork feature. By default the groups run in order as consecutive groups of one simulated block: each group sees the effects of the groups before it, a transaction or lease used by an earlier group is a duplicate, and the groups share the block's byte limit, so a group that does not fit fails while a smaller later group may still fit. A group that fails is rolled back and the later groups still run, except after a failed post-evaluation check (placeholder PQ signatures with fix-signers), which runs once the group is applied, or after a group left the evaluator state corrupted: every later group is then reported as not simulated, with the index of the group that stopped them. Group indexes in these messages and failed-at paths are 0-based. A request with a StateProof transaction is rejected as a whole.
 	TxnGroups []SimulateRequestTransactionGroup `json:"txn-groups"`
 }
 
@@ -1302,24 +1281,6 @@ type SimulateRequest struct {
 type SimulateRequestTransactionGroup struct {
 	// Txns An atomic transaction group.
 	Txns []json.RawMessage `json:"txns"`
-}
-
-// SimulateRoundResult Simulation result for one of the rounds of a request that listed rounds. Non-standard fork feature.
-type SimulateRoundResult struct {
-	// Error If present, the request could not be simulated at this round, and why.
-	Error *string `json:"error,omitempty"`
-
-	// InitialStates Initial states of resources that were accessed during simulation.
-	InitialStates *SimulateInitialStates `json:"initial-states,omitempty"`
-
-	// LastRound The round immediately preceding this simulation: the requested round, with 0 resolved to the latest round.
-	LastRound basics.Round `json:"last-round"`
-
-	// ProtocolOverride How the request's protocol applied to the simulated round. Non-standard fork feature.
-	ProtocolOverride *SimulateProtocolOverride `json:"protocol-override,omitempty"`
-
-	// TxnGroups A result object for each transaction group that was simulated at this round. Absent when error is present.
-	TxnGroups *[]SimulateTransactionGroupResult `json:"txn-groups,omitempty"`
 }
 
 // SimulateTraceConfig An object that configures simulation execution trace.
@@ -1431,15 +1392,6 @@ type SimulationEvalOverrides struct {
 
 	// MaxLogSize The maximum byte number to log during simulation
 	MaxLogSize *int `json:"max-log-size,omitempty"`
-
-	// ParallelGroups If true, every transaction group was simulated alone against the state at the start round, instead of as consecutive groups of one block.
-	ParallelGroups *bool `json:"parallel-groups,omitempty"`
-
-	// RewriteValidityWindow If true, transactions' validity windows were moved to the simulated block, and their signatures over the transaction dropped.
-	RewriteValidityWindow *bool `json:"rewrite-validity-window,omitempty"`
-
-	// SkipValidityWindow If true, transactions were evaluated outside their validity window, as sent.
-	SkipValidityWindow *bool `json:"skip-validity-window,omitempty"`
 }
 
 // SimulationOpcodeTraceUnit The set of trace information and effect from evaluating a single opcode.
@@ -1814,7 +1766,7 @@ type BoxesVersionsResponse struct {
 
 // CapabilitiesResponse The fork features this node has turned on, and the limits it places on simulate and query requests.
 type CapabilitiesResponse struct {
-	// DeveloperApi If true, the node serves POST /v2/teal/compile and /v2/teal/disassemble (and POST /v2/transactions/async when EnableExperimentalAPI is also set), and requests may enable simulate's exec-trace-config and set the protocol future in simulate and query. A simulate request with exec-trace-config enabled may not list rounds, and may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
+	// DeveloperApi If true, the node serves POST /v2/teal/compile and /v2/teal/disassemble (and POST /v2/transactions/async when EnableExperimentalAPI is also set), and requests may enable simulate's exec-trace-config and set the protocol future in query. A simulate request with exec-trace-config enabled may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
 
 	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
@@ -1823,10 +1775,10 @@ type CapabilitiesResponse struct {
 	// Simulate The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
 	Simulate SimulateLimits `json:"simulate"`
 
-	// TimeLimitSeconds The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504, except a simulate request with rounds, whose rounds not finished by then get an error. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
+	// TimeLimitSeconds The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
 	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
-	// TimeTravel If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round and rounds, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions and holders endpoints, are served. Otherwise the round parameter is rejected (400), those endpoints answer 404, and simulate's round and rounds and query's rounds reach only the last MaxAcctLookback rounds (node config EnableTimeTravel).
+	// TimeTravel If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions and holders endpoints, are served. Otherwise the round parameter is rejected (400), those endpoints answer 404, and simulate's round and query's rounds reach only the last MaxAcctLookback rounds (node config EnableTimeTravel).
 	TimeTravel bool `json:"time-travel"`
 }
 
@@ -2017,16 +1969,10 @@ type SimulateResponse struct {
 	// InitialStates Initial states of resources that were accessed during simulation.
 	InitialStates *SimulateInitialStates `json:"initial-states,omitempty"`
 
-	// LastRound The round immediately preceding this simulation. State changes through this round were used to run this simulation. 0 when round-results is present.
+	// LastRound The round immediately preceding this simulation. State changes through this round were used to run this simulation.
 	LastRound basics.Round `json:"last-round"`
 
-	// ProtocolOverride How the request's protocol applied to the simulated round. Non-standard fork feature.
-	ProtocolOverride *SimulateProtocolOverride `json:"protocol-override,omitempty"`
-
-	// RoundResults Present when the request listed rounds: one result per entry of rounds, in the same order. version, eval-overrides and exec-trace-config come from the first entry that was simulated, in request order, or from the request when no round could be simulated. Non-standard fork feature.
-	RoundResults *[]SimulateRoundResult `json:"round-results,omitempty"`
-
-	// TxnGroups A result object for each transaction group that was simulated. Empty when round-results is present.
+	// TxnGroups A result object for each transaction group that was simulated.
 	TxnGroups []SimulateTransactionGroupResult `json:"txn-groups"`
 
 	// Version The version of this response object.

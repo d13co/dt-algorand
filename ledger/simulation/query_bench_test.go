@@ -47,8 +47,8 @@ func balanceGhost(accounts []basics.Address) string {
 }
 
 // BenchmarkQueryVsSimulate runs 16 balanceGhost calls per op: through Simulate, as clients do (an
-// unsigned app create from the fee sink per call, with unnamed resources, more logging and extra
-// budget), and through Query.
+// unsigned app create from the fee sink per call, each in a group of its own, with unnamed
+// resources, more logging and extra budget), and through Query.
 func BenchmarkQueryVsSimulate(b *testing.B) {
 	env := simulationtesting.PrepareSimulatorTest(b)
 	defer env.Close()
@@ -75,34 +75,18 @@ func BenchmarkQueryVsSimulate(b *testing.B) {
 			ApplicationArgs:   [][]byte{{byte(i)}},
 		})
 	}
-	simRequest := func(parallel bool) simulation.Request {
-		r := simulation.Request{
-			AllowEmptySignatures:  true,
-			AllowUnnamedResources: true,
-			AllowMoreLogging:      true,
-			ExtraOpcodeBudget:     20_000 * calls,
-			ParallelGroups:        parallel,
-			MaxGroups:             calls,
-		}
-		if parallel {
-			for i := range calls {
-				t := txn(i)
-				r.TxnGroups = append(r.TxnGroups, []transactions.SignedTxn{t.SignedTxn()})
-			}
-		} else {
-			txns := make([]*txntest.Txn, calls)
-			for i := range txns {
-				t := txn(i)
-				txns[i] = &t
-			}
-			txntest.Group(txns...)
-			group := make([]transactions.SignedTxn, calls)
-			for i, t := range txns {
-				group[i] = t.SignedTxn()
-			}
-			r.TxnGroups = [][]transactions.SignedTxn{group}
-		}
-		return r
+	// One call per group: the unnamed resources of a group stay within the consensus limits, which
+	// 127 accounts per call fit only in a group of one.
+	simRequest := simulation.Request{
+		AllowEmptySignatures:  true,
+		AllowUnnamedResources: true,
+		AllowMoreLogging:      true,
+		ExtraOpcodeBudget:     20_000,
+		MaxGroups:             calls,
+	}
+	for i := range calls {
+		t := txn(i)
+		simRequest.TxnGroups = append(simRequest.TxnGroups, []transactions.SignedTxn{t.SignedTxn()})
 	}
 	queryRequest := func(parallelism int) simulation.QueryRequest {
 		r := simulation.QueryRequest{
@@ -117,7 +101,7 @@ func BenchmarkQueryVsSimulate(b *testing.B) {
 	}
 
 	// Both return the same logs.
-	simResult, err := s.Simulate(simRequest(true))
+	simResult, err := s.Simulate(simRequest)
 	require.NoError(b, err)
 	queryResult, err := s.Query(queryRequest(1))
 	require.NoError(b, err)
@@ -127,22 +111,15 @@ func BenchmarkQueryVsSimulate(b *testing.B) {
 		require.Equal(b, simResult.TxnGroups[i].Txns[0].Txn.ApplyData.EvalDelta.Logs, queryResult.Rounds[0].Calls[i].Logs)
 	}
 
-	for _, parallel := range []bool{false, true} {
-		name := "simulate/one-group"
-		if parallel {
-			name = "simulate/parallel-groups"
-		}
-		request := simRequest(parallel)
-		b.Run(name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				result, err := s.Simulate(request)
-				if err != nil || result.TxnGroups[len(result.TxnGroups)-1].FailureMessage != "" {
-					b.Fatal(err, result.TxnGroups[0].FailureMessage)
-				}
+	b.Run("simulate/groups", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			result, err := s.Simulate(simRequest)
+			if err != nil || result.TxnGroups[len(result.TxnGroups)-1].FailureMessage != "" {
+				b.Fatal(err, result.TxnGroups[0].FailureMessage)
 			}
-		})
-	}
+		}
+	})
 	for _, parallelism := range []int{1, 4} {
 		request := queryRequest(parallelism)
 		b.Run(fmt.Sprintf("query/parallelism-%d", parallelism), func(b *testing.B) {
