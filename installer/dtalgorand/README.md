@@ -146,6 +146,20 @@ brew services start dtalgorand            # macOS
 
 This takes weeks on mainnet. The node checks certificates as any node does, and keeps the holders index from round 0. A Mac stops the node while it sleeps (see [macOS notes](#macos-notes)), so a laptop is a poor fit for this path.
 
+Optionally, once the node has caught up (and after an import from an archival node too), stop it and remove the no-op records the node didn't catch as it wrote: on mainnet this saved 4% (68.4 → 65.6 GiB) and took about 1.5 hours on a small VPS, plus the box index rebuild. See [Removing no-op records](../../tools/ttimport/README.md#removing-no-op-records).
+
+```sh
+# Linux (as dtalgorand, so the files it writes stay the node's)
+sudo systemctl stop dtalgorand
+sudo -u dtalgorand ttimport -dedup -d /var/lib/dtalgorand
+sudo systemctl start dtalgorand
+
+# macOS
+brew services stop dtalgorand
+ttimport -dedup -d $(brew --prefix)/var/dtalgorand
+brew services start dtalgorand
+```
+
 ### Checking the node
 
 ```sh
