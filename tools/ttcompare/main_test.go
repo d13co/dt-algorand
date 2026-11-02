@@ -233,6 +233,9 @@ func TestFullCorrupt(t *testing.T) {
 		"round key": func(db *pebble.DB) { // sorts between rounds 50 and 51
 			set(t, db, append(binary.BigEndian.AppendUint64([]byte{pfxHeader}, 50), 0), "")
 		},
+		"header record": func(db *pebble.DB) { set(t, db, binary.BigEndian.AppendUint64([]byte{pfxHeader}, 50), "short") },
+		// a uvarint cut short, in a round that has no expired stake in B
+		"expired stake": func(db *pebble.DB) { set(t, db, binary.BigEndian.AppendUint64([]byte{pfxExpired}, 50), "\x80") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := buildStore(t, timetravel.Options{}, 100, nil)

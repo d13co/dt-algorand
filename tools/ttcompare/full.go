@@ -80,14 +80,11 @@ func (c *comparer) fullRounds() error {
 	type check struct {
 		pfx  byte
 		name string
+		ok   func(v []byte) bool // whether record v is well formed
 		cmp  func(r uint64, a, b []byte)
 	}
 	checks := []check{
-		{pfxHeader, "header record", func(r uint64, a, b []byte) {
-			if len(a) < timetravel.DigestLen || len(b) < timetravel.DigestLen {
-				c.diff("round %d: short header record (A %d bytes, B %d bytes)", r, len(a), len(b))
-				return
-			}
+		{pfxHeader, "header record", func(v []byte) bool { return len(v) >= timetravel.DigestLen }, func(r uint64, a, b []byte) {
 			if !bytes.Equal(a[:timetravel.DigestLen], b[:timetravel.DigestLen]) {
 				c.diff("round %d: change digests differ (A: %x, B: %x)", r, a[:timetravel.DigestLen], b[:timetravel.DigestLen])
 			}
@@ -95,7 +92,7 @@ func (c *comparer) fullRounds() error {
 				c.diff("round %d: headers differ (A: %d bytes, B: %d bytes)", r, len(a)-timetravel.DigestLen, len(b)-timetravel.DigestLen)
 			}
 		}},
-		{pfxExpired, "expired stake", func(r uint64, a, b []byte) {
+		{pfxExpired, "expired stake", func(v []byte) bool { _, n := binary.Uvarint(v); return n > 0 }, func(r uint64, a, b []byte) {
 			if !bytes.Equal(a, b) {
 				ea, _ := binary.Uvarint(a)
 				eb, _ := binary.Uvarint(b)
@@ -104,7 +101,7 @@ func (c *comparer) fullRounds() error {
 		}},
 	}
 	for _, ck := range checks {
-		if err := c.compareRoundKeyspace(ck.pfx, ck.name, ck.cmp); err != nil {
+		if err := c.compareRoundKeyspace(ck.pfx, ck.name, ck.ok, ck.cmp); err != nil {
 			return err
 		}
 	}
@@ -112,8 +109,9 @@ func (c *comparer) fullRounds() error {
 }
 
 // compareRoundKeyspace merges the records of the per-round keyspace pfx of
-// both stores over [c.lo, c.hi], and compares those of the same round with cmp.
-func (c *comparer) compareRoundKeyspace(pfx byte, name string, cmp func(r uint64, a, b []byte)) error {
+// both stores over [c.lo, c.hi], and compares those of the same round with
+// cmp. It fails at the first record that ok rejects.
+func (c *comparer) compareRoundKeyspace(pfx byte, name string, ok func(v []byte) bool, cmp func(r uint64, a, b []byte)) error {
 	ia, err := c.roundRange(c.a, pfx)
 	if err != nil {
 		return err
@@ -124,7 +122,9 @@ func (c *comparer) compareRoundKeyspace(pfx byte, name string, cmp func(r uint64
 		return err
 	}
 	defer ib.Close()
+	round := func(it *pebble.Iterator) uint64 { return binary.BigEndian.Uint64(it.Key()[1:]) }
 	// valid is it.Valid(), failing on an iterator error or a malformed key
+	// or record
 	valid := func(it *pebble.Iterator) (bool, error) {
 		if !it.Valid() {
 			return false, it.Error()
@@ -132,9 +132,11 @@ func (c *comparer) compareRoundKeyspace(pfx byte, name string, cmp func(r uint64
 		if len(it.Key()) != 1+8 {
 			return false, fmt.Errorf("%w: bad %s key %x", timetravel.ErrCorrupt, name, it.Key())
 		}
+		if !ok(it.Value()) {
+			return false, fmt.Errorf("%w: bad %s for round %d: %x", timetravel.ErrCorrupt, name, round(it), it.Value())
+		}
 		return true, nil
 	}
-	round := func(it *pebble.Iterator) uint64 { return binary.BigEndian.Uint64(it.Key()[1:]) }
 	var missingA, missingB uint64
 	for {
 		okA, err := valid(ia)

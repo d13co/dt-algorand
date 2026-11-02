@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2/vfs"
@@ -97,7 +98,13 @@ func TestReadOnlyOpenOnReadOnlyFSLocked(t *testing.T) {
 	dir := rolockStore(t)
 	child := func() (string, error) {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestReadOnlyOpenChild$", "-test.count=1")
-		cmd.Env = append(os.Environ(), "TT_ROLOCK_DIR="+dir)
+		// without the partitioning: in another partition the child would skip
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "PARTITION_") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		cmd.Env = append(cmd.Env, "TT_ROLOCK_DIR="+dir)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
