@@ -980,7 +980,7 @@ func (t *txTail) checkDupPast(proto config.ConsensusParams, current, firstValid,
 	t.tailMu.RLock()
 	defer t.tailMu.RUnlock()
 
-	if err := t.checkLeasePastLocked(proto, current, firstValid, lastValid, txid, txl, false); err != nil {
+	if err := t.checkLeasePastLocked(proto, current, firstValid, lastValid, txid, txl); err != nil {
 		return err
 	}
 	if deltaR, ok := t.lastValid[lastValid][txid]; ok && lastValid-basics.Round(deltaR) < current {
@@ -989,37 +989,17 @@ func (t *txTail) checkDupPast(proto config.ConsensusParams, current, firstValid,
 	return nil
 }
 
-// CheckLeaseAt is CheckDupAt without the check for txid being confirmed
-// already, for simulate's skip-validity-window mode (non-standard fork
-// feature): there, a txn may be evaluated at a round long after its
-// LastValid, when the txtail no longer holds its txids. Unlike CheckDup, it
-// has no low watermark check, so such a lastValid is no error. The txn's
-// window may lie anywhere, so every lease still live at current is checked,
-// as FixTransactionLeases does, under every protocol. Leases are found as long
-// as the txtail holds their round: it keeps the MaxTxnLife rounds before
-// Latest(), so leases confirmed before those are missed.
-func (l *Ledger) CheckLeaseAt(currentProto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
-	return l.txTail.checkLeasePast(currentProto, current, firstValid, lastValid, txid, txl)
-}
-
-// checkLeasePast is checkLeasePastLocked under tailMu, for any window.
-func (t *txTail) checkLeasePast(proto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
-	t.tailMu.RLock()
-	defer t.tailMu.RUnlock()
-	return t.checkLeasePastLocked(proto, current, firstValid, lastValid, txid, txl, true)
-}
-
 // checkLeasePastLocked reports a LeaseInLedgerError if lease txl, confirmed
 // in a round before current, is still live at current. Before
-// FixTransactionLeases, only the rounds of the txn's window are checked,
-// unless anyWindow is set. The caller holds tailMu.RLock: taking it again
-// could deadlock behind a waiting writer.
-func (t *txTail) checkLeasePastLocked(proto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease, anyWindow bool) error {
+// FixTransactionLeases, only the rounds of the txn's window are checked. The
+// caller holds tailMu.RLock: taking it again could deadlock behind a waiting
+// writer.
+func (t *txTail) checkLeasePastLocked(proto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
 	if !proto.SupportTransactionLeases || txl.Lease == [32]byte{} {
 		return nil
 	}
 	firstChecked, lastChecked := firstValid, lastValid
-	if proto.FixTransactionLeases || anyWindow {
+	if proto.FixTransactionLeases {
 		firstChecked, lastChecked = current.SubSaturate(basics.Round(proto.MaxTxnLife)), current
 	}
 	for rnd := firstChecked; rnd <= lastChecked && rnd < current; rnd++ {

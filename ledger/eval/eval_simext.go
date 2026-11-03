@@ -16,34 +16,6 @@
 
 package eval
 
-import (
-	"github.com/algorand/go-algorand/data/transactions"
-)
-
-// Simulate's skip-validity-window mode (non-standard fork feature): txns are evaluated as sent,
-// even outside their FirstValid..LastValid window.
-
-// alive is BlockHeader.Alive for txn evaluation. With skipValidityWindow, it checks a copy of
-// header whose window is the block round, so only the genesis ID and hash checks apply.
-func (eval *BlockEvaluator) alive(header transactions.Header) error {
-	if eval.skipValidityWindow {
-		header.FirstValid = eval.block.Round()
-		header.LastValid = eval.block.Round()
-	}
-	return eval.block.Alive(header)
-}
-
-// txnForTail returns the txn that the block's state records as included: roundCowState.addTx
-// keeps its lease until its LastValid. With skipValidityWindow, a LastValid before the block
-// round would let a second txn with the same lease into the block, so the copy's LastValid is at
-// least the block round. addTx reads only Sender, Lease and LastValid.
-func (eval *BlockEvaluator) txnForTail(txn transactions.Transaction) transactions.Transaction {
-	if eval.skipValidityWindow {
-		txn.LastValid = max(txn.LastValid, eval.block.Round())
-	}
-	return txn
-}
-
 // Simulate at a past round (non-standard fork feature): only the consensus rules apply.
 
 // newBlockPolicies is the state's generate: whether the policies that apply only to new blocks

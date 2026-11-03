@@ -99,9 +99,6 @@ type ResultEvalOverrides struct {
 	MaxLogSize            *int
 	ExtraOpcodeBudget     int
 	FixSigners            bool
-	ParallelGroups        bool
-	SkipValidityWindow    bool
-	RewriteValidityWindow bool
 }
 
 // LogBytesLimit hardcode limit of how much bytes one can log per transaction during simulation (with AllowMoreLogging)
@@ -158,12 +155,10 @@ type Result struct {
 	TxnGroups     []TxnGroupResult // one result per request group, in request order
 	EvalOverrides ResultEvalOverrides
 	// Block is the simulated block holding the groups that succeeded. It is nil when no group
-	// succeeded, after a post-evaluation check failure, and with ParallelGroups.
+	// succeeded and after a post-evaluation check failure.
 	Block         *ledgercore.ValidatedBlock
 	TraceConfig   ExecTraceConfig
 	InitialStates *ResourcesInitialStates
-	// ProtocolOverride is set when the request asked for a protocol (Request.Protocol).
-	ProtocolOverride *ProtocolOverride
 }
 
 func summarizeTxnFeesPaid(txn transactions.SignedTxnWithAD) (feesPaid basics.MicroAlgos) {
@@ -259,9 +254,6 @@ func (r Request) EvalOverrides() ResultEvalOverrides {
 		ExtraOpcodeBudget:     r.ExtraOpcodeBudget,
 		AllowUnnamedResources: r.AllowUnnamedResources,
 		FixSigners:            r.FixSigners,
-		ParallelGroups:        r.ParallelGroups,
-		SkipValidityWindow:    r.SkipValidityWindow,
-		RewriteValidityWindow: r.RewriteValidityWindow,
 	}.AllowMoreLogging(r.AllowMoreLogging)
 }
 
@@ -272,7 +264,7 @@ func makeSimulationResult(lastRound basics.Round, request Request) Result {
 		groups[i] = makeTxnGroupResult(txgroup)
 	}
 
-	result := Result{
+	return Result{
 		Version:       ResultLatestVersion,
 		LastRound:     lastRound,
 		TxnGroups:     groups,
@@ -280,11 +272,6 @@ func makeSimulationResult(lastRound basics.Round, request Request) Result {
 		TraceConfig:   request.TraceConfig,
 		InitialStates: newResourcesInitialStates(request),
 	}
-	if request.protocolGaps != nil {
-		// Collects the notes transactions hit; Simulate completes it.
-		result.ProtocolOverride = &ProtocolOverride{}
-	}
-	return result
 }
 
 // ScratchChange represents a write operation into a scratch slot

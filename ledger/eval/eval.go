@@ -680,10 +680,6 @@ type BlockEvaluator struct {
 
 	maxTxnBytesPerBlock int
 
-	// skipValidityWindow drops the round-range part of the txn liveness check (simulate,
-	// eval_simext.go). Non-standard fork feature.
-	skipValidityWindow bool
-
 	// skipNewBlockPolicies keeps the state's generate off while generating (simulate at a past
 	// round, eval_simext.go). Non-standard fork feature.
 	skipNewBlockPolicies bool
@@ -708,11 +704,6 @@ type EvaluatorOptions struct {
 	Generate            bool
 	MaxTxnBytesPerBlock int
 	Tracer              logic.EvalTracer
-
-	// SkipValidityWindow evaluates txns outside their FirstValid..LastValid window: only the
-	// genesis part of the liveness check applies (eval_simext.go). For simulate only.
-	// Non-standard fork feature.
-	SkipValidityWindow bool
 
 	// SkipNewBlockPolicies, with Generate, drops the policies that apply only to new blocks
 	// (roundCowState.generate), so txns are judged by the consensus rules alone, as when their
@@ -771,7 +762,6 @@ func StartEvaluator(l LedgerForEvaluator, hdr bookkeeping.BlockHeader, evalOpts 
 		genesisHash:         l.GenesisHash(),
 		l:                   l,
 		maxTxnBytesPerBlock: evalOpts.MaxTxnBytesPerBlock,
-		skipValidityWindow:  evalOpts.SkipValidityWindow,
 		Tracer:              evalOpts.Tracer,
 	}
 	eval.skipNewBlockPolicies = evalOpts.SkipNewBlockPolicies
@@ -1309,7 +1299,7 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, evalParams *
 	txid := txn.ID()
 
 	if eval.validate {
-		err = eval.alive(txn.Txn.Header)
+		err = eval.block.Alive(txn.Txn.Header)
 		if err != nil {
 			return err
 		}
@@ -1387,7 +1377,7 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, evalParams *
 	}
 
 	// Remember this txn
-	cow.addTx(eval.txnForTail(txn.Txn), txid)
+	cow.addTx(txn.Txn, txid)
 
 	return nil
 }

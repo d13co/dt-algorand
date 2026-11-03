@@ -73,18 +73,6 @@ type ResourceTracker struct {
 	// unnamed-resource simulation after the initial read-budget check.
 	appReadBudget map[basics.AppIndex]uint64
 
-	// usedReadBytes is the read budget used so far: the sum of the ReadSize of every entry in
-	// Boxes and of every value in appReadBudget. It is kept up to date by setBox, deleteBox,
-	// setAppReadBudget and deleteAppReadBudget, so that checking the read budget does not
-	// re-sum every box each time a box is added, which made box tracking quadratic in the
-	// number of boxes (noticeable with a large Request.ResourceLimitMultiplier).
-	usedReadBytes uint64
-
-	// appAddrs holds the address of every app in Apps, so that hasAccount can tell whether an
-	// account is an app account of a tracked app without a loop over Apps. It is kept up to
-	// date by setApp and deleteApp.
-	appAddrs map[basics.Address]struct{}
-
 	// MaxTotalRefs is the largest number of new refs of any kind that could
 	// possibly be added tp the thing being tracked (txn or group) beyond what
 	// it began with.
@@ -101,28 +89,7 @@ type BoxStat struct {
 	NewApp   bool   // was the box accessed by an app created in this group?
 }
 
-// MaxResourceLimitMultiplier is the largest multiplier that simulation applies to its unnamed
-// resource limits (Request.ResourceLimitMultiplier). Larger requested values are clamped to it.
-// The opcode budget bounds the work a group can do; the multiplier bounds how many resources the
-// tracker records, and so the size of its maps and of the unnamed-resources-accessed part of the
-// response, which at this ceiling can still hold hundreds of thousands of entries.
-// Non-standard fork feature.
-const MaxResourceLimitMultiplier = 1024
-
-// EffectiveResourceLimitMultiplier returns the factor applied to the unnamed resource limits for
-// a requested multiplier m: values below 1 count as 1 (the consensus limits), and values above
-// MaxResourceLimitMultiplier count as MaxResourceLimitMultiplier.
-func EffectiveResourceLimitMultiplier(m uint64) int {
-	if m <= 1 {
-		return 1
-	}
-	return int(min(m, MaxResourceLimitMultiplier))
-}
-
-// makeTxnResourceTracker returns the resources that txn could reference beyond those it lists.
-// The consensus limits are multiplied by m (see EffectiveResourceLimitMultiplier) before the
-// listed references are subtracted.
-func makeTxnResourceTracker(txn *transactions.Transaction, proto *config.ConsensusParams, m int) ResourceTracker {
+func makeTxnResourceTracker(txn *transactions.Transaction, proto *config.ConsensusParams) ResourceTracker {
 	if txn.Type != protocol.ApplicationCallTx {
 		return ResourceTracker{}
 	}
@@ -130,20 +97,18 @@ func makeTxnResourceTracker(txn *transactions.Transaction, proto *config.Consens
 		// Use MaxAppTxnAccounts + MaxAppTxnForeignApps for the account limit because app references
 		// also make their accounts available, and since we can't know if an unknown account is an
 		// app account, we assume it is.
-		MaxAccounts:  m*(proto.MaxAppTxnAccounts+proto.MaxAppTxnForeignApps) - len(txn.Accounts) - len(txn.ForeignApps),
-		MaxAssets:    m*proto.MaxAppTxnForeignAssets - len(txn.ForeignAssets),
-		MaxApps:      m*proto.MaxAppTxnForeignApps - len(txn.ForeignApps),
-		MaxBoxes:     m*proto.MaxAppBoxReferences - len(txn.Boxes),
-		MaxTotalRefs: m*proto.MaxAppTotalTxnReferences - len(txn.Accounts) - len(txn.ForeignAssets) - len(txn.ForeignApps) - len(txn.Boxes),
+		MaxAccounts:  proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps - len(txn.Accounts) - len(txn.ForeignApps),
+		MaxAssets:    proto.MaxAppTxnForeignAssets - len(txn.ForeignAssets),
+		MaxApps:      proto.MaxAppTxnForeignApps - len(txn.ForeignApps),
+		MaxBoxes:     proto.MaxAppBoxReferences - len(txn.Boxes),
+		MaxTotalRefs: proto.MaxAppTotalTxnReferences - len(txn.Accounts) - len(txn.ForeignAssets) - len(txn.ForeignApps) - len(txn.Boxes),
 	}
 }
 
 // makeGlobalResourceTracker populates a tracker so that it knows what are the
 // bounds on how many new references of various types that could potentially be
-// allowed for the group. The consensus-derived limits are multiplied by m (see
-// EffectiveResourceLimitMultiplier); the group size is not, so unused group slots are not
-// multiplied.
-func makeGlobalResourceTracker(perTxnResources []ResourceTracker, nonAppCalls int, proto *config.ConsensusParams, m int) ResourceTracker {
+// allowed for the group.
+func makeGlobalResourceTracker(perTxnResources []ResourceTracker, nonAppCalls int, proto *config.ConsensusParams) ResourceTracker {
 	// Calculate the maximum number of cross-product resources that can be accessed by one app call
 	// under normal circumstances. This is calculated using the case of an app call with a full set
 	// of foreign apps. Including the app being called, there are (MaxAppTxnForeignApps + 1) apps,
@@ -159,14 +124,14 @@ func makeGlobalResourceTracker(perTxnResources []ResourceTracker, nonAppCalls in
 	maxCrossProductsPerAppCall := proto.MaxAppTxnForeignApps * (proto.MaxAppTxnForeignApps + 2)
 	unusedTxns := proto.MaxTxGroupSize - len(perTxnResources)
 	globalResources := ResourceTracker{
-		MaxCrossProductReferences: m * maxCrossProductsPerAppCall * (proto.MaxTxGroupSize - nonAppCalls),
+		MaxCrossProductReferences: maxCrossProductsPerAppCall * (proto.MaxTxGroupSize - nonAppCalls),
 		// If there are fewer than MaxTxGroupSize transactions, then we can make more resources
 		// available as if the remaining transactions were empty app calls.
-		MaxAccounts:  unusedTxns * m * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
-		MaxAssets:    unusedTxns * m * proto.MaxAppTxnForeignAssets,
-		MaxApps:      unusedTxns * m * proto.MaxAppTxnForeignApps,
-		MaxBoxes:     unusedTxns * m * proto.MaxAppBoxReferences,
-		MaxTotalRefs: unusedTxns * m * proto.MaxAppTotalTxnReferences,
+		MaxAccounts:  unusedTxns * (proto.MaxAppTxnAccounts + proto.MaxAppTxnForeignApps),
+		MaxAssets:    unusedTxns * proto.MaxAppTxnForeignAssets,
+		MaxApps:      unusedTxns * proto.MaxAppTxnForeignApps,
+		MaxBoxes:     unusedTxns * proto.MaxAppBoxReferences,
+		MaxTotalRefs: unusedTxns * proto.MaxAppTotalTxnReferences,
 	}
 	for i := range perTxnResources {
 		globalResources.MaxAccounts += perTxnResources[i].MaxAccounts
@@ -182,104 +147,6 @@ func (a *ResourceTracker) removePrivateFields() {
 	a.maxWriteBudget = 0
 	a.initialReadSurplus = 0
 	a.appReadBudget = nil
-	a.usedReadBytes = 0
-	a.appAddrs = nil
-}
-
-// debugTrackerChecks makes the tracker verify its running totals (usedReadBytes, appAddrs)
-// against a full recomputation. Tests turn it on. The check only runs while the tracker is small,
-// so it does not make large trackers quadratic again.
-var debugTrackerChecks = false
-
-// debugTrackerCheckLimit is the largest tracker (in boxes plus apps) that debugTrackerChecks
-// verifies.
-const debugTrackerCheckLimit = 256
-
-// setApp records app aid in Apps, and its address in appAddrs.
-func (a *ResourceTracker) setApp(aid basics.AppIndex) {
-	if a.Apps == nil {
-		a.Apps = make(map[basics.AppIndex]struct{})
-	}
-	a.Apps[aid] = struct{}{}
-	if a.appAddrs == nil {
-		a.appAddrs = make(map[basics.Address]struct{})
-	}
-	a.appAddrs[aid.Address()] = struct{}{}
-}
-
-// deleteApp removes app aid from Apps and its address from appAddrs. Like a plain delete, it
-// leaves Apps non-nil.
-func (a *ResourceTracker) deleteApp(aid basics.AppIndex) {
-	if _, ok := a.Apps[aid]; !ok {
-		return
-	}
-	delete(a.Apps, aid)
-	delete(a.appAddrs, aid.Address())
-}
-
-// hasAppAddress reports whether addr is the address of an app in Apps.
-func (a *ResourceTracker) hasAppAddress(addr basics.Address) bool {
-	// nil map lookup is ok
-	_, ok := a.appAddrs[addr]
-	if debugTrackerChecks && len(a.Apps) <= debugTrackerCheckLimit {
-		found := false
-		for app := range a.Apps {
-			if app.Address() == addr {
-				found = true
-				break
-			}
-		}
-		if found != ok || len(a.appAddrs) != len(a.Apps) {
-			panic(fmt.Sprintf("resource tracker: appAddrs out of sync with Apps (found %v, cached %v, %d addrs, %d apps)",
-				found, ok, len(a.appAddrs), len(a.Apps)))
-		}
-	}
-	return ok
-}
-
-// setBox records box ref with stat, keeping usedReadBytes up to date.
-func (a *ResourceTracker) setBox(ref basics.BoxRef, stat BoxStat) {
-	if a.Boxes == nil {
-		a.Boxes = make(map[basics.BoxRef]BoxStat)
-	}
-	if old, ok := a.Boxes[ref]; ok {
-		a.usedReadBytes -= old.ReadSize
-	}
-	a.Boxes[ref] = stat
-	a.usedReadBytes += stat.ReadSize
-}
-
-// deleteBox removes box ref, keeping usedReadBytes up to date. It does not nil out an empty
-// Boxes; callers do that where they did before.
-func (a *ResourceTracker) deleteBox(ref basics.BoxRef) {
-	if old, ok := a.Boxes[ref]; ok {
-		a.usedReadBytes -= old.ReadSize
-		delete(a.Boxes, ref)
-	}
-}
-
-// setAppReadBudget records the extra read bytes that large app aid uses, keeping usedReadBytes
-// up to date.
-func (a *ResourceTracker) setAppReadBudget(aid basics.AppIndex, readBytes uint64) {
-	if a.appReadBudget == nil {
-		a.appReadBudget = make(map[basics.AppIndex]uint64)
-	}
-	if old, ok := a.appReadBudget[aid]; ok {
-		a.usedReadBytes -= old
-	}
-	a.appReadBudget[aid] = readBytes
-	a.usedReadBytes += readBytes
-}
-
-// deleteAppReadBudget removes the extra read bytes of app aid, keeping usedReadBytes up to date.
-func (a *ResourceTracker) deleteAppReadBudget(aid basics.AppIndex) {
-	if old, ok := a.appReadBudget[aid]; ok {
-		a.usedReadBytes -= old
-		delete(a.appReadBudget, aid)
-	}
-	if len(a.appReadBudget) == 0 {
-		a.appReadBudget = nil
-	}
 }
 
 // HasResources returns true if the tracker has any resources.
@@ -297,15 +164,17 @@ func (a ResourceTracker) boxCount() int {
 	return len(a.Boxes) + a.NumEmptyBoxRefs
 }
 
-// hasAccount reports whether addr is available through this tracker. The EvalParams argument is
-// unused since app addresses are cached in appAddrs; it is kept to match the upstream signature.
-func (a *ResourceTracker) hasAccount(addr basics.Address, _ *logic.EvalParams, programVersion uint64) bool {
+func (a *ResourceTracker) hasAccount(addr basics.Address, ep *logic.EvalParams, programVersion uint64) bool {
 	// nil map lookup is ok
 	if _, ok := a.Accounts[addr]; ok {
 		return true
 	}
 	if programVersion >= 7 { // appAddressAvailableVersion
-		return a.hasAppAddress(addr)
+		for app := range a.Apps {
+			if ep.GetApplicationAddress(app) == addr {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -391,7 +260,10 @@ func (a *ResourceTracker) addApp(aid basics.AppIndex, ep *logic.EvalParams, prog
 	if a.refCount() >= a.MaxTotalRefs {
 		return false
 	}
-	a.setApp(aid)
+	if a.Apps == nil {
+		a.Apps = make(map[basics.AppIndex]struct{})
+	}
+	a.Apps[aid] = struct{}{}
 	return true
 }
 
@@ -415,10 +287,13 @@ func (a ResourceTracker) hasBox(app basics.AppIndex, name string) bool {
 
 func (a *ResourceTracker) addBox(app basics.AppIndex, name string, newApp bool, readSize uint64, bytesPerBoxRef uint64) bool {
 	boxRef := basics.BoxRef{App: app, Name: name}
-	a.setBox(boxRef, BoxStat{readSize, newApp})
+	if a.Boxes == nil {
+		a.Boxes = make(map[basics.BoxRef]BoxStat)
+	}
+	a.Boxes[boxRef] = BoxStat{readSize, newApp}
 
 	if !a.reconcileReadBudget(bytesPerBoxRef, true) {
-		a.deleteBox(boxRef)
+		delete(a.Boxes, boxRef)
 		if len(a.Boxes) == 0 {
 			a.Boxes = nil
 		}
@@ -487,21 +362,7 @@ func (a ResourceTracker) readBudget(bytesPerBoxRef uint64) uint64 {
 	return ioBudget
 }
 
-// usedReadBudget returns the read budget used by the tracked boxes and large apps. It is a running
-// total (usedReadBytes) rather than a sum over the maps. The sum cannot overflow: there are at most
-// MaxResourceLimitMultiplier * MaxTxGroupSize * MaxAppBoxReferences boxes and apps, each at most
-// MaxBoxSize or a program's size.
 func (a *ResourceTracker) usedReadBudget() uint64 {
-	if debugTrackerChecks && len(a.Boxes)+len(a.appReadBudget) <= debugTrackerCheckLimit {
-		if sum := a.sumReadBudget(); sum != a.usedReadBytes {
-			panic(fmt.Sprintf("resource tracker: usedReadBytes %d, but boxes and apps sum to %d", a.usedReadBytes, sum))
-		}
-	}
-	return a.usedReadBytes
-}
-
-// sumReadBudget recomputes usedReadBytes from Boxes and appReadBudget.
-func (a *ResourceTracker) sumReadBudget() uint64 {
 	var budget uint64
 	for _, bs := range a.Boxes {
 		budget = basics.AddSaturate(budget, bs.ReadSize)
@@ -598,7 +459,7 @@ func (a *ResourceTracker) Simplify() {
 	for name, stat := range a.Boxes {
 		if stat.NewApp {
 			a.NumEmptyBoxRefs++
-			a.deleteBox(name)
+			delete(a.Boxes, name)
 		}
 	}
 	if len(a.Boxes) == 0 {
@@ -621,21 +482,19 @@ type groupResourceTracker struct {
 	startingBoxes int
 }
 
-// makeGroupResourceTracker sets up the resource trackers for a group, with the consensus limits
-// on unnamed resources multiplied by m (see EffectiveResourceLimitMultiplier).
-func makeGroupResourceTracker(txns []transactions.SignedTxnWithAD, proto *config.ConsensusParams, m int) groupResourceTracker {
+func makeGroupResourceTracker(txns []transactions.SignedTxnWithAD, proto *config.ConsensusParams) groupResourceTracker {
 	var startingBoxes int
 	var nonAppCalls int
 	localTxnResources := make([]ResourceTracker, len(txns))
 	for i := range txns {
-		localTxnResources[i] = makeTxnResourceTracker(&txns[i].Txn, proto, m)
+		localTxnResources[i] = makeTxnResourceTracker(&txns[i].Txn, proto)
 		startingBoxes += len(txns[i].Txn.Boxes)
 		if txns[i].Txn.Type != protocol.ApplicationCallTx {
 			nonAppCalls++
 		}
 	}
 	return groupResourceTracker{
-		globalResources:   makeGlobalResourceTracker(localTxnResources, nonAppCalls, proto, m),
+		globalResources:   makeGlobalResourceTracker(localTxnResources, nonAppCalls, proto),
 		localTxnResources: localTxnResources,
 		startingBoxes:     startingBoxes,
 	}
@@ -746,7 +605,7 @@ func (a *groupResourceTracker) addApp(aid basics.AppIndex, ep *logic.EvalParams,
 		// It's redundant to list a resources in both the global and local tracker, so remove it
 		// from global. The below call to a.globalResources.removeAppSlot() will revert the changes
 		// to a.globalResources.MaxApps and a.globalResources.MaxTotalRefs.
-		a.globalResources.deleteApp(aid)
+		delete(a.globalResources.Apps, aid)
 		a.globalResources.MaxApps++
 		a.globalResources.MaxTotalRefs++
 	}
@@ -755,7 +614,7 @@ func (a *groupResourceTracker) addApp(aid basics.AppIndex, ep *logic.EvalParams,
 		return true
 	}
 	// Undo the local assignment if global is full.
-	a.localTxnResources[gi].deleteApp(aid)
+	delete(a.localTxnResources[gi].Apps, aid)
 	rollbackAppReadBudget()
 	return false
 }
@@ -778,9 +637,15 @@ func (a *groupResourceTracker) addAppReadBudget(aid basics.AppIndex, ep *logic.E
 	}
 
 	oldEmptyRefs := a.globalResources.NumEmptyBoxRefs
-	a.globalResources.setAppReadBudget(aid, uint64(extraReadBytes))
+	if a.globalResources.appReadBudget == nil {
+		a.globalResources.appReadBudget = make(map[basics.AppIndex]uint64)
+	}
+	a.globalResources.appReadBudget[aid] = uint64(extraReadBytes)
 	rollback := func() {
-		a.globalResources.deleteAppReadBudget(aid)
+		delete(a.globalResources.appReadBudget, aid)
+		if len(a.globalResources.appReadBudget) == 0 {
+			a.globalResources.appReadBudget = nil
+		}
 		a.globalResources.NumEmptyBoxRefs = oldEmptyRefs
 	}
 
@@ -850,12 +715,9 @@ type resourcePolicy struct {
 	globalSharing  bool
 }
 
-// newResourcePolicy makes the unnamed resource policy for a top-level group. multiplier scales the
-// consensus limits on unnamed resources (Request.ResourceLimitMultiplier, see
-// EffectiveResourceLimitMultiplier).
-func newResourcePolicy(ep *logic.EvalParams, groupResult *TxnGroupResult, multiplier uint64) *resourcePolicy {
+func newResourcePolicy(ep *logic.EvalParams, groupResult *TxnGroupResult) *resourcePolicy {
 	policy := resourcePolicy{
-		tracker: makeGroupResourceTracker(ep.TxnGroup, ep.Proto, EffectiveResourceLimitMultiplier(multiplier)),
+		tracker: makeGroupResourceTracker(ep.TxnGroup, ep.Proto),
 		ep:      ep,
 	}
 	groupResult.UnnamedResourcesAccessed = &policy.tracker.globalResources

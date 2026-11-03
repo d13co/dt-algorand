@@ -20,12 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
-	"runtime/debug"
-	"sync"
-	"sync/atomic"
-
-	"golang.org/x/sync/semaphore"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/crypto"
@@ -38,7 +32,6 @@ import (
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
-	"github.com/algorand/go-algorand/logging"
 	"github.com/algorand/go-algorand/protocol"
 )
 
@@ -53,22 +46,6 @@ type Request struct {
 	TraceConfig           ExecTraceConfig
 	FixSigners            bool
 
-	// ParallelGroups simulates every group alone against the start state, concurrently, instead
-	// of as consecutive groups of one block. Non-standard fork feature.
-	ParallelGroups bool
-
-	// Protocol, when set, simulates the round as if an upgrade to this protocol took effect at
-	// the round after Round: a consensus version, a vNN name for a mainline one, or ProtocolLatest
-	// for the protocol of the block after the node's latest one. It must be a later protocol of the chain, or
-	// vFuture (developer API only). Non-standard fork feature.
-	Protocol string
-
-	// ResourceLimitMultiplier scales the limits on unnamed resources (AllowUnnamedResources).
-	// Values below 1 count as 1 (the consensus limits) and values above MaxResourceLimitMultiplier
-	// are clamped to it. It is set by the node from its config (SimulateResourceLimitMultiplier),
-	// never by API clients, and is not echoed in the result. Non-standard fork feature.
-	ResourceLimitMultiplier uint64
-
 	// MaxGroups is the most transaction groups the request may hold. Values below 1 count as 1
 	// and values above MaxSimulateGroups are clamped to it. It is set by the node from its config
 	// (MaxAPISimulateGroups), never by API clients. Non-standard fork feature.
@@ -80,22 +57,6 @@ type Request struct {
 	// by API clients. Non-standard fork feature.
 	MaxExtraOpcodeBudget uint64
 
-	// SkipValidityWindow evaluates txns outside their FirstValid..LastValid window, as sent: the
-	// round-range part of the liveness check and the check for a txid confirmed earlier are skipped.
-	// Leases, in-block duplicates, genesis and well-formedness are still checked, and headers after
-	// the start round can't be read. The REST API allows it only with rounds. Non-standard fork
-	// feature.
-	SkipValidityWindow bool
-
-	// RewriteValidityWindow moves every top-level txn's window to the simulated block, keeping its
-	// width, and recomputes valid group IDs; the signatures over the body of the txns it changes are
-	// dropped, so it needs AllowEmptySignatures (validity_window.go). Headers after the start round can't be read. The
-	// REST API allows it only with rounds. Non-standard fork feature.
-	RewriteValidityWindow bool
-
-	// protocolGaps is set by Simulate when Protocol applies, for the tracers.
-	protocolGaps *protocolGaps
-
 	// ctx stops the simulation early once it is done (abort.go). Non-standard fork feature.
 	ctx context.Context
 
@@ -104,9 +65,6 @@ type Request struct {
 
 // testHooks let tests inject failures. They are nil outside tests.
 type testHooks struct {
-	// parallelGroup runs in the worker before each parallel group. An error is a fatal error of
-	// the request.
-	parallelGroup func(g int) error
 	// afterGroup runs at the end of the tracer's AfterTxnGroup for each top-level group, while the
 	// evaluator is still in TransactionGroup.
 	afterGroup func(g int, evalError error)
@@ -120,10 +78,6 @@ type testHooks struct {
 
 // MaxSimulateGroups is the ceiling for Request.MaxGroups.
 const MaxSimulateGroups = 256
-
-// MaxSimulateRounds is the ceiling for the MaxAPISimulateRounds config value: the most entries the
-// "rounds" of a REST simulate request may hold, duplicates included. Non-standard fork feature.
-const MaxSimulateRounds = 256
 
 // EffectiveMaxExtraOpcodeBudget returns the most extra opcode budget a request may ask for, per
 // top-level group, for the value m of Request.MaxExtraOpcodeBudget: 0 counts as
@@ -147,12 +101,11 @@ func EffectiveMaxGroups(m uint64) int {
 	return int(m)
 }
 
-// WithNodeLimits returns r with the limits of a node configured with cfg: ResourceLimitMultiplier,
-// MaxGroups and MaxExtraOpcodeBudget. The nodes, the REST handlers that check a request before
+// WithNodeLimits returns r with the limits of a node configured with cfg: MaxGroups and
+// MaxExtraOpcodeBudget. The nodes, the REST handlers that check a request before
 // passing it to the node, and GET /v2/capabilities all take the limits from it, so the limits the
 // endpoint reports are the ones simulate enforces. Non-standard fork feature.
 func (r Request) WithNodeLimits(cfg config.Local) Request {
-	r.ResourceLimitMultiplier = cfg.SimulateResourceLimitMultiplier
 	r.MaxGroups = cfg.MaxAPISimulateGroups
 	r.MaxExtraOpcodeBudget = cfg.MaxAPISimulateExtraOpcodeBudget
 	return r
@@ -165,21 +118,6 @@ func (r Request) Validate(developerAPI bool) error {
 		return InvalidRequestError{
 			SimulatorError{
 				errors.New("FixSigners requires AllowEmptySignatures to be enabled"),
-			},
-		}
-	}
-
-	if r.SkipValidityWindow && r.RewriteValidityWindow {
-		return InvalidRequestError{
-			SimulatorError{
-				errors.New("skip-validity-window and rewrite-validity-window are mutually exclusive"),
-			},
-		}
-	}
-	if r.RewriteValidityWindow && !r.AllowEmptySignatures {
-		return InvalidRequestError{
-			SimulatorError{
-				errors.New("rewrite-validity-window requires allow-empty-signatures"),
 			},
 		}
 	}
@@ -230,10 +168,6 @@ func (r Request) Validate(developerAPI bool) error {
 		}
 	}
 
-	if err := validateProtocol(r.Protocol, developerAPI); err != nil {
-		return err
-	}
-
 	if err := validateSimulateRequest(r, developerAPI); err != nil {
 		return err
 	}
@@ -257,19 +191,14 @@ type simulatorLedger struct {
 	*data.Ledger
 	start basics.Round
 
-	// skipValidityWindow and rewriteValidityWindow are the request's validity window modes. They
-	// are set by Simulate, on its copy of the simulator.
-	skipValidityWindow    bool
-	rewriteValidityWindow bool
-
-	// upgradeTo, when set, is the protocol that the round after start switches to (Request.Protocol).
+	// upgradeTo, when set, is the protocol that the round after start switches to
+	// (QueryRequest.Protocol).
 	upgradeTo protocol.ConsensusVersion
 
 	// pastStart is set when start is before the node's latest round, so the simulated block, the
 	// one after start, is already on chain. The policies that apply only to new blocks are then
 	// off, so a txn the chain accepted at the time simulates as accepted
-	// (eval.EvaluatorOptions.SkipNewBlockPolicies). Set by Simulate, for each round of a request
-	// with rounds, and by prepareRound.
+	// (eval.EvaluatorOptions.SkipNewBlockPolicies). Set by Simulate and by prepareRound.
 	pastStart bool
 
 	// counted is the ledger whose reads count in the request's Effort (effort.go). Set by Simulate.
@@ -281,9 +210,7 @@ type simulatorLedger struct {
 // Headers after the start round are refused, as on chain, where the ledger does not yet have the
 // header of the round being evaluated or any later one. Without this, a ledger that has them (a
 // past start round on a time-travel node) would show them to heartbeats (the seed of FirstValid,
-// which may be start+1) and, with a validity window mode, where a txn's window may lie after the
-// start round, to programs (block, txn FirstValidTime). The evaluator itself reads only headers up
-// to the start round.
+// which may be start+1). The evaluator itself reads only headers up to the start round.
 //
 // With upgradeTo set, the header of the start round carries an upgrade to it, pending at the next
 // round, so the simulated block runs it. The evaluator checks the simulated header against this
@@ -314,13 +241,7 @@ func (l simulatorLedger) LatestTotals() (basics.Round, ledgercore.AccountTotals,
 // CheckDup is part of the ledger.Ledger interface. We override this so that
 // a simulation at a past round does not count the transactions and leases of
 // the rounds after it.
-//
-// With skipValidityWindow, a txn may be evaluated long after its LastValid, so only its lease is
-// checked: a txid confirmed earlier is not a duplicate.
 func (l simulatorLedger) CheckDup(currentProto config.ConsensusParams, current, firstValid, lastValid basics.Round, txid transactions.Txid, txl ledgercore.Txlease) error {
-	if l.skipValidityWindow {
-		return l.Ledger.CheckLeaseAt(currentProto, current, firstValid, lastValid, txid, txl)
-	}
 	return l.Ledger.CheckDupAt(currentProto, current, firstValid, lastValid, txid, txl)
 }
 
@@ -347,7 +268,6 @@ func (l simulatorLedger) StartEvaluator(hdr bookkeeping.BlockHeader, paysetHint,
 			Validate:             true,
 			MaxTxnBytesPerBlock:  maxTxnBytesPerBlock,
 			Tracer:               tracer,
-			SkipValidityWindow:   l.skipValidityWindow,
 			SkipNewBlockPolicies: l.pastStart,
 		})
 }
@@ -561,8 +481,8 @@ func (s Simulator) fixSigners(txgroup []transactions.SignedTxnWithAD, authAddrs 
 	return nil
 }
 
-// runGroups simulates the groups at idxs (indexes into tracer.groups), in order, with one tracer
-// and one evaluator, so each group sees the effects of the ones before it. A failure that belongs
+// runGroups simulates the request's groups (tracer.groups), in order, with one tracer and one
+// evaluator, so each group sees the effects of the ones before it. A failure that belongs
 // to a group is written into that group's result and the next group still runs; a failed group's
 // changes are rolled back by the evaluator. Any other error aborts the request.
 //
@@ -571,16 +491,18 @@ func (s Simulator) fixSigners(txgroup []transactions.SignedTxnWithAD, authAddrs 
 // corrupted (a panic while it was being committed). The block must then be discarded. committed is
 // the number of groups the evaluator committed.
 //
-// singleGroupRequest keeps the behaviour of a request with one group: a verification failure that
-// can't be blamed on one transaction is an InvalidRequestError for the whole request.
-func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, evaluator *eval.BlockEvaluator, idxs []int, singleGroupRequest bool) (committed int, stopped bool, err error) {
+// A request with one group keeps upstream's behaviour: a verification failure that can't be blamed
+// on one transaction is an InvalidRequestError for the whole request.
+func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, evaluator *eval.BlockEvaluator) (committed int, stopped bool, err error) {
 	overrides := tracer.result.EvalOverrides
-	notSimulated := func(n int, reason string) {
-		for _, later := range idxs[n+1:] {
+	singleGroupRequest := len(tracer.groups) == 1
+	// The groups run in the order of tracer.groups, so the ones after index g are the ones left.
+	notSimulated := func(g int, reason string) {
+		for later := g + 1; later < len(tracer.groups); later++ {
 			tracer.result.TxnGroups[later].FailureMessage = "not simulated: " + reason
 		}
 	}
-	for n, g := range idxs {
+	for g := range tracer.groups {
 		if err := tracer.abortError(); err != nil {
 			return committed, false, err
 		}
@@ -629,7 +551,7 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 			}
 			if evaluatorCorrupted(evaluator, err) {
 				// The evaluator state may hold part of this group, so no later group can run on it.
-				notSimulated(n, fmt.Sprintf("group index %d left the evaluator state corrupted", g))
+				notSimulated(g, fmt.Sprintf("group index %d left the evaluator state corrupted", g))
 				return committed, true, nil
 			}
 			continue
@@ -647,7 +569,7 @@ func (s Simulator) runGroups(hdr bookkeeping.BlockHeader, tracer *evalTracer, ev
 				groupResult.FailedAt = failedAt
 				// The group is already part of the shared state, so later groups would see the
 				// effects of a group reported as failed.
-				notSimulated(n, fmt.Sprintf("group index %d failed a post-evaluation check", g))
+				notSimulated(g, fmt.Sprintf("group index %d failed a post-evaluation check", g))
 				return committed, true, nil
 			}
 		}
@@ -741,11 +663,9 @@ func (tracer *evalTracer) finalizeGroup(g int) {
 // simulateSequential simulates the request's groups in order, as consecutive groups of one block.
 func (s Simulator) simulateSequential(hdr bookkeeping.BlockHeader, request Request) (*Result, error) {
 	groups := make([][]transactions.SignedTxnWithAD, len(request.TxnGroups))
-	idxs := make([]int, len(request.TxnGroups))
 	totalTxns := 0
 	for i, txgroup := range request.TxnGroups {
 		groups[i] = transactions.WrapSignedTxnsWithAD(txgroup)
-		idxs[i] = i
 		totalTxns += len(txgroup)
 	}
 
@@ -758,7 +678,7 @@ func (s Simulator) simulateSequential(hdr bookkeeping.BlockHeader, request Reque
 		return nil, err
 	}
 
-	committed, stopped, err := s.runGroups(hdr, tracer, evaluator, idxs, len(groups) == 1)
+	committed, stopped, err := s.runGroups(hdr, tracer, evaluator)
 	if err != nil {
 		return nil, err
 	}
@@ -779,114 +699,6 @@ func (s Simulator) simulateSequential(hdr bookkeeping.BlockHeader, request Reque
 	return tracer.result, nil
 }
 
-// parallelGroupSlotCount is the most evaluators that parallel groups run at once, across all
-// simulate requests of the node. GOMAXPROCS follows the CPU quota of the process.
-var parallelGroupSlotCount = runtime.GOMAXPROCS(0)
-
-// parallelGroupSlots limits the evaluators that parallel groups run at once.
-var parallelGroupSlots = semaphore.NewWeighted(int64(parallelGroupSlotCount))
-
-// simulateOneGroup simulates group g of the request alone against the start state, with its own
-// tracer and evaluator. Its sub-request is a copy of the whole request but for TxnGroups, so every
-// other setting applies. No block is generated.
-func (s Simulator) simulateOneGroup(hdr bookkeeping.BlockHeader, request Request, g int) (*Result, error) {
-	sub := request
-	sub.TxnGroups = request.TxnGroups[g : g+1]
-	group := transactions.WrapSignedTxnsWithAD(sub.TxnGroups[0])
-
-	tracer := makeEvalTracer(s.ledger.start, [][]transactions.SignedTxnWithAD{group}, sub)
-	evaluator, err := s.ledger.StartEvaluator(hdr, len(group), 0, tracer)
-	if err != nil {
-		return nil, err
-	}
-	if _, _, err := s.runGroups(hdr, tracer, evaluator, []int{0}, len(request.TxnGroups) == 1); err != nil {
-		return nil, err
-	}
-	tracer.finalizeGroup(0)
-	return tracer.result, nil
-}
-
-// simulateParallelGroup runs simulateOneGroup in a parallel group slot. A panic is recovered and
-// returned as an error: it would otherwise crash the node, since it happens off the handler's
-// goroutine.
-func (s Simulator) simulateParallelGroup(hdr bookkeeping.BlockHeader, request Request, g int) (result *Result, err error) {
-	if parallelGroupSlots.Acquire(request.Context(), 1) != nil {
-		return nil, context.Cause(request.Context())
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			logging.Base().Errorf("recovered from panic simulating transaction group %d: %v\n%s", g, r, debug.Stack())
-			result, err = nil, fmt.Errorf("simulating transaction group %d: panic: %v", g, r)
-		}
-		parallelGroupSlots.Release(1)
-	}()
-
-	if request.hooks != nil && request.hooks.parallelGroup != nil {
-		if err := request.hooks.parallelGroup(g); err != nil {
-			return nil, err
-		}
-	}
-	return s.simulateOneGroup(hdr, request, g)
-}
-
-// simulateParallel simulates every group of the request alone against the start state, in a pool
-// of workers.
-func (s Simulator) simulateParallel(hdr bookkeeping.BlockHeader, request Request) (*Result, error) {
-	n := len(request.TxnGroups)
-	results := make([]*Result, n)
-	errs := make([]error, n)
-
-	// failed is set by the first fatal error, after which the workers skip the groups left: the
-	// request fails anyway.
-	var failed atomic.Bool
-	work := make(chan int)
-	var wg sync.WaitGroup
-	for range min(parallelGroupSlotCount, n) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for g := range work {
-				if failed.Load() {
-					continue
-				}
-				results[g], errs[g] = s.simulateParallelGroup(hdr, request, g)
-				if errs[g] != nil {
-					failed.Store(true)
-				}
-			}
-		}()
-	}
-	for g := range n {
-		work <- g
-	}
-	close(work)
-	// Every worker has stopped writing to results and errs once Wait returns.
-	wg.Wait()
-
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	result := makeSimulationResult(s.ledger.start, request)
-	for g, groupResult := range results {
-		result.TxnGroups[g] = groupResult.TxnGroups[0]
-		// Merge in ascending group index, so that the result does not depend on the order in
-		// which the groups finished.
-		result.InitialStates.merge(groupResult.InitialStates)
-		if po := groupResult.ProtocolOverride; po != nil {
-			for _, note := range po.Notes {
-				for _, hit := range note.Hits {
-					// Each group ran as group 0 of its own sub-request.
-					result.ProtocolOverride.addHit(note.Code, NoteHit{Group: g, Path: hit.Path})
-				}
-			}
-		}
-	}
-	return &result, nil
-}
-
 // Simulate simulates the request's transaction groups using the simulator. Will error if the request is invalid.
 func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 	if err := simulateRequest.Validate(s.developerAPI); err != nil {
@@ -901,61 +713,21 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 		s.ledger.start = latest
 	}
 	s.ledger.pastStart = s.ledger.start < latest
-	// s is a copy, so these hold for this call only.
-	s.ledger.skipValidityWindow = simulateRequest.SkipValidityWindow
-	s.ledger.rewriteValidityWindow = simulateRequest.RewriteValidityWindow
+	// s is a copy, so this holds for this call only.
 	s.ledger.counted = s.ledger.Ledger.Ledger.Counted(ledgercore.EffortFromContext(simulateRequest.Context()))
 
 	prevBlockHdr, err := s.ledger.BlockHdr(s.ledger.start)
 	if err != nil {
 		return Result{}, err
 	}
-	var override *ProtocolOverride
-	if simulateRequest.Protocol != "" {
-		override, err = s.overrideProtocol(&simulateRequest, prevBlockHdr, latest)
-		if err != nil {
-			return Result{}, err
-		}
-		if override.Applied {
-			prevBlockHdr = upgradeAt(prevBlockHdr, override.To)
-		}
-	}
 	nextBlock := bookkeeping.MakeBlock(prevBlockHdr)
 
-	if simulateRequest.RewriteValidityWindow {
-		// simulateRequest is a copy: the caller's groups, which other rounds may share, are kept.
-		simulateRequest.TxnGroups = rewriteValidityWindow(simulateRequest.TxnGroups, nextBlock.Round(), config.Consensus[nextBlock.CurrentProtocol])
-	}
-
-	var result *Result
-	if simulateRequest.ParallelGroups {
-		result, err = s.simulateParallel(nextBlock.BlockHeader, simulateRequest)
-	} else {
-		result, err = s.simulateSequential(nextBlock.BlockHeader, simulateRequest)
-	}
+	result, err := s.simulateSequential(nextBlock.BlockHeader, simulateRequest)
 	if err != nil {
 		return Result{}, err
 	}
 
 	populateFeeUsage(result, config.Consensus[nextBlock.CurrentProtocol])
 
-	if override != nil {
-		// The tracers added the notes that transactions hit.
-		if hits := result.ProtocolOverride; hits != nil {
-			override.Notes = append(override.Notes, hits.Notes...)
-		}
-		override.sortNotes()
-		result.ProtocolOverride = override
-	}
-
 	return *result, nil
-}
-
-// overrideProtocol works out how request.Protocol applies to the round after prevHdr, whose
-// header it is, with latest the node's latest round. When it applies, it sets the ledger to switch
-// to it, and request.protocolGaps for the tracers.
-func (s *Simulator) overrideProtocol(request *Request, prevHdr bookkeeping.BlockHeader, latest basics.Round) (*ProtocolOverride, error) {
-	override, gaps, err := s.ledger.overrideProtocol(request.Protocol, prevHdr, latest)
-	request.protocolGaps = gaps
-	return override, err
 }

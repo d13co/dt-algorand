@@ -31,6 +31,7 @@ import (
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/data/txntest"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
@@ -593,17 +594,54 @@ func TestQueryParallel(t *testing.T) {
 	})
 }
 
-// TestQueryProtocolOverride runs a program that needs AVM 11 at a v35 round under v42, and reports
-// the notes simulate reports for it.
+// newerAVMApp is an app that needs AVM 11: it reads the proposer of the round before the txn's
+// FirstValid, the sender's incentive eligibility and the online stake, and logs them.
+const newerAVMApp = `#pragma version 11
+txn FirstValid; int 1; -; block BlkProposer; log
+txn Sender; acct_params_get AcctIncentiveEligible; assert; itob; log
+online_stake; itob; log
+int 1`
+
+func assemble(t *testing.T, source string) []byte {
+	t.Helper()
+	ops, err := logic.AssembleString(source)
+	require.NoError(t, err, ops.Errors)
+	return ops.Program
+}
+
+func noteCodes(po *simulation.ProtocolOverride) []string {
+	codes := make([]string, len(po.Notes))
+	for i, n := range po.Notes {
+		codes[i] = n.Code
+	}
+	return codes
+}
+
+func findNote(t *testing.T, po *simulation.ProtocolOverride, code string) simulation.ProtocolNote {
+	t.Helper()
+	for _, n := range po.Notes {
+		if n.Code == code {
+			return n
+		}
+	}
+	require.Failf(t, "note missing", "no note %s in %v", code, noteCodes(po))
+	return simulation.ProtocolNote{}
+}
+
+// TestQueryProtocolOverride runs a program that needs AVM 11 on a ledger whose protocol (v35) only
+// has AVM 7, under later protocols, and checks the notes.
 func TestQueryProtocolOverride(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
 	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35)
 	defer env.Close()
-	groups := protocolOverrideGroups(t, &env)
-	s := simulation.MakeSimulator(env.Ledger, true)
 	sender := env.Accounts[0]
+	// A few blocks, so the round before FirstValid exists.
+	for range 5 {
+		env.TransferAlgos(sender.Addr, env.Accounts[1].Addr, 1000)
+	}
+	s := simulation.MakeSimulator(env.Ledger, true)
 
 	req := simulation.QueryRequest{
 		Program: assemble(t, newerAVMApp),
@@ -621,34 +659,215 @@ func TestQueryProtocolOverride(t *testing.T) {
 	require.Nil(t, result.Rounds[0].Protocol)
 	require.Contains(t, result.Rounds[0].Calls[0].Error, "greater than protocol supported version 7")
 
+	for _, target := range []string{"v42", "future"} {
+		req.Protocol = target
+		result, err = s.Query(req)
+		require.NoError(t, err)
+		rr := result.Rounds[0]
+		for i, c := range rr.Calls {
+			require.Empty(t, c.Error, "%s call %d", target, i)
+			// The round before ran v35, without incentives: the proposer reads as zero, and nobody
+			// is eligible.
+			require.Len(t, c.Logs, 3)
+			require.Equal(t, string(make([]byte, 32)), c.Logs[0])
+			require.Equal(t, string(make([]byte, 8)), c.Logs[1])
+		}
+
+		po := rr.Protocol
+		require.NotNil(t, po)
+		require.True(t, po.Applied)
+		require.Equal(t, protocol.ConsensusV35, po.From)
+		wantTo := protocol.ConsensusVersion(target)
+		if target == "v42" {
+			wantTo = protocol.ConsensusV42
+		}
+		require.Equal(t, wantTo, po.To)
+		require.Equal(t, []string{"semantics-changed", "no-heartbeat-challenges", "no-load-history",
+			"block-incentive-fields", "account-incentive-fields"}, noteCodes(po), target)
+		require.Contains(t, findNote(t, po, "semantics-changed").Message, "LogicSigVersion: 7 → ")
+		bothCalls := []simulation.NoteHit{{Group: 0, Path: simulation.TxnPath{0}}, {Group: 1, Path: simulation.TxnPath{0}}}
+		require.Equal(t, bothCalls, findNote(t, po, "block-incentive-fields").Hits, target)
+		require.Equal(t, bothCalls, findNote(t, po, "account-incentive-fields").Hits, target)
+	}
+}
+
+// TestQueryProtocolOverrideRejected: a protocol name the node does not know, or vFuture without
+// the developer API, fails the request; a protocol the round can't run under is the round's error.
+func TestQueryProtocolOverrideRejected(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35)
+	defer env.Close()
+	req := simulation.QueryRequest{
+		Program: assemble(t, "#pragma version 7\nint 1"),
+		Calls:   []simulation.QueryCall{{}},
+		Limits:  simulation.QueryLimitsFromConfig(env.Config),
+	}
+	query := func(developerAPI bool, name string) (simulation.QueryResult, error) {
+		r := req
+		r.Protocol = name
+		return simulation.MakeSimulator(env.Ledger, developerAPI).Query(r)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		developerAPI bool
+	}{{"nope", true}, {"future", false}} {
+		_, err := query(tc.developerAPI, tc.name)
+		var invalid simulation.InvalidRequestError
+		require.ErrorAs(t, err, &invalid, tc.name)
+	}
+
+	// An earlier protocol of the chain, and another chain's protocol.
+	for _, name := range []string{"v34", "fnet1"} {
+		result, err := query(true, name)
+		require.NoError(t, err, name)
+		require.NotEmpty(t, result.Rounds[0].Error, name)
+		require.Empty(t, result.Rounds[0].Calls, name)
+	}
+	result, err := query(true, "v34")
+	require.NoError(t, err)
+	require.Contains(t, result.Rounds[0].Error, "is not a later protocol")
+}
+
+// TestQueryProtocolOverrideNoop asks for the protocol the round already runs: the calls run as
+// without the override, which is reported as not applied.
+func TestQueryProtocolOverrideNoop(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	for _, proto := range []protocol.ConsensusVersion{protocol.ConsensusV35, protocol.ConsensusFuture} {
+		env := simulationtesting.PrepareSimulatorTestAt(t, proto)
+		req := simulation.QueryRequest{
+			Program: assemble(t, "#pragma version 7\nint 1"),
+			Calls:   []simulation.QueryCall{{}},
+			Limits:  simulation.QueryLimitsFromConfig(env.Config),
+		}
+		for _, name := range []string{simulation.ProtocolLatest, string(proto)} {
+			req.Protocol = name
+			result, err := simulation.MakeSimulator(env.Ledger, true).Query(req)
+			require.NoError(t, err)
+			rr := result.Rounds[0]
+			require.Empty(t, rr.Error, name)
+			require.Empty(t, rr.Calls[0].Error, name)
+			require.Equal(t, &simulation.ProtocolOverride{From: proto, To: proto}, rr.Protocol, name)
+		}
+		// The default, latest, reports nothing when it changes nothing.
+		req.Protocol = ""
+		result, err := simulation.MakeSimulator(env.Ledger, true).Query(req)
+		require.NoError(t, err)
+		require.Nil(t, result.Rounds[0].Protocol)
+		env.Close()
+	}
+}
+
+// TestQueryProtocolOverrideTimeTravel runs a program that needs AVM 11 at a round whose blocks and
+// tracker state are long gone, on a ledger that only has AVM 7.
+func TestQueryProtocolOverrideTimeTravel(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35, func(cfg *config.Local) {
+		cfg.Archival = false
+		cfg.EnableTimeTravel = true
+	})
+	defer env.Close()
+	sender, other := env.Accounts[0], env.Accounts[1]
+
+	first := env.TxnInfo.LatestRound() + 1
+	for i := range 1100 {
+		env.TransferAlgos(sender.Addr, other.Addr, uint64(1000+i))
+	}
+	_, err := env.Ledger.Block(first)
+	require.Error(t, err, "block %d should be pruned", first)
+
+	r := first + 10
+	req := simulation.QueryRequest{
+		Program:  assemble(t, newerAVMApp),
+		Sender:   sender.Addr,
+		Calls:    []simulation.QueryCall{{}},
+		Rounds:   []basics.Round{r},
+		Protocol: simulation.ProtocolRound,
+		Limits:   simulation.QueryLimitsFromConfig(env.Config),
+	}
+	s := simulation.MakeSimulator(env.Ledger, false)
+	result, err := s.Query(req)
+	require.NoError(t, err)
+	require.Contains(t, result.Rounds[0].Calls[0].Error, "greater than protocol supported version 7")
+
 	req.Protocol = "v42"
 	result, err = s.Query(req)
 	require.NoError(t, err)
 	rr := result.Rounds[0]
-	for i, c := range rr.Calls {
-		require.Empty(t, c.Error, "call %d", i)
-		require.Len(t, c.Logs, 3)
-	}
+	require.Equal(t, r, rr.Round)
+	require.Empty(t, rr.Error)
+	require.Empty(t, rr.Calls[0].Error)
+	require.True(t, rr.Protocol.Applied)
+	require.Equal(t, []simulation.NoteHit{{Group: 0, Path: simulation.TxnPath{0}}},
+		findNote(t, rr.Protocol, "block-incentive-fields").Hits)
 
-	simResult, err := s.Simulate(simulation.Request{TxnGroups: groups[:1], Protocol: "v42"})
+	// The block opcode read the real header of r-1 from history, unchanged by the override.
+	prev, err := env.Ledger.BlockHdr(r - 1)
 	require.NoError(t, err)
-	require.Empty(t, simResult.TxnGroups[0].FailureMessage)
-	require.Equal(t, simResult.TxnGroups[0].Txns[0].Txn.ApplyData.EvalDelta.Logs, rr.Calls[0].Logs)
+	require.Equal(t, basics.Address{}, prev.Proposer)
+	require.Equal(t, string(make([]byte, 32)), rr.Calls[0].Logs[0])
+}
+
+// TestQueryProtocolOverrideHits checks the notes of every kind of read, in the call and in an inner
+// one, on a v35 ledger old enough for online_stake to look 320 rounds back.
+func TestQueryProtocolOverrideHits(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35)
+	defer env.Close()
+	sender := env.Accounts[0]
+	for range 330 {
+		env.TransferAlgos(sender.Addr, env.Accounts[1].Addr, 1000)
+	}
+	// Created after the transfers, so that its ID is too large to be read as a slot.
+	deployed := env.CreateApp(sender.Addr, simulationtesting.AppParams{
+		ApprovalProgram:   "#pragma version 7\nint 1",
+		ClearStateProgram: "#pragma version 7\nint 1",
+	})
+
+	// The inner app reads its creator's incentive eligibility.
+	inner := assemble(t, "#pragma version 13\ntxn Sender; acct_params_get AcctIncentiveEligible; pop; pop; int 1")
+	clear := assemble(t, "#pragma version 13\nint 1")
+	program := fmt.Sprintf(`#pragma version 13
+online_stake; pop
+txn FirstValid; int 1; -; block BlkBranch512; pop
+int %d; app_params_get AppVersion; assert; pop
+txn Sender; acct_params_get AcctIncentiveEligible; pop; pop
+itxn_begin
+int appl; itxn_field TypeEnum
+byte 0x%x; itxn_field ApprovalProgram
+byte 0x%x; itxn_field ClearStateProgram
+int 0; itxn_field Fee
+itxn_submit
+int 1`, deployed, inner, clear)
+	req := simulation.QueryRequest{
+		Program:  assemble(t, program),
+		Sender:   sender.Addr,
+		Calls:    []simulation.QueryCall{{}},
+		Protocol: "v42",
+		Limits:   simulation.QueryLimitsFromConfig(env.Config),
+	}
+	result, err := simulation.MakeSimulator(env.Ledger, true).Query(req)
+	require.NoError(t, err)
+	rr := result.Rounds[0]
+	require.Empty(t, rr.Error)
+	require.Empty(t, rr.Calls[0].Error)
 
 	po := rr.Protocol
-	require.NotNil(t, po)
-	require.True(t, po.Applied)
-	require.Equal(t, protocol.ConsensusV35, po.From)
-	require.Equal(t, protocol.ConsensusV42, po.To)
-	require.Equal(t, noteCodes(simResult.ProtocolOverride), noteCodes(po))
-	for _, note := range simResult.ProtocolOverride.Notes {
-		if len(note.Hits) == 0 {
-			continue
-		}
-		require.Equal(t, []simulation.NoteHit{{Group: 0, Path: simulation.TxnPath{0}}}, note.Hits, note.Code)
-		require.Equal(t, []simulation.NoteHit{{Group: 0, Path: simulation.TxnPath{0}}, {Group: 1, Path: simulation.TxnPath{0}}},
-			findNote(t, po, note.Code).Hits, note.Code)
-	}
+	require.Equal(t, []string{"semantics-changed", "no-heartbeat-challenges", "no-load-history",
+		"block-hash-fields", "online-stake-includes-expired", "account-incentive-fields", "app-version-starts-at-upgrade"}, noteCodes(po))
+	hit := func(path ...int) simulation.NoteHit { return simulation.NoteHit{Group: 0, Path: path} }
+	require.Equal(t, []simulation.NoteHit{hit(0)}, findNote(t, po, "block-hash-fields").Hits)
+	require.Equal(t, []simulation.NoteHit{hit(0)}, findNote(t, po, "online-stake-includes-expired").Hits)
+	require.Equal(t, []simulation.NoteHit{hit(0), hit(0, 0)}, findNote(t, po, "account-incentive-fields").Hits)
+	require.Equal(t, []simulation.NoteHit{hit(0)}, findNote(t, po, "app-version-starts-at-upgrade").Hits)
 }
 
 // TestQueryTimeTravel queries rounds whose blocks and tracker state are long gone.

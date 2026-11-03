@@ -118,7 +118,7 @@ func TestQueryREST(t *testing.T) {
 	env := prepareQueryEnv(t)
 	defer env.Close()
 	latest := env.Ledger.Latest()
-	h := newRoundsRouter(t, newRoundsNode(t, env))
+	h := newSimRouter(t, newSimNode(t, env))
 
 	request := v2.PreEncodedQueryRequest{
 		Program: assembleQuery(t, queryRoundApp),
@@ -179,7 +179,7 @@ func TestQueryRESTRejected(t *testing.T) {
 	defer env.Close()
 	latest := env.Ledger.Latest()
 	program := assembleQuery(t, queryRoundApp)
-	h := newRoundsRouter(t, newRoundsNode(t, env))
+	h := newSimRouter(t, newSimNode(t, env))
 
 	for _, tc := range []struct {
 		name string
@@ -202,7 +202,7 @@ func TestQueryRESTRejected(t *testing.T) {
 	}
 
 	t.Run("disabled", func(t *testing.T) {
-		h := newRoundsRouter(t, newRoundsNode(t, env, func(c *config.Local) { c.MaxAPIQueryCalls = 0 }))
+		h := newSimRouter(t, newSimNode(t, env, func(c *config.Local) { c.MaxAPIQueryCalls = 0 }))
 		require.Nil(t, getCapabilities(t, h).Query)
 		rec := postQuery(t, h, encodeQueryRequest(t, v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a")}, "msgpack"), "msgpack")
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
@@ -211,7 +211,7 @@ func TestQueryRESTRejected(t *testing.T) {
 
 	t.Run("response too large", func(t *testing.T) {
 		// A call logs 9 bytes in 2 logs, counted as 9 + 2 × 48 = 105.
-		h := newRoundsRouter(t, newRoundsNode(t, env, func(c *config.Local) { c.MaxAPIQueryResponseBytes = 250 }))
+		h := newSimRouter(t, newSimNode(t, env, func(c *config.Local) { c.MaxAPIQueryResponseBytes = 250 }))
 		require.Equal(t, uint64(250), getCapabilities(t, h).Query.MaxResponseBytes)
 		ok := v2.PreEncodedQueryRequest{Program: program, Calls: queryCalls("a")}
 		decodeQueryResponse(t, postQuery(t, h, encodeQueryRequest(t, ok, "msgpack"), "msgpack"), "msgpack")
@@ -240,7 +240,7 @@ func TestQueryRESTSlots(t *testing.T) {
 	env := prepareQueryEnv(t)
 	defer env.Close()
 	latest := env.Ledger.Latest()
-	n := newRoundsNode(t, env, func(c *config.Local) { c.QueryParallelism = 8 })
+	n := newSimNode(t, env, func(c *config.Local) { c.QueryParallelism = 8 })
 	const slots = 3
 	limiter := semaphore.NewWeighted(slots)
 	handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
@@ -277,7 +277,7 @@ func TestQueryRESTTimeLimit(t *testing.T) {
 
 	env := prepareQueryEnv(t)
 	defer env.Close()
-	h := newRoundsRouter(t, newRoundsNode(t, env, func(c *config.Local) {
+	h := newSimRouter(t, newSimNode(t, env, func(c *config.Local) {
 		c.RestWriteTimeoutSeconds = 1
 		c.MaxAPIQueryCallBudget = 1 << 40
 	}))
@@ -295,7 +295,7 @@ func TestQueryRESTEffort(t *testing.T) {
 
 	env := prepareQueryEnv(t)
 	defer env.Close()
-	h := newRoundsRouter(t, newRoundsNode(t, env, effortOn))
+	h := newSimRouter(t, newSimNode(t, env, effortOn))
 	program := fmt.Sprintf("#pragma version 10\naddr %s; balance; itob; log; int 1", env.Accounts[1].Addr)
 	request := v2.PreEncodedQueryRequest{Program: assembleQuery(t, program), Calls: queryCalls("a", "b")}
 	rec := postQuery(t, h, encodeQueryRequest(t, request, "msgpack"), "msgpack")
@@ -314,7 +314,7 @@ func TestQueryRESTClient(t *testing.T) {
 	env := prepareQueryEnv(t)
 	defer env.Close()
 	latest := env.Ledger.Latest()
-	srv := httptest.NewServer(newRoundsRouter(t, newRoundsNode(t, env)))
+	srv := httptest.NewServer(newSimRouter(t, newSimNode(t, env)))
 	defer srv.Close()
 	u, err := url.Parse(srv.URL)
 	require.NoError(t, err)
@@ -340,4 +340,63 @@ func TestQueryRESTClient(t *testing.T) {
 
 	_, err = c.Query(model.QueryRequest{Calls: calls})
 	require.ErrorContains(t, err, "exactly one of program and app-id")
+}
+
+// TestQueryRESTProtocol runs a program that needs AVM 11 at a v35 round under a later protocol, in
+// both formats, and checks the round's protocol: from, to, applied and the notes with their hits.
+// future needs the developer API.
+func TestQueryRESTProtocol(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTestAt(t, protocol.ConsensusV35)
+	defer env.Close()
+	sender := env.Accounts[0]
+	for range 3 {
+		env.TransferAlgos(sender.Addr, sender.Addr, 0)
+	}
+	request := v2.PreEncodedQueryRequest{
+		// The proposer of the round before, which ran v35 without incentives.
+		Program: assembleQuery(t, "#pragma version 11\ntxn FirstValid; int 1; -; block BlkProposer; log; int 1"),
+		Calls:   queryCalls("a", "b"),
+	}
+	devAPI := func(c *config.Local) { c.EnableDeveloperAPI = true }
+
+	for _, format := range []string{"json", "msgpack"} {
+		for _, target := range []string{"v42", "future"} {
+			request.Protocol = target
+			response := decodeQueryResponse(t, postQuery(t, newSimRouter(t, newSimNode(t, env, devAPI)), encodeQueryRequest(t, request, format), format), format)
+			rr := response.Rounds[0]
+			require.Nil(t, rr.Error)
+			for i, c := range rr.Calls {
+				require.Nil(t, c.Error, "%s %s call %d", format, target, i)
+				require.Equal(t, [][]byte{make([]byte, 32)}, c.Logs)
+			}
+			po := rr.Protocol
+			require.NotNil(t, po, "%s %s", format, target)
+			require.True(t, po.Applied)
+			require.Equal(t, string(protocol.ConsensusV35), po.From)
+			if target == "v42" {
+				require.Equal(t, string(protocol.ConsensusV42), po.To)
+			} else {
+				require.Equal(t, string(protocol.ConsensusFuture), po.To)
+			}
+			require.NotNil(t, po.Notes)
+			var hits *[]model.QueryProtocolNoteHit
+			for _, note := range *po.Notes {
+				require.NotEmpty(t, note.Message, note.Code)
+				if note.Code == "block-incentive-fields" {
+					hits = note.Hits
+				}
+			}
+			require.NotNil(t, hits, "%s %s", format, target)
+			require.Equal(t, []model.QueryProtocolNoteHit{{Group: 0, Path: []int{0}}, {Group: 1, Path: []int{0}}}, *hits)
+		}
+	}
+
+	// future without the developer API
+	request.Protocol = "future"
+	rec := postQuery(t, newSimRouter(t, newSimNode(t, env)), encodeQueryRequest(t, request, "json"), "json")
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "EnableDeveloperAPI")
 }

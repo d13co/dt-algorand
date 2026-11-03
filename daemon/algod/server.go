@@ -118,11 +118,6 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			cfg.RestConnectionsSoftLimit, cfg.RestConnectionsHardLimit)
 		cfg.RestConnectionsSoftLimit = cfg.RestConnectionsHardLimit
 	}
-	if cfg.SimulateResourceLimitMultiplier > simulation.MaxResourceLimitMultiplier {
-		s.log.Warnf(
-			"SimulateResourceLimitMultiplier %d exceeds the maximum %d; simulate uses %d",
-			cfg.SimulateResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier, simulation.MaxResourceLimitMultiplier)
-	}
 	if cfg.MaxAPISimulateGroups > simulation.MaxSimulateGroups {
 		s.log.Warnf(
 			"MaxAPISimulateGroups %d exceeds the maximum %d; simulate uses %d",
@@ -133,10 +128,10 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 			"MaxAPISimulateExtraOpcodeBudget %d exceeds the maximum %d; simulate uses %d",
 			cfg.MaxAPISimulateExtraOpcodeBudget, simulation.MaxExtraOpcodeBudgetCeiling, simulation.MaxExtraOpcodeBudgetCeiling)
 	}
-	if cfg.MaxAPISimulateRounds > simulation.MaxSimulateRounds {
+	if set := ignoredSimulateSettings(cfg); len(set) > 0 {
 		s.log.Warnf(
-			"MaxAPISimulateRounds %d exceeds the maximum %d; simulate uses %d",
-			cfg.MaxAPISimulateRounds, simulation.MaxSimulateRounds, simulation.MaxSimulateRounds)
+			"%s set but ignored: simulate no longer has the options they controlled; use POST /v2/query for reads at several rounds or without the unnamed-resource limits",
+			strings.Join(set, ", "))
 	}
 	if cfg.IncomingConnectionsLimit < 0 {
 		return fmt.Errorf(
@@ -329,6 +324,23 @@ func (s *Server) Initialize(cfg config.Local, phonebookAddresses []string, genes
 	logging.RegisterExitHandler(s.Stop)
 
 	return nil
+}
+
+// ignoredSimulateSettings lists the deprecated simulate settings that cfg changes from their
+// defaults, so an operator who relied on them learns they no longer do anything.
+func ignoredSimulateSettings(cfg config.Local) []string {
+	def := config.GetDefaultLocal()
+	var set []string
+	if cfg.SimulateResourceLimitMultiplier != def.SimulateResourceLimitMultiplier {
+		set = append(set, fmt.Sprintf("SimulateResourceLimitMultiplier %d", cfg.SimulateResourceLimitMultiplier))
+	}
+	if cfg.MaxAPISimulateRounds != def.MaxAPISimulateRounds {
+		set = append(set, fmt.Sprintf("MaxAPISimulateRounds %d", cfg.MaxAPISimulateRounds))
+	}
+	if cfg.SimulateRoundsParallelism != def.SimulateRoundsParallelism {
+		set = append(set, fmt.Sprintf("SimulateRoundsParallelism %d", cfg.SimulateRoundsParallelism))
+	}
+	return set
 }
 
 // helper handles startup of tcp listener

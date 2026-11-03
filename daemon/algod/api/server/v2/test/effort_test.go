@@ -31,7 +31,6 @@ import (
 	"github.com/algorand/go-algorand/config"
 	v2 "github.com/algorand/go-algorand/daemon/algod/api/server/v2"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
-	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	simulationtesting "github.com/algorand/go-algorand/ledger/simulation/testing"
@@ -79,17 +78,14 @@ func TestEffortHeaderSimulate(t *testing.T) {
 	for range 3 {
 		env.TransferAlgos(sender.Addr, sender.Addr, 0)
 	}
-	latest := env.Ledger.Latest()
 	single := oneGroupRequest(roundLoggerCall(env, sender, 1))
-	rounds := single
-	rounds.Rounds = []basics.Round{latest - 2, latest - 1, latest}
-	newHandler := func(n *roundsNode) *v2.Handlers {
+	newHandler := func(n *simNode) *v2.Handlers {
 		return &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: semaphore.NewWeighted(4)}
 	}
 
 	t.Run("off", func(t *testing.T) {
 		t.Parallel()
-		rec, err := simulateRoundsDirect(context.Background(), t, newHandler(newRoundsNode(t, env)), single)
+		rec, err := simulateDirect(context.Background(), t, newHandler(newSimNode(t, env)), single)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		require.Nil(t, effortOf(t, rec))
@@ -97,66 +93,48 @@ func TestEffortHeaderSimulate(t *testing.T) {
 
 	t.Run("ok", func(t *testing.T) {
 		t.Parallel()
-		for _, request := range []v2.PreEncodedSimulateRequest{single, rounds} {
-			rec, err := simulateRoundsDirect(context.Background(), t, newHandler(newRoundsNode(t, env, effortOn)), request)
-			require.NoError(t, err)
-			response := decodeSimulateResponse(t, rec, "json")
-			var consumed uint64
-			groups := response.TxnGroups
-			if response.RoundResults != nil {
-				groups = nil
-				for _, r := range *response.RoundResults {
-					groups = append(groups, r.TxnGroups...)
+		rec, err := simulateDirect(context.Background(), t, newHandler(newSimNode(t, env, effortOn)), single)
+		require.NoError(t, err)
+		response := decodeSimulateResponse(t, rec, "json")
+		var consumed uint64
+		for _, g := range response.TxnGroups {
+			for _, txn := range g.Txns {
+				if txn.AppBudgetConsumed != nil {
+					consumed += uint64(*txn.AppBudgetConsumed)
+				}
+				if txn.LogicSigBudgetConsumed != nil {
+					consumed += uint64(*txn.LogicSigBudgetConsumed)
 				}
 			}
-			for _, g := range groups {
-				for _, txn := range g.Txns {
-					if txn.AppBudgetConsumed != nil {
-						consumed += uint64(*txn.AppBudgetConsumed)
-					}
-					if txn.LogicSigBudgetConsumed != nil {
-						consumed += uint64(*txn.LogicSigBudgetConsumed)
-					}
-				}
-			}
-			effort := effortOf(t, rec)
-			require.NotNil(t, effort)
-			require.Positive(t, consumed)
-			require.Equal(t, consumed, effort["opcodes"])
-			require.Positive(t, effort["lookups"])
-			require.Zero(t, effort["history"])
 		}
+		effort := effortOf(t, rec)
+		require.NotNil(t, effort)
+		require.Positive(t, consumed)
+		require.Equal(t, consumed, effort["opcodes"])
+		require.Positive(t, effort["lookups"])
+		require.Zero(t, effort["history"])
 	})
 
 	t.Run("time limit", func(t *testing.T) {
 		t.Parallel()
-		for _, request := range []v2.PreEncodedSimulateRequest{single, rounds} {
-			n := newRoundsNode(t, env, effortOn, func(c *config.Local) { c.RestWriteTimeoutSeconds = 1 })
-			n.slowAt = map[basics.Round]bool{0: true, latest - 1: true}
-			rec, err := simulateRoundsDirect(context.Background(), t, newHandler(n), request)
-			require.NoError(t, err)
-			if request.Rounds == nil {
-				require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
-			} else {
-				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-				require.Positive(t, effortOf(t, rec)["opcodes"], "the rounds that finished")
-			}
-			require.GreaterOrEqual(t, effortOf(t, rec)["eval-us"], uint64(450_000))
-		}
+		n := newSimNode(t, env, effortOn, func(c *config.Local) { c.RestWriteTimeoutSeconds = 1 })
+		n.slow = true
+		rec, err := simulateDirect(context.Background(), t, newHandler(n), single)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
+		require.GreaterOrEqual(t, effortOf(t, rec)["eval-us"], uint64(450_000))
 	})
 
 	t.Run("busy", func(t *testing.T) {
 		t.Parallel()
-		for _, request := range []v2.PreEncodedSimulateRequest{single, rounds} {
-			n := newRoundsNode(t, env, effortOn)
-			limiter := semaphore.NewWeighted(1)
-			require.True(t, limiter.TryAcquire(1))
-			handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
-			rec, err := simulateRoundsDirect(context.Background(), t, handler, request)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-			require.Nil(t, effortOf(t, rec))
-		}
+		n := newSimNode(t, env, effortOn)
+		limiter := semaphore.NewWeighted(1)
+		require.True(t, limiter.TryAcquire(1))
+		handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: limiter}
+		rec, err := simulateDirect(context.Background(), t, handler, single)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+		require.Nil(t, effortOf(t, rec))
 	})
 }
 
@@ -251,7 +229,7 @@ func TestEffortHeaderResponseBytes(t *testing.T) {
 	request := oneGroupRequest(roundLoggerCall(env, sender, 1))
 	traced := request
 	traced.ExecTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true}
-	router := newRoundsRouter(t, newRoundsNode(t, env, effortOn, func(c *config.Local) { c.EnableDeveloperAPI = true }))
+	router := newSimRouter(t, newSimNode(t, env, effortOn, func(c *config.Local) { c.EnableDeveloperAPI = true }))
 	for _, format := range []string{"json", "msgpack"} {
 		var plainBytes uint64
 		for _, r := range []v2.PreEncodedSimulateRequest{request, traced} {
@@ -284,10 +262,10 @@ func TestEffortHeaderResponseBytes(t *testing.T) {
 	}
 
 	// 504: the error isn't the work's output
-	n := newRoundsNode(t, env, effortOn, func(c *config.Local) { c.RestWriteTimeoutSeconds = 1 })
-	n.slowAt = map[basics.Round]bool{0: true}
+	n := newSimNode(t, env, effortOn, func(c *config.Local) { c.RestWriteTimeoutSeconds = 1 })
+	n.slow = true
 	handler := &v2.Handlers{Node: n, Log: logging.TestingLog(t), Shutdown: make(chan struct{}), SimulateLimiter: semaphore.NewWeighted(1)}
-	rec, err := simulateRoundsDirect(context.Background(), t, handler, request)
+	rec, err := simulateDirect(context.Background(), t, handler, request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
 	require.Zero(t, effortOf(t, rec)["response-bytes"])

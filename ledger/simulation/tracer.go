@@ -119,15 +119,6 @@ type evalTracer struct {
 	// group panics, it runs before the evaluator recovers and sees no error.
 	groupAuthAddrs []authAddrUpdate
 
-	// resourceLimitMultiplier is Request.ResourceLimitMultiplier. It is kept here rather than in
-	// result.EvalOverrides so that it is not reported in the result.
-	resourceLimitMultiplier uint64
-
-	// protocolGaps is Request.protocolGaps: set when the simulation runs under a protocol
-	// override. pendingGap is the note the current opcode hits if it succeeds.
-	protocolGaps *protocolGaps
-	pendingGap   string
-
 	// abortState stops the simulation when the request is canceled (abort.go).
 	abortState
 
@@ -137,12 +128,10 @@ type evalTracer struct {
 func makeEvalTracer(lastRound basics.Round, groups [][]transactions.SignedTxnWithAD, request Request) *evalTracer {
 	result := makeSimulationResult(lastRound, request)
 	tracer := &evalTracer{
-		result:                  &result,
-		groups:                  groups,
-		resourceLimitMultiplier: request.ResourceLimitMultiplier,
-		protocolGaps:            request.protocolGaps,
-		abortState:              makeAbortState(request),
-		hooks:                   request.hooks,
+		result:     &result,
+		groups:     groups,
+		abortState: makeAbortState(request),
+		hooks:      request.hooks,
 	}
 	if request.FixSigners {
 		tracer.authAddrs = make(map[basics.Address]basics.Address)
@@ -258,7 +247,7 @@ func (tracer *evalTracer) BeforeTxnGroup(ep *logic.EvalParams) {
 		// Override runtime related constraints against ep, before entering txn group
 		ep.EvalConstants = tracer.result.EvalOverrides.LogicEvalConstants()
 		if tracer.result.EvalOverrides.AllowUnnamedResources {
-			tracer.unnamedResourcePolicy = newResourcePolicy(ep, tracer.currentGroup(), tracer.resourceLimitMultiplier)
+			tracer.unnamedResourcePolicy = newResourcePolicy(ep, tracer.currentGroup())
 			ep.EvalConstants.UnnamedResources = tracer.unnamedResourcePolicy
 		}
 	}
@@ -415,10 +404,6 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 	tracer.checkAbort(cx)
 	groupIndex := cx.GroupIndex()
 
-	if tracer.protocolGaps != nil {
-		tracer.pendingGap = tracer.protocolGaps.opcodeGap(cx)
-	}
-
 	if cx.RunMode() == logic.ModeApp {
 		// Remember app EvalDelta before executing the opcode. We do this
 		// because if this opcode fails, the block evaluator resets the EvalDelta.
@@ -529,15 +514,6 @@ func (o *OpcodeTraceUnit) updateNewStateValues(cx *logic.EvalContext) {
 func (tracer *evalTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 	groupIndex := cx.GroupIndex()
 
-	// Opcodes that read data do not nest, so the pending gap is this opcode's. An inner
-	// transaction's opcodes have consumed their own by the time its itxn_submit ends.
-	if tracer.pendingGap != "" {
-		if evalError == nil {
-			tracer.recordGap(cx, tracer.pendingGap)
-		}
-		tracer.pendingGap = ""
-	}
-
 	// NOTE: only when we have no evalError on current opcode,
 	// we can proceed for recording stack change
 	if evalError == nil && tracer.result.ReturnTrace() {
@@ -575,18 +551,6 @@ func (tracer *evalTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 			cx.SetIOBudget(tracer.unnamedResourcePolicy.tracker.maxPossibleIOBudget(cx.Proto.BytesPerBoxReference))
 		}
 	}
-}
-
-// recordGap records that the transaction running cx hit the protocol override note code.
-func (tracer *evalTracer) recordGap(cx *logic.EvalContext, code string) {
-	var path TxnPath
-	if cx.RunMode() == logic.ModeSig {
-		// Logic signatures run while the group is verified, before evaluation moves the cursor.
-		path = TxnPath{cx.GroupIndex()}
-	} else {
-		path = tracer.absolutePath()
-	}
-	tracer.result.ProtocolOverride.addHit(code, NoteHit{Group: tracer.groupIdx, Path: path})
 }
 
 func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {

@@ -35,29 +35,27 @@ func TestSimulateEffort(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	bothModes(t, func(t *testing.T, parallel bool) {
-		env := simulationtesting.PrepareSimulatorTest(t)
-		defer env.Close()
+	env := simulationtesting.PrepareSimulatorTest(t)
+	defer env.Close()
 
-		request := loopRequest(loopGroups(t, env, 3), parallel)
-		request.ExtraOpcodeBudget = 10_000
-		e := ledgercore.NewEffort()
-		result, err := simulation.MakeSimulator(env.Ledger, false).Simulate(request.WithContext(ledgercore.ContextWithEffort(context.Background(), e)))
-		require.NoError(t, err)
+	request := loopRequest(loopGroups(t, env, 3))
+	request.ExtraOpcodeBudget = 10_000
+	e := ledgercore.NewEffort()
+	result, err := simulation.MakeSimulator(env.Ledger, false).Simulate(request.WithContext(ledgercore.ContextWithEffort(context.Background(), e)))
+	require.NoError(t, err)
 
-		var consumed uint64
-		for _, g := range result.TxnGroups {
-			for _, txn := range g.Txns {
-				consumed += uint64(txn.AppBudgetConsumed + txn.LogicSigBudgetConsumed)
-			}
+	var consumed uint64
+	for _, g := range result.TxnGroups {
+		for _, txn := range g.Txns {
+			consumed += uint64(txn.AppBudgetConsumed + txn.LogicSigBudgetConsumed)
 		}
-		require.Greater(t, consumed, uint64(3*10_000))
-		c := e.Counts()
-		require.Equal(t, consumed, c.Opcodes)
-		require.Positive(t, c.Lookups)
-		require.Zero(t, c.History, "no time travel")
-		require.Zero(t, c.Scanned)
-	})
+	}
+	require.Greater(t, consumed, uint64(3*10_000))
+	c := e.Counts()
+	require.Equal(t, consumed, c.Opcodes)
+	require.Positive(t, c.Lookups)
+	require.Zero(t, c.History, "no time travel")
+	require.Zero(t, c.Scanned)
 }
 
 // TestSimulateEffortAborted checks that an aborted simulation counts what its programs ran.
@@ -69,7 +67,7 @@ func TestSimulateEffortAborted(t *testing.T) {
 	defer env.Close()
 
 	// build the groups first: creating the app adds a block, which mustn't eat into the time limit
-	request := loopRequest(loopGroups(t, env, 1), false)
+	request := loopRequest(loopGroups(t, env, 1))
 	e := ledgercore.NewEffort()
 	ctx, cancel := context.WithTimeout(ledgercore.ContextWithEffort(context.Background(), e), 50*time.Millisecond)
 	defer cancel()

@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"unsafe"
 
 	"github.com/labstack/echo/v4"
@@ -33,6 +34,7 @@ import (
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/protocol"
+	"github.com/algorand/go-algorand/util"
 )
 
 // PreEncodedQuerySchema mirrors model.ApplicationStateSchema
@@ -79,10 +81,10 @@ type PreEncodedQueryCallResult struct {
 
 // PreEncodedQueryRoundResult mirrors model.QueryRoundResult
 type PreEncodedQueryRoundResult struct {
-	Round    basics.Round                    `codec:"round"`
-	Protocol *model.SimulateProtocolOverride `codec:"protocol,omitempty"`
-	Error    *string                         `codec:"error,omitempty"`
-	Calls    []PreEncodedQueryCallResult     `codec:"calls,omitempty"`
+	Round    basics.Round                 `codec:"round"`
+	Protocol *model.QueryProtocolOverride `codec:"protocol,omitempty"`
+	Error    *string                      `codec:"error,omitempty"`
+	Calls    []PreEncodedQueryCallResult  `codec:"calls,omitempty"`
 }
 
 // PreEncodedQueryResponse mirrors model.QueryResponse
@@ -271,4 +273,23 @@ func convertQueryResult(result simulation.QueryResult) PreEncodedQueryResponse {
 		response.Rounds[i] = out
 	}
 	return response
+}
+
+// convertProtocolOverride converts how a query's protocol applied to a round.
+func convertProtocolOverride(po *simulation.ProtocolOverride) *model.QueryProtocolOverride {
+	if po == nil {
+		return nil
+	}
+	notes := util.Map(po.Notes, func(n simulation.ProtocolNote) model.QueryProtocolNote {
+		hits := util.Map(n.Hits, func(h simulation.NoteHit) model.QueryProtocolNoteHit {
+			return model.QueryProtocolNoteHit{Group: h.Group, Path: slices.Clone[[]int, int](h.Path)}
+		})
+		return model.QueryProtocolNote{Code: n.Code, Message: n.Message, Hits: sliceOrNil(hits)}
+	})
+	return &model.QueryProtocolOverride{
+		From:    string(po.From),
+		To:      string(po.To),
+		Applied: po.Applied,
+		Notes:   sliceOrNil(notes),
+	}
 }
