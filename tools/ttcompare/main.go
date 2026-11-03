@@ -22,6 +22,11 @@
 // which one store may have skipped or removed and the other kept) are not
 // versions, so stores that differ only by them compare equal.
 //
+// With -full it compares everything instead of samples: every common round,
+// and every object's state at the first common round and each of its
+// versions after it, in one pass over each store, and checks each store's box
+// and asset holders indexes against its records.
+//
 // The stores are opened read-only but locked: stop their algods, or compare
 // copies (e.g. btrfs snapshots or reflink copies).
 package main
@@ -30,11 +35,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/algorand/go-algorand/config"
@@ -54,6 +61,7 @@ func main() {
 	maxVersions := flag.Int("maxversions", 5000, "versions compared per object at most")
 	seed := flag.Uint64("seed", 0, "random seed; 0 picks one")
 	maxDiffs := flag.Int("maxdiffs", 50, "differences printed at most")
+	full := flag.Bool("full", false, "compare every round and every object's versions instead of samples (reads both stores in full)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] <data dir or time travel store> <data dir or time travel store>\n", os.Args[0])
 		flag.PrintDefaults()
@@ -73,8 +81,13 @@ func main() {
 		maxDiffs:    *maxDiffs,
 		seenObjs:    map[string]bool{},
 	}
-	fmt.Printf("seed %d\n", *seed)
-	err := c.run(flag.Arg(0), flag.Arg(1), *rounds, *samples, *window)
+	var err error
+	if *full {
+		err = c.runFull(flag.Arg(0), flag.Arg(1))
+	} else {
+		fmt.Printf("seed %d\n", *seed)
+		err = c.run(flag.Arg(0), flag.Arg(1), *rounds, *samples, *window)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -109,19 +122,31 @@ func (c *comparer) diff(format string, args ...any) {
 	}
 }
 
-func (c *comparer) run(pathA, pathB string, rounds, samples, window int) error {
+// open opens both stores and finds the rounds they have in common. The
+// returned function closes them.
+func (c *comparer) open(pathA, pathB string) (func(), error) {
 	var err error
 	if c.a, err = openStore(pathA); err != nil {
-		return err
+		return nil, err
 	}
-	defer c.a.Close()
 	if c.b, err = openStore(pathB); err != nil {
-		return err
+		c.a.Close()
+		return nil, err
 	}
-	defer c.b.Close()
+	closeStores := func() { c.a.Close(); c.b.Close() }
 	if err = c.commonRange(); err != nil {
+		closeStores()
+		return nil, err
+	}
+	return closeStores, nil
+}
+
+func (c *comparer) run(pathA, pathB string, rounds, samples, window int) error {
+	closeStores, err := c.open(pathA, pathB)
+	if err != nil {
 		return err
 	}
+	defer closeStores()
 
 	start := time.Now()
 	if err = c.compareTotals(); err != nil {
@@ -177,8 +202,10 @@ func openStore(path string) (*timetravel.Store, error) {
 		return nil, fmt.Errorf("no time travel store: %w", err)
 	}
 	s, err := timetravel.Open(path, timetravel.Options{ReadOnly: true})
-	if err != nil {
+	if errors.Is(err, syscall.EAGAIN) { // locked by another process
 		return nil, fmt.Errorf("opening %s: %w (is its algod running?)", path, err)
+	} else if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	return s, nil
 }
@@ -196,6 +223,11 @@ func (c *comparer) commonRange() error {
 		}
 		firsts[i], lasts[i] = first, last
 		fmt.Printf("store %c: rounds %d..%d\n", 'A'+i, first, last)
+		if reason, marked, err := s.Diverged(); err != nil {
+			return err
+		} else if marked {
+			fmt.Printf("store %c is marked diverged: %s\n", 'A'+i, reason)
+		}
 	}
 	c.lo, c.hi = max(firsts[0], firsts[1]), min(lasts[0], lasts[1])
 	if c.lo > c.hi {

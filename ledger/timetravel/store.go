@@ -48,6 +48,7 @@ package timetravel
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -58,6 +59,7 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/sstable"
+	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/algorand/go-deadlock"
 )
@@ -112,13 +114,18 @@ type Options struct {
 	// ReadOnly opens an existing store without writing to it: no new store,
 	// no compactions, and AddRound, RemoveNoops, CompactRecords and Sync
 	// fail with ErrReadOnly. The store is still locked, so another process
-	// cannot open it meanwhile.
+	// cannot open it meanwhile, but on a read-only file system (a btrfs
+	// read-only snapshot) the lock is shared: other read-only opens may
+	// hold it too (see readOnlyFS).
 	ReadOnly bool
 	// HoldersIndex makes a new store index asset holders from its first
 	// round: AddRound writes that round and the index in one batch, and every
 	// later round keeps the index up to date. An existing store
 	// ignores it: build its index with IndexHolders.
 	HoldersIndex bool
+
+	// fs is the file system under the store, vfs.Default if nil (tests).
+	fs vfs.FS
 }
 
 // Change is the new value of one object in a round.
@@ -225,6 +232,12 @@ func Open(dir string, o Options) (*Store, error) {
 		l.Compression = func() *sstable.CompressionProfile { return o.Compression }
 	}
 	opts.TargetFileSizes[0] = 64 << 20
+	if o.fs != nil {
+		opts.FS = o.fs
+	}
+	if o.ReadOnly {
+		opts.FS = readOnlyFS{cmp.Or(opts.FS, vfs.Default)}
+	}
 	opts.EnsureDefaults()
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
