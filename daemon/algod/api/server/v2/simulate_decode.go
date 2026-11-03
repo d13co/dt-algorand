@@ -67,9 +67,9 @@ type simulateGroupLists struct {
 	Txns codec.Raw `codec:"txns"`
 }
 
-// maxRemovedFieldBytes is the longest encoding of a removed field that is decoded to learn whether
-// it is set. Every value that leaves it unset (null, false, 0, "", an empty list or map) is shorter;
-// a longer one is set.
+// maxRemovedFieldBytes is the longest encoding of a removed field, JSON whitespace outside strings
+// left out, that is decoded to learn whether it is set. Every value that leaves it unset (null,
+// false, 0, "", an empty list or map) is shorter; a longer one is set.
 const maxRemovedFieldBytes = 64
 
 // removedFields returns the keys of the removed fields that l sets, in field order. They are the
@@ -83,7 +83,11 @@ func (l *simulateRequestLists) removedFields(handle codec.Handle) ([]string, err
 		if len(raw) == 0 {
 			continue
 		}
-		if len(raw) <= maxRemovedFieldBytes {
+		short := len(raw) <= maxRemovedFieldBytes
+		if handle == protocol.JSONStrictHandle {
+			raw, short = compactJSON(raw, maxRemovedFieldBytes)
+		}
+		if short {
 			var value any
 			if err := decode(handle, raw, &value); err != nil {
 				return nil, err
@@ -96,6 +100,35 @@ func (l *simulateRequestLists) removedFields(handle codec.Handle) ([]string, err
 		set = append(set, key)
 	}
 	return set, nil
+}
+
+// compactJSON returns b, a JSON value, without the whitespace outside its strings, and whether that
+// is at most limit bytes. When it is longer, it returns nil and false without copying the rest.
+func compactJSON(b []byte, limit int) ([]byte, bool) {
+	out := make([]byte, 0, min(len(b), limit))
+	inString, escaped := false, false
+	for _, c := range b {
+		switch {
+		case inString:
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			continue
+		case c == '"':
+			inString = true
+		}
+		if len(out) == limit {
+			return nil, false
+		}
+		out = append(out, c)
+	}
+	return out, true
 }
 
 // removedFieldSet reports whether a removed field's decoded value asks for something: null, false,

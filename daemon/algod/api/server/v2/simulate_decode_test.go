@@ -153,6 +153,11 @@ func TestDecodeSimulateRequest(t *testing.T) {
 		{`{"txn-groups":[], "rounds":[1]}`, "simulate no longer takes rounds"},
 		{`{"txn-groups":[], "protocol":"` + strings.Repeat("x", 100) + `"}`, "simulate no longer takes protocol"},
 		{`{"txn-groups":[], "parallel-groups":false, "skip-validity-window":0, "protocol":""}`, ""},
+		// Whitespace in a value is not what makes it long.
+		{`{"txn-groups":[], "rounds":[` + strings.Repeat(" ", 80) + `]}`, ""},
+		{"{\"txn-groups\":[],\n  \"rounds\": [\n" + strings.Repeat(" ", 80) + "\n  ],\n  \"protocol\":\n" + strings.Repeat(" ", 80) + "\"\"\n}", ""},
+		{`{"txn-groups":[], "rounds":[` + strings.Repeat(" ", 80) + `1]}`, "simulate no longer takes rounds"},
+		{`{"txn-groups":[], "protocol":"` + strings.Repeat(" ", 80) + `"}`, "simulate no longer takes protocol"},
 	} {
 		_, err := decodeSimulateRequest([]byte(tc.body), 16, 16)
 		if tc.want == "" {
