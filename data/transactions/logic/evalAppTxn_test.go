@@ -1079,7 +1079,7 @@ txn Sender; itxn_field Receiver;
 	ledger.NewAccount(appAddr(888), 1000+2*minFee-401) // replenish
 	TestApp(t, "itxn_begin"+pay+"itxn_next"+pay+
 		"int 540; bzero; itxn_field Note; itxn_submit; int 1", ep,
-		"group fee 1.601mA too small (needs 41uA more)")
+		"group fee 1.601mA too small (needs 41uA more) in a group of 2 inner transactions")
 	TestApp(t, "itxn_begin"+pay+"itxn_next"+pay+
 		"int 540; bzero; itxn_field Note; int 1041; itxn_field Fee; itxn_submit; int 1", ep,
 		"group fee 1.641mA too small (needs 1uA more)")
