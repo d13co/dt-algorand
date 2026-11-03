@@ -92,7 +92,7 @@ The examples build `~/tt` and start it with `goal`. To build the node of a dtalg
 
 ## Removing no-op records
 
-Stores written before the ledger skipped [no-op writes](../../ledger/timetravel/README.md#no-op-writes) hold a record for the totals and the rewards pool in nearly every round. With the node stopped, remove them:
+Stores written before the ledger skipped [no-op writes](../../ledger/timetravel/README.md#no-op-writes) hold a record for the totals and the rewards pool in nearly every round. Newer stores, synced from genesis or imported, hold fewer, but not none: the ledger skips only the rewrites its in-memory cache of recently written objects catches, so an object rewritten unchanged after a long gap is stored again, as is the tombstone of an object created and deleted in one round. With the node stopped, remove them:
 
 ```sh
 goal node stop -d ~/tt
@@ -108,6 +108,18 @@ scanned 91824136 records, removed 50291820
 removed 50291820 records in 22s; compacting
 compacted in 59s: 3.21 GiB -> 2.94 GiB
 ```
+
+On a mainnet store synced from genesis with a build that skips no-op writes (rounds 0..66,581,756), on an underspecced VPS (6 vCPUs, Broadwell at 2.2 GHz), the removal and the compaction took about 1.5 hours, before the box index rebuild:
+
+```
+removing no-op records from /var/lib/dtalgorand/mainnet-v1.0/ledger.timetravel (rounds 0..66581756, 68.38 GiB)
+removed 104758281 records in 33m49s; compacting
+compacted in 55m3s: 68.38 GiB -> 65.62 GiB
+```
+
+That is 4% of the store: the records removed repeat the version before them, which compression already made cheap. On a store written by a build that skips no-op writes, `-dedup` is optional.
+
+The progress lines show no total. A line prints only after 65,536 more writes (removals and box index entries), so it goes quiet for a long stretch over the holding records, which repeat little.
 
 Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it. The compaction at the end rewrites the store in consecutive key ranges, deleting each range's old files when it finishes, so it needs free disk on the store's partition for a range rather than for a second copy of the store: 1.9 GiB at the peak on an 8.7 GiB test store, where one compaction of the whole store took 6.8 GiB. On mainnet (about 70 GB) expect roughly 3–8 GiB per range, and up to ~15 GiB with Pebble's own compactions running alongside. `-dedup` also rebuilds the box index (next section), so a store that needs both needs only `-dedup`; after a Ctrl-C the index covers only the rounds added since, until a rerun.
 
