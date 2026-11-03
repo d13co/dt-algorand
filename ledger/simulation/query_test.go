@@ -325,6 +325,33 @@ pop; byte "done"; log; int 1`
 	require.LessOrEqual(t, call.Cost, 1000+10)
 }
 
+// TestQueryLimitsFromConfig: max-calls is never more than max-total-calls, so a request of
+// max-calls calls at one round is always within the limits.
+func TestQueryLimitsFromConfig(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	cfg := config.GetDefaultLocal()
+	for _, tc := range []struct {
+		calls, rounds, total uint64
+		wantCalls, wantTotal int
+	}{
+		{1024, 16, 100, 100, 100},
+		{1024, 16, 5000, 1024, 5000},
+		{1024, 16, 0, 1024, 1024 * 16},
+		{1024, 16, 1 << 20, 1024, 1024 * 16},
+		{0, 16, 100, 0, 0},
+	} {
+		cfg.MaxAPIQueryCalls, cfg.MaxAPIQueryRounds, cfg.MaxAPIQueryTotalCalls = tc.calls, tc.rounds, tc.total
+		l := simulation.QueryLimitsFromConfig(cfg)
+		require.Equal(t, tc.wantCalls, l.MaxCalls, tc)
+		require.Equal(t, tc.wantTotal, l.MaxTotalCalls, tc)
+		if tc.wantCalls > 0 {
+			require.NoError(t, l.CheckSize(l.MaxCalls, 0), tc)
+		}
+	}
+}
+
 // TestQueryValidate: requests that are invalid as a whole fail before anything runs.
 func TestQueryValidate(t *testing.T) {
 	partitiontest.PartitionTest(t)

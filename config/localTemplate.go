@@ -662,7 +662,8 @@ type Local struct {
 	// rounds it lists (1 when it lists none), duplicates included, as for MaxAPIQueryRounds. A request over it
 	// fails with 400 before it takes a slot. The default allows 1024 calls at one round, or 64 calls at 16
 	// rounds. 0 means no limit beyond MaxAPIQueryCalls times MaxAPIQueryRounds. Clients read it from GET
-	// /v2/capabilities (max-total-calls). Non-standard fork feature.
+	// /v2/capabilities (max-total-calls). A value below MaxAPIQueryCalls lowers that limit to it too.
+	// Non-standard fork feature.
 	MaxAPIQueryTotalCalls uint64 `version[39]:"1024"`
 
 	// QueryParallelism is the most workers that run the calls of one POST /v2/query request at once. The

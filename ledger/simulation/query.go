@@ -50,7 +50,8 @@ const ProtocolRound = "round"
 
 // QueryLimits are a node's limits on query requests (QueryLimitsFromConfig).
 type QueryLimits struct {
-	// MaxCalls is the most calls a request may hold. 0 disables queries.
+	// MaxCalls is the most calls a request may hold; QueryLimitsFromConfig keeps it at most
+	// MaxTotalCalls. 0 disables queries.
 	MaxCalls int
 	// MaxCallBudget is the most opcode budget a call may ask for, and the budget of one that asks
 	// for none.
@@ -81,6 +82,8 @@ func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 	if cfg.MaxAPIQueryTotalCalls > 0 {
 		maxTotalCalls = min(maxTotalCalls, cfg.MaxAPIQueryTotalCalls)
 	}
+	// More calls than maxTotalCalls are over it even at one round, so max-calls never reports them.
+	maxCalls = min(maxCalls, maxTotalCalls)
 	return QueryLimits{
 		MaxCalls:          int(maxCalls),
 		MaxCallBudget:     int(max(1, min(cfg.MaxAPIQueryCallBudget, MaxExtraOpcodeBudgetCeiling))),
@@ -102,12 +105,10 @@ func (l QueryLimits) CheckEnabled() error {
 }
 
 // CheckSize returns an InvalidRequestError if a request with the given numbers of calls and listed
-// rounds is over l: too many calls, rounds, or calls times rounds, where a request that lists no
-// rounds runs at one.
+// rounds is over l: too many rounds, calls times rounds, or calls, where a request that lists no
+// rounds runs at one. Calls times rounds comes before calls, so that a request over a MaxCalls that
+// MaxTotalCalls lowered is told about MaxAPIQueryTotalCalls.
 func (l QueryLimits) CheckSize(calls, rounds int) error {
-	if calls > l.MaxCalls {
-		return invalidQuery("too many calls: got %d, the limit is %d", calls, l.MaxCalls)
-	}
 	if maxRounds := max(1, l.MaxRounds); rounds > maxRounds {
 		return invalidQuery("too many rounds: got %d, the limit is %d", rounds, maxRounds)
 	}
@@ -115,6 +116,9 @@ func (l QueryLimits) CheckSize(calls, rounds int) error {
 	if total := int64(calls) * int64(max(1, rounds)); l.MaxTotalCalls > 0 && total > int64(l.MaxTotalCalls) {
 		return invalidQuery("too many calls in total: %d calls at %d rounds is %d, the limit is %d (MaxAPIQueryTotalCalls)",
 			calls, max(1, rounds), total, l.MaxTotalCalls)
+	}
+	if calls > l.MaxCalls {
+		return invalidQuery("too many calls: got %d, the limit is %d", calls, l.MaxCalls)
 	}
 	return nil
 }

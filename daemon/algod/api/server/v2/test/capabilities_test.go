@@ -114,11 +114,12 @@ func TestCapabilities(t *testing.T) {
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
 			Query: &model.QueryLimits{MaxCalls: 10, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 4, MaxTotalCalls: 40},
 		}},
+		// max-calls comes down to max-total-calls: more calls are over it even at one round.
 		{"total calls under calls times rounds", func(c *config.Local) {
 			c.MaxAPIQueryTotalCalls = 100
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
-			Query: &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 100},
+			Query: &model.QueryLimits{MaxCalls: 100, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 100},
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
