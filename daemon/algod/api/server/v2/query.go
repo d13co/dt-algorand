@@ -193,13 +193,9 @@ type queryRequestLists struct {
 // rounds are decoded only once their counts are within limits. As in a full decode, a key listed
 // twice keeps its last value; the earlier ones cost only a copy of their bytes.
 func decodeQueryRequest(body []byte, limits simulation.QueryLimits) (PreEncodedQueryRequest, error) {
-	var lists queryRequestLists
-	var handle codec.Handle = protocol.CodecHandle
-	if err := decode(handle, body, &lists); err != nil {
-		lists, handle = queryRequestLists{}, protocol.JSONStrictHandle
-		if err = decode(handle, body, &lists); err != nil {
-			return PreEncodedQueryRequest{}, err
-		}
+	lists, handle, err := decodeMsgpackOrJSON[queryRequestLists](body)
+	if err != nil {
+		return PreEncodedQueryRequest{}, err
 	}
 	isJSON := handle == protocol.JSONStrictHandle
 	calls, err := encodedListLen(lists.Calls, isJSON)
@@ -236,12 +232,28 @@ func decodeQueryRequest(body []byte, limits simulation.QueryLimits) (PreEncodedQ
 	return r, nil
 }
 
+// decodeMsgpackOrJSON decodes body as msgpack, or else as JSON, whatever its Content-Type, and
+// returns the handle that decoded it.
+func decodeMsgpackOrJSON[T any](body []byte) (T, codec.Handle, error) {
+	var v T
+	if err := decode(protocol.CodecHandle, body, &v); err == nil {
+		return v, protocol.CodecHandle, nil
+	}
+	v = *new(T)
+	if err := decode(protocol.JSONStrictHandle, body, &v); err != nil {
+		return *new(T), nil, err
+	}
+	return v, protocol.JSONStrictHandle, nil
+}
+
 // errNotList is the error of a list that is encoded as something else.
 var errNotList = errors.New("expected a list")
 
 // encodedListLen returns the number of entries of b, an encoded list: an array or nil, in JSON when
 // isJSON is set, else in msgpack. An empty b, a list left out, has none. For JSON it counts the
-// commas between entries, so it is never less than what a decode of b holds.
+// commas between entries, so it is never less than what a decode of b holds. It does not check the
+// syntax of b: b is a codec.Raw, which the codec parses as it copies it out, so a malformed list
+// fails to decode before it is counted.
 func encodedListLen(b []byte, isJSON bool) (int, error) {
 	if !isJSON {
 		if len(b) == 0 || b[0] == 0xc0 { // nil

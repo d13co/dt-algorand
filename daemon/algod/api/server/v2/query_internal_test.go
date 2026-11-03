@@ -177,3 +177,30 @@ func TestDecodeQueryRequestLimits(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, r.Calls, 1)
 }
+
+// TestDecodeQueryRequestMalformed: a body whose lists are malformed fails to decode, however many
+// entries they seem to have, rather than as over the limits: the codec checks a list's syntax as it
+// copies it out, before encodedListLen counts it.
+func TestDecodeQueryRequestMalformed(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	limits := simulation.QueryLimits{MaxCalls: 4, MaxRounds: 16, MaxTotalCalls: 64}
+	many := strings.Repeat(`{},`, 8)
+	for _, body := range []string{
+		`{"calls":[{},]}`,
+		`{"calls":[,{}]}`,
+		`{"calls":[{},,{}]}`,
+		`{"calls":[` + many + `]}`,
+		`{"calls":[` + strings.Repeat(`,`, 8) + `]}`,
+		`{"calls":[` + many + `{}],"rounds":[1,2,]}`,
+	} {
+		_, err := decodeQueryRequest([]byte(body), limits)
+		require.Error(t, err, body)
+		require.NotContains(t, err.Error(), "too many", body)
+	}
+	r, err := decodeQueryRequest([]byte("{\"calls\":[ {} ,\n {} ], \"rounds\": [ 1 , 2 ] }"), limits)
+	require.NoError(t, err)
+	require.Len(t, r.Calls, 2)
+	require.Len(t, r.Rounds, 2)
+}

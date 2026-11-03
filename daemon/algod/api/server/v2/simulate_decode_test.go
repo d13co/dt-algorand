@@ -206,3 +206,54 @@ func TestDecodeSimulateRequestLimits(t *testing.T) {
 	require.Len(t, r.TxnGroups, 1)
 	require.Len(t, r.TxnGroups[0].Txns, 1)
 }
+
+// TestDecodeSimulateRequestGroupForms: msgpack groups in the forms a full decode also takes, or
+// refuses, decode as it would: a key listed twice, an unknown key, a group as an array, a nil group,
+// a binary key.
+func TestDecodeSimulateRequestGroupForms(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	txn := protocol.Encode(&simulateTestTxns()[0])
+	txns := func(n int) []byte { return append([]byte{0x90 | byte(n)}, bytes.Repeat(txn, n)...) }
+	body := func(groups ...[]byte) []byte {
+		b := append(append([]byte{0x81}, msgpStr("txn-groups")...), 0x90|byte(len(groups)))
+		for _, g := range groups {
+			b = append(b, g...)
+		}
+		return b
+	}
+	txnsKey := msgpStr("txns")
+	for _, tc := range []struct {
+		name  string
+		body  []byte
+		txns  []int // the txns of each group, when it decodes
+		error string
+	}{
+		{"map", body(append(append([]byte{0x81}, txnsKey...), txns(2)...)), []int{2}, ""},
+		{"two groups", body(append(append([]byte{0x81}, txnsKey...), txns(1)...), append(append([]byte{0x81}, txnsKey...), txns(3)...)), []int{1, 3}, ""},
+		{"key twice", body(append(append(append(append([]byte{0x82}, txnsKey...), txns(3)...), txnsKey...), txns(1)...)), []int{1}, ""},
+		{"too many, then one", body(append(append(append(append([]byte{0x82}, txnsKey...), append([]byte{0xdc, 0, 17}, bytes.Repeat(txn, 17)...)...), txnsKey...), txns(1)...)), []int{1}, ""},
+		{"unknown key", body(append(append(append(append([]byte{0x82}, txnsKey...), txns(1)...), msgpStr("x")...), 0x01)), nil, "x"},
+		{"array", body(append([]byte{0x91}, txns(2)...)), []int{2}, ""},
+		{"binary key", body(append(append([]byte{0x81, 0xc4, 4}, "txns"...), txns(2)...)), []int{2}, ""},
+		{"nil group", body([]byte{0xc0}), nil, "empty txgroup"},
+		{"empty map", body([]byte{0x80}), nil, "empty txgroup"},
+		{"not a group", body([]byte{0x01}), nil, "txn-groups"},
+	} {
+		got, err := decodeSimulateRequest(tc.body, 16, 16)
+		var full PreEncodedSimulateRequest
+		fullErr := decode(protocol.CodecHandle, tc.body, &full)
+		if tc.error != "" {
+			require.ErrorContains(t, err, tc.error, tc.name)
+			continue
+		}
+		require.NoError(t, err, tc.name)
+		require.NoError(t, fullErr, tc.name)
+		require.Equal(t, full, got, tc.name)
+		require.Len(t, got.TxnGroups, len(tc.txns), tc.name)
+		for i, n := range tc.txns {
+			require.Len(t, got.TxnGroups[i].Txns, n, tc.name)
+		}
+	}
+}

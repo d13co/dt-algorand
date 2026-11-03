@@ -164,13 +164,9 @@ func removedFieldSet(v any) bool {
 // before it decodes the txns. As in a full decode, a key listed twice keeps its last value.
 // Msgpack txns are decoded as the node decodes txns from the network.
 func decodeSimulateRequest(body []byte, maxGroups, maxGroupSize int) (PreEncodedSimulateRequest, error) {
-	var lists simulateRequestLists
-	var handle codec.Handle = protocol.CodecHandle
-	if err := decode(handle, body, &lists); err != nil {
-		lists, handle = simulateRequestLists{}, protocol.JSONStrictHandle
-		if err = decode(handle, body, &lists); err != nil {
-			return PreEncodedSimulateRequest{}, err
-		}
+	lists, handle, err := decodeMsgpackOrJSON[simulateRequestLists](body)
+	if err != nil {
+		return PreEncodedSimulateRequest{}, err
 	}
 	isJSON := handle == protocol.JSONStrictHandle
 
@@ -202,13 +198,22 @@ func decodeSimulateRequest(body []byte, maxGroups, maxGroupSize int) (PreEncoded
 	if n == 0 {
 		return r, nil
 	}
-	var groups []simulateGroupLists
-	if err = decode(handle, lists.TxnGroups, &groups); err != nil {
+	var groupTxns [][]byte
+	if isJSON {
+		var groups []simulateGroupLists
+		if err = decode(handle, lists.TxnGroups, &groups); err != nil {
+			return PreEncodedSimulateRequest{}, fmt.Errorf("txn-groups: %w", err)
+		}
+		groupTxns = make([][]byte, len(groups))
+		for i, g := range groups {
+			groupTxns[i] = g.Txns
+		}
+	} else if groupTxns, err = msgpackGroupTxns(lists.TxnGroups); err != nil {
 		return PreEncodedSimulateRequest{}, fmt.Errorf("txn-groups: %w", err)
 	}
-	r.TxnGroups = make([]PreEncodedSimulateRequestTransactionGroup, len(groups))
-	for i, g := range groups {
-		n, err = encodedListLen(g.Txns, isJSON)
+	r.TxnGroups = make([]PreEncodedSimulateRequestTransactionGroup, len(groupTxns))
+	for i, g := range groupTxns {
+		n, err = encodedListLen(g, isJSON)
 		if err != nil {
 			return PreEncodedSimulateRequest{}, fmt.Errorf("txn-groups[%d].txns: %w", i, err)
 		}
@@ -220,9 +225,9 @@ func decodeSimulateRequest(body []byte, maxGroups, maxGroupSize int) (PreEncoded
 		}
 		var txns []transactions.SignedTxn
 		if isJSON {
-			err = decode(handle, g.Txns, &txns)
+			err = decode(handle, g, &txns)
 		} else {
-			txns, err = decodeSignedTxnsMsgp(g.Txns)
+			txns, err = decodeSignedTxnsMsgp(g)
 		}
 		if err != nil {
 			return PreEncodedSimulateRequest{}, fmt.Errorf("txn-groups[%d].txns: %w", i, err)
@@ -230,6 +235,56 @@ func decodeSimulateRequest(body []byte, maxGroups, maxGroupSize int) (PreEncoded
 		r.TxnGroups[i].Txns = txns
 	}
 	return r, nil
+}
+
+// msgpackGroupTxns returns the encoded txns of each group of b, a msgpack array of groups, as views
+// into b rather than copies. A group that is not a map of only its txns (an array, nil, or a map with
+// another key) is decoded as a full decode would, and its txns copied.
+func msgpackGroupTxns(b []byte) ([][]byte, error) {
+	n, _, rest, err := msgp.ReadArrayHeaderBytes(b)
+	if err != nil {
+		return nil, err
+	}
+	groups := make([][]byte, n)
+	for i := range groups {
+		group := rest
+		if rest, err = msgp.Skip(rest); err != nil {
+			return nil, err
+		}
+		group = group[:len(group)-len(rest)]
+		if txns, ok := msgpackTxnsField(group); ok {
+			groups[i] = txns
+			continue
+		}
+		var g simulateGroupLists
+		if err = decode(protocol.CodecHandle, group, &g); err != nil {
+			return nil, err
+		}
+		groups[i] = g.Txns
+	}
+	return groups, nil
+}
+
+// msgpackTxnsField returns the value of the txns key of group, a msgpack map whose only key is txns,
+// as a view into group. A key listed twice keeps its last value, as in a full decode. It returns
+// false for any other group.
+func msgpackTxnsField(group []byte) (txns []byte, ok bool) {
+	n, isNil, rest, err := msgp.ReadMapHeaderBytes(group)
+	if err != nil || isNil {
+		return nil, false
+	}
+	for range n {
+		var key []byte
+		if key, rest, err = msgp.ReadMapKeyZC(rest); err != nil || string(key) != "txns" {
+			return nil, false
+		}
+		value := rest
+		if rest, err = msgp.Skip(rest); err != nil {
+			return nil, false
+		}
+		txns = value[:len(value)-len(rest)]
+	}
+	return txns, true
 }
 
 // decodeSignedTxnsMsgp decodes b, a msgpack array of txns, with their generated msgp decoder, as the
