@@ -4795,7 +4795,7 @@
         }
       }
     },
-    "SimulateProtocolOverride": {
+    "QueryProtocolOverride": {
       "description": "How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.",
       "type": "object",
       "required": ["from", "to", "applied"],
@@ -4816,12 +4816,12 @@
           "description": "Where running under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SimulateProtocolNote"
+            "$ref": "#/definitions/QueryProtocolNote"
           }
         }
       }
     },
-    "SimulateProtocolNote": {
+    "QueryProtocolNote": {
       "description": "A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.",
       "type": "object",
       "required": ["code", "message"],
@@ -4836,12 +4836,12 @@
           "description": "The calls and inner transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SimulateProtocolNoteHit"
+            "$ref": "#/definitions/QueryProtocolNoteHit"
           }
         }
       }
     },
-    "SimulateProtocolNoteHit": {
+    "QueryProtocolNoteHit": {
       "description": "A call or inner transaction that hit a protocol note. Non-standard fork feature.",
       "type": "object",
       "required": ["group", "path"],
@@ -4969,7 +4969,7 @@
           "x-go-type": "basics.Round"
         },
         "protocol": {
-          "$ref": "#/definitions/SimulateProtocolOverride"
+          "$ref": "#/definitions/QueryProtocolOverride"
         },
         "error": {
           "description": "Why the round could not be queried: outside the history, a protocol it can't run under, or a failure of the node to read it while the calls ran. There are no calls then.",

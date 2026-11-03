@@ -382,7 +382,7 @@ func TestQueryRESTProtocol(t *testing.T) {
 				require.Equal(t, string(protocol.ConsensusFuture), po.To)
 			}
 			require.NotNil(t, po.Notes)
-			var hits *[]model.SimulateProtocolNoteHit
+			var hits *[]model.QueryProtocolNoteHit
 			for _, note := range *po.Notes {
 				require.NotEmpty(t, note.Message, note.Code)
 				if note.Code == "block-incentive-fields" {
@@ -390,7 +390,7 @@ func TestQueryRESTProtocol(t *testing.T) {
 				}
 			}
 			require.NotNil(t, hits, "%s %s", format, target)
-			require.Equal(t, []model.SimulateProtocolNoteHit{{Group: 0, Path: []int{0}}, {Group: 1, Path: []int{0}}}, *hits)
+			require.Equal(t, []model.QueryProtocolNoteHit{{Group: 0, Path: []int{0}}, {Group: 1, Path: []int{0}}}, *hits)
 		}
 	}
 

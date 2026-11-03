@@ -81,10 +81,10 @@ type PreEncodedQueryCallResult struct {
 
 // PreEncodedQueryRoundResult mirrors model.QueryRoundResult
 type PreEncodedQueryRoundResult struct {
-	Round    basics.Round                    `codec:"round"`
-	Protocol *model.SimulateProtocolOverride `codec:"protocol,omitempty"`
-	Error    *string                         `codec:"error,omitempty"`
-	Calls    []PreEncodedQueryCallResult     `codec:"calls,omitempty"`
+	Round    basics.Round                 `codec:"round"`
+	Protocol *model.QueryProtocolOverride `codec:"protocol,omitempty"`
+	Error    *string                      `codec:"error,omitempty"`
+	Calls    []PreEncodedQueryCallResult  `codec:"calls,omitempty"`
 }
 
 // PreEncodedQueryResponse mirrors model.QueryResponse
@@ -276,17 +276,17 @@ func convertQueryResult(result simulation.QueryResult) PreEncodedQueryResponse {
 }
 
 // convertProtocolOverride converts how a query's protocol applied to a round.
-func convertProtocolOverride(po *simulation.ProtocolOverride) *model.SimulateProtocolOverride {
+func convertProtocolOverride(po *simulation.ProtocolOverride) *model.QueryProtocolOverride {
 	if po == nil {
 		return nil
 	}
-	notes := util.Map(po.Notes, func(n simulation.ProtocolNote) model.SimulateProtocolNote {
-		hits := util.Map(n.Hits, func(h simulation.NoteHit) model.SimulateProtocolNoteHit {
-			return model.SimulateProtocolNoteHit{Group: h.Group, Path: slices.Clone[[]int, int](h.Path)}
+	notes := util.Map(po.Notes, func(n simulation.ProtocolNote) model.QueryProtocolNote {
+		hits := util.Map(n.Hits, func(h simulation.NoteHit) model.QueryProtocolNoteHit {
+			return model.QueryProtocolNoteHit{Group: h.Group, Path: slices.Clone[[]int, int](h.Path)}
 		})
-		return model.SimulateProtocolNote{Code: n.Code, Message: n.Message, Hits: sliceOrNil(hits)}
+		return model.QueryProtocolNote{Code: n.Code, Message: n.Message, Hits: sliceOrNil(hits)}
 	})
-	return &model.SimulateProtocolOverride{
+	return &model.QueryProtocolOverride{
 		From:    string(po.From),
 		To:      string(po.To),
 		Applied: po.Applied,

@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
@@ -74,4 +75,22 @@ func TestFirstListenerSetupGetsPassedPortWhenPassedPortNonZero(t *testing.T) {
 	require.NoError(t, err)
 	actualAddr := listener.Addr().String()
 	require.Equal(t, expectedAddr, actualAddr)
+}
+
+// TestIgnoredSimulateSettings checks that only the deprecated simulate settings changed from
+// their defaults are reported.
+func TestIgnoredSimulateSettings(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	cfg := config.GetDefaultLocal()
+	require.Empty(t, ignoredSimulateSettings(cfg))
+
+	cfg.SimulateResourceLimitMultiplier = 128
+	cfg.SimulateRoundsParallelism = 8
+	require.Equal(t, []string{"SimulateResourceLimitMultiplier 128", "SimulateRoundsParallelism 8"}, ignoredSimulateSettings(cfg))
+
+	cfg = config.GetDefaultLocal()
+	cfg.MaxAPISimulateRounds = 0
+	require.Equal(t, []string{"MaxAPISimulateRounds 0"}, ignoredSimulateSettings(cfg))
 }

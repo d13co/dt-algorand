@@ -1145,6 +1145,39 @@ type QueryLimits struct {
 	MaxRounds uint64 `json:"max-rounds"`
 }
 
+// QueryProtocolNote A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
+type QueryProtocolNote struct {
+	Code string `json:"code"`
+
+	// Hits The calls and inner transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.
+	Hits    *[]QueryProtocolNoteHit `json:"hits,omitempty"`
+	Message string                  `json:"message"`
+}
+
+// QueryProtocolNoteHit A call or inner transaction that hit a protocol note. Non-standard fork feature.
+type QueryProtocolNoteHit struct {
+	// Group The 0-based index of the call in the request.
+	Group int `json:"group"`
+
+	// Path The path of the transaction in the call's group, as in simulate's failed-at: [0] for the call, [0, i] for its inner transaction i, and so on.
+	Path []int `json:"path"`
+}
+
+// QueryProtocolOverride How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.
+type QueryProtocolOverride struct {
+	// Applied False when from is already to: the round was queried as it is.
+	Applied bool `json:"applied"`
+
+	// From The protocol the round after the queried one really ran.
+	From string `json:"from"`
+
+	// Notes Where running under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.
+	Notes *[]QueryProtocolNote `json:"notes,omitempty"`
+
+	// To The requested protocol, with aliases resolved.
+	To string `json:"to"`
+}
+
 // QueryRequest A request of POST /v2/query. Exactly one of program and app-id is required. Non-standard fork feature.
 type QueryRequest struct {
 	// AppId The deployed app each call calls, with OnCompletion NoOp.
@@ -1187,7 +1220,7 @@ type QueryRoundResult struct {
 	Error *string `json:"error,omitempty"`
 
 	// Protocol How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.
-	Protocol *SimulateProtocolOverride `json:"protocol,omitempty"`
+	Protocol *QueryProtocolOverride `json:"protocol,omitempty"`
 
 	// Round The queried round: the calls run in the round after it, on the state it left.
 	Round basics.Round `json:"round"`
@@ -1215,39 +1248,6 @@ type SimulateLimits struct {
 
 	// MaxTxnGroups The most transaction groups a request may hold in txn-groups (node config MaxAPISimulateGroups).
 	MaxTxnGroups uint64 `json:"max-txn-groups"`
-}
-
-// SimulateProtocolNote A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
-type SimulateProtocolNote struct {
-	Code string `json:"code"`
-
-	// Hits The calls and inner transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.
-	Hits    *[]SimulateProtocolNoteHit `json:"hits,omitempty"`
-	Message string                     `json:"message"`
-}
-
-// SimulateProtocolNoteHit A call or inner transaction that hit a protocol note. Non-standard fork feature.
-type SimulateProtocolNoteHit struct {
-	// Group The 0-based index of the call in the request.
-	Group int `json:"group"`
-
-	// Path The path of the transaction in the call's group, as in simulate's failed-at: [0] for the call, [0, i] for its inner transaction i, and so on.
-	Path []int `json:"path"`
-}
-
-// SimulateProtocolOverride How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.
-type SimulateProtocolOverride struct {
-	// Applied False when from is already to: the round was queried as it is.
-	Applied bool `json:"applied"`
-
-	// From The protocol the round after the queried one really ran.
-	From string `json:"from"`
-
-	// Notes Where running under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.
-	Notes *[]SimulateProtocolNote `json:"notes,omitempty"`
-
-	// To The requested protocol, with aliases resolved.
-	To string `json:"to"`
 }
 
 // SimulateRequest Request type for simulation endpoint.

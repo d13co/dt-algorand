@@ -3126,6 +3126,80 @@
         ],
         "type": "object"
       },
+      "QueryProtocolNote": {
+        "description": "A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "hits": {
+            "description": "The calls and inner transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.",
+            "items": {
+              "$ref": "#/components/schemas/QueryProtocolNoteHit"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "QueryProtocolNoteHit": {
+        "description": "A call or inner transaction that hit a protocol note. Non-standard fork feature.",
+        "properties": {
+          "group": {
+            "description": "The 0-based index of the call in the request.",
+            "type": "integer"
+          },
+          "path": {
+            "description": "The path of the transaction in the call's group, as in simulate's failed-at: [0] for the call, [0, i] for its inner transaction i, and so on.",
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "group",
+          "path"
+        ],
+        "type": "object"
+      },
+      "QueryProtocolOverride": {
+        "description": "How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.",
+        "properties": {
+          "applied": {
+            "description": "False when from is already to: the round was queried as it is.",
+            "type": "boolean"
+          },
+          "from": {
+            "description": "The protocol the round after the queried one really ran.",
+            "type": "string"
+          },
+          "notes": {
+            "description": "Where running under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.",
+            "items": {
+              "$ref": "#/components/schemas/QueryProtocolNote"
+            },
+            "type": "array"
+          },
+          "to": {
+            "description": "The requested protocol, with aliases resolved.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "applied",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
       "QueryRequest": {
         "description": "A request of POST /v2/query. Exactly one of program and app-id is required. Non-standard fork feature.",
         "properties": {
@@ -3202,7 +3276,7 @@
             "type": "string"
           },
           "protocol": {
-            "$ref": "#/components/schemas/SimulateProtocolOverride"
+            "$ref": "#/components/schemas/QueryProtocolOverride"
           },
           "round": {
             "description": "The queried round: the calls run in the round after it, on the state it left.",
@@ -3262,80 +3336,6 @@
         "required": [
           "max-extra-opcode-budget",
           "max-txn-groups"
-        ],
-        "type": "object"
-      },
-      "SimulateProtocolNote": {
-        "description": "A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.",
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "hits": {
-            "description": "The calls and inner transactions that read the data the note is about, at most 16. Absent for notes about the protocol change as a whole.",
-            "items": {
-              "$ref": "#/components/schemas/SimulateProtocolNoteHit"
-            },
-            "type": "array"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message"
-        ],
-        "type": "object"
-      },
-      "SimulateProtocolNoteHit": {
-        "description": "A call or inner transaction that hit a protocol note. Non-standard fork feature.",
-        "properties": {
-          "group": {
-            "description": "The 0-based index of the call in the request.",
-            "type": "integer"
-          },
-          "path": {
-            "description": "The path of the transaction in the call's group, as in simulate's failed-at: [0] for the call, [0, i] for its inner transaction i, and so on.",
-            "items": {
-              "type": "integer"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "group",
-          "path"
-        ],
-        "type": "object"
-      },
-      "SimulateProtocolOverride": {
-        "description": "How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.",
-        "properties": {
-          "applied": {
-            "description": "False when from is already to: the round was queried as it is.",
-            "type": "boolean"
-          },
-          "from": {
-            "description": "The protocol the round after the queried one really ran.",
-            "type": "string"
-          },
-          "notes": {
-            "description": "Where running under to differs from what the chain recorded, or read data the chain never produced. Only present when applied.",
-            "items": {
-              "$ref": "#/components/schemas/SimulateProtocolNote"
-            },
-            "type": "array"
-          },
-          "to": {
-            "description": "The requested protocol, with aliases resolved.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "applied",
-          "from",
-          "to"
         ],
         "type": "object"
       },
