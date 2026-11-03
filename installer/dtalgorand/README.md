@@ -113,10 +113,10 @@ ttimport never changes the archive's blocks, but SQLite opens the archive for wr
 
 1. Run the import. It prints a progress line every 10 seconds. Ctrl-C stops it, and rerunning the same command resumes it.
 
-   On Linux, run it as root, since an algod's ledger directory is private to its user. When root creates the `-wal` and `-shm` files, SQLite gives them to the archive's owner, so the archival node is unaffected.
+   On Linux, run it as `dtalgorand`, so that the node can open what it writes. ttimport refuses to run as root on the node's data directory.
 
    ```sh
-   sudo ttimport -blocks /var/lib/algorand/mainnet-v1.0/ledger.block.sqlite -d /var/lib/dtalgorand
+   sudo -u dtalgorand ttimport -blocks /var/lib/algorand/mainnet-v1.0/ledger.block.sqlite -d /var/lib/dtalgorand
    ```
 
    On macOS, run it as yourself. You need write access to the archive's directory: copy the archive to a disk you own if it belongs to another user.
@@ -125,13 +125,7 @@ ttimport never changes the archive's blocks, but SQLite opens the archive for wr
    ttimport -blocks <archival data dir>/mainnet-v1.0/ledger.block.sqlite -d $(brew --prefix)/var/dtalgorand
    ```
 
-2. On Linux, give the result to `dtalgorand`. This also applies after a failed or interrupted run, which leaves files that only root can read. Include the `TimeTravelDBDir` directory if you set one.
-
-   ```sh
-   sudo chown -R dtalgorand:dtalgorand /var/lib/dtalgorand    # and /mnt/fast/dtalgorand, if used
-   ```
-
-3. Start the node (`sudo systemctl enable --now dtalgorand`, or `brew services start dtalgorand`). It catches up the rounds after the archive's last one from the network.
+2. Start the node (`sudo systemctl enable --now dtalgorand`, or `brew services start dtalgorand`). It catches up the rounds after the archive's last one from the network.
 
 The package's `config.json` turns the holders index on, so the import keeps it from round 0 and it needs no build. ttimport's README covers [the alternative](../../tools/ttimport/README.md#building-the-asset-holders-index): import with it off, then build it once.
 
