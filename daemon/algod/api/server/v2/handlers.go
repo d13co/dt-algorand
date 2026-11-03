@@ -1586,76 +1586,6 @@ type PreEncodedSimulateRequest struct {
 	FixSigners            bool                                        `codec:"fix-signers,omitempty"`
 }
 
-// removedSimulateFields are the simulate request fields that earlier releases of the fork took and
-// POST /v2/query replaced. A request that sets one is refused rather than simulated without it.
-// They decode as any type, so that a value of the wrong type is refused with the same error.
-// Non-standard fork feature.
-type removedSimulateFields struct {
-	Rounds                any `codec:"rounds,omitempty"`
-	ParallelGroups        any `codec:"parallel-groups,omitempty"`
-	SkipValidityWindow    any `codec:"skip-validity-window,omitempty"`
-	RewriteValidityWindow any `codec:"rewrite-validity-window,omitempty"`
-	Protocol              any `codec:"protocol,omitempty"`
-}
-
-// removedFieldSet reports whether a removed field's decoded value asks for something: null, false,
-// 0, "" and an empty array or map don't.
-func removedFieldSet(v any) bool {
-	switch v := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return v
-	case string:
-		return v != ""
-	case []byte:
-		return len(v) > 0
-	case int64:
-		return v != 0
-	case uint64:
-		return v != 0
-	case float64:
-		return v != 0
-	case []any:
-		return len(v) > 0
-	case map[any]any:
-		return len(v) > 0
-	case map[string]any:
-		return len(v) > 0
-	}
-	return true
-}
-
-// check returns an error naming the removed fields that r sets, or nil when it sets none.
-func (r removedSimulateFields) check() error {
-	var set []string
-	for _, f := range []struct {
-		name  string
-		value any
-	}{
-		{"rounds", r.Rounds},
-		{"parallel-groups", r.ParallelGroups},
-		{"skip-validity-window", r.SkipValidityWindow},
-		{"rewrite-validity-window", r.RewriteValidityWindow},
-		{"protocol", r.Protocol},
-	} {
-		if removedFieldSet(f.value) {
-			set = append(set, f.name)
-		}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	return fmt.Errorf("simulate no longer takes %s: use POST /v2/query for read-only calls at several rounds, in isolation or under another protocol", strings.Join(set, ", "))
-}
-
-// simulateRequestBody is what a simulate request body decodes into: the request, plus the removed
-// fields so that a request that sets one gets an error that names it.
-type simulateRequestBody struct {
-	PreEncodedSimulateRequest
-	removedSimulateFields
-}
-
 // SimulateTransaction simulates broadcasting a raw transaction to the network, returning relevant simulation results.
 // (POST /v2/transactions/simulate)
 func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateTransactionParams) error {
@@ -1683,28 +1613,11 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 	}
 	requestData := requestBuffer.Bytes()
 
-	var body simulateRequestBody
-	err = decode(protocol.CodecHandle, requestData, &body)
+	// Groups and their txns are counted before they are decoded (simulate_decode.go).
+	maxGroups := simulation.EffectiveMaxGroups(v2.Node.Config().MaxAPISimulateGroups)
+	simulateRequest, err := decodeSimulateRequest(requestData, maxGroups, proto.MaxTxGroupSize)
 	if err != nil {
-		err = decode(protocol.JSONStrictHandle, requestData, &body)
-		if err != nil {
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-	}
-	if err = body.removedSimulateFields.check(); err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
-	}
-	simulateRequest := body.PreEncodedSimulateRequest
-
-	for _, txgroup := range simulateRequest.TxnGroups {
-		if len(txgroup.Txns) == 0 {
-			err = errors.New("empty txgroup")
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-		if len(txgroup.Txns) > proto.MaxTxGroupSize {
-			err = fmt.Errorf("transaction group size %d exceeds protocol max %d", len(txgroup.Txns), proto.MaxTxGroupSize)
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
 	}
 	// Simulate transaction
 	simulationResult, answered, err := v2.simulateOnce(ctx, convertSimulationRequest(simulateRequest))

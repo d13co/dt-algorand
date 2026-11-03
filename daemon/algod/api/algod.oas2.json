@@ -4908,7 +4908,7 @@
           "x-go-type": "uint64"
         },
         "calls": {
-          "description": "The calls, at most max-calls.",
+          "description": "The calls, at most max-calls, and at most max-total-calls divided by the entries of rounds.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/QueryCall"
@@ -5028,7 +5028,7 @@
     "QueryLimits": {
       "description": "The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.",
       "type": "object",
-      "required": ["max-calls", "max-call-budget", "max-call-log-bytes", "max-call-state-bytes", "max-response-bytes", "max-rounds"],
+      "required": ["max-calls", "max-call-budget", "max-call-log-bytes", "max-call-state-bytes", "max-response-bytes", "max-rounds", "max-total-calls"],
       "properties": {
         "max-calls": {
           "description": "The most calls a request may hold (node config MaxAPIQueryCalls).",
@@ -5057,6 +5057,11 @@
         },
         "max-rounds": {
           "description": "The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).",
+          "type": "integer",
+          "x-go-type": "uint64"
+        },
+        "max-total-calls": {
+          "description": "The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.",
           "type": "integer",
           "x-go-type": "uint64"
         }

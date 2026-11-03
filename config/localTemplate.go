@@ -627,7 +627,8 @@ type Local struct {
 	SimulateParallelism int `version[39]:"0"`
 
 	// MaxAPIQueryCalls is the most calls one POST /v2/query request may hold; each runs at every round of the
-	// request. 0 disables the endpoint. Non-standard fork feature.
+	// request, and MaxAPIQueryTotalCalls bounds the calls times the rounds. 0 disables the endpoint.
+	// Non-standard fork feature.
 	MaxAPIQueryCalls uint64 `version[39]:"1024"`
 
 	// MaxAPIQueryCallBudget is the most opcode budget a POST /v2/query call may ask for, and the budget of a
@@ -656,6 +657,14 @@ type Local struct {
 	// MaxAPIQueryRounds is the most rounds one POST /v2/query request may list; duplicates count against the
 	// limit. Values below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
 	MaxAPIQueryRounds uint64 `version[39]:"16"`
+
+	// MaxAPIQueryTotalCalls is the most calls one POST /v2/query request may run in all: its calls times the
+	// rounds it lists (1 when it lists none), duplicates included, as for MaxAPIQueryRounds. A request over it
+	// fails with 400 before it takes a slot. The default allows 1024 calls at one round, or 64 calls at 16
+	// rounds. 0 means no limit beyond MaxAPIQueryCalls times MaxAPIQueryRounds. Clients read it from GET
+	// /v2/capabilities (max-total-calls). A value below MaxAPIQueryCalls lowers that limit to it too.
+	// Non-standard fork feature.
+	MaxAPIQueryTotalCalls uint64 `version[39]:"1024"`
 
 	// QueryParallelism is the most workers that run the calls of one POST /v2/query request at once. The
 	// first runs in the request's slot of SimulateParallelism, the limit of the whole node; each other worker

@@ -119,6 +119,7 @@ var defaultLocal = Local{
 	MaxAPIQueryCalls:                           1024,
 	MaxAPIQueryResponseBytes:                   16777216,
 	MaxAPIQueryRounds:                          16,
+	MaxAPIQueryTotalCalls:                      1024,
 	MaxAPIResourcesPerAccount:                  100000,
 	MaxAPISimulateExtraOpcodeBudget:            320000,
 	MaxAPISimulateGroups:                       16,
