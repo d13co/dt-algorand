@@ -1649,13 +1649,6 @@ func (r removedSimulateFields) check() error {
 	return fmt.Errorf("simulate no longer takes %s: use POST /v2/query for read-only calls at several rounds, in isolation or under another protocol", strings.Join(set, ", "))
 }
 
-// simulateRequestBody is what a simulate request body decodes into: the request, plus the removed
-// fields so that a request that sets one gets an error that names it.
-type simulateRequestBody struct {
-	PreEncodedSimulateRequest
-	removedSimulateFields
-}
-
 // SimulateTransaction simulates broadcasting a raw transaction to the network, returning relevant simulation results.
 // (POST /v2/transactions/simulate)
 func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateTransactionParams) error {
@@ -1683,28 +1676,11 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 	}
 	requestData := requestBuffer.Bytes()
 
-	var body simulateRequestBody
-	err = decode(protocol.CodecHandle, requestData, &body)
+	// Groups and their txns are counted before they are decoded (simulate_decode.go).
+	maxGroups := simulation.EffectiveMaxGroups(v2.Node.Config().MaxAPISimulateGroups)
+	simulateRequest, err := decodeSimulateRequest(requestData, maxGroups, proto.MaxTxGroupSize)
 	if err != nil {
-		err = decode(protocol.JSONStrictHandle, requestData, &body)
-		if err != nil {
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-	}
-	if err = body.removedSimulateFields.check(); err != nil {
 		return badRequest(ctx, err, err.Error(), v2.Log)
-	}
-	simulateRequest := body.PreEncodedSimulateRequest
-
-	for _, txgroup := range simulateRequest.TxnGroups {
-		if len(txgroup.Txns) == 0 {
-			err = errors.New("empty txgroup")
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-		if len(txgroup.Txns) > proto.MaxTxGroupSize {
-			err = fmt.Errorf("transaction group size %d exceeds protocol max %d", len(txgroup.Txns), proto.MaxTxGroupSize)
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
 	}
 	// Simulate transaction
 	simulationResult, answered, err := v2.simulateOnce(ctx, convertSimulationRequest(simulateRequest))
