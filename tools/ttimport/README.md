@@ -14,7 +14,7 @@ A time travel node's history comes from every round's state delta since genesis:
 
 - **An archival node's block database for the same network**, holding every round from genesis: `<archival data dir>/<genesis id>/ledger.block.sqlite`, or under its `BlockDBDir` or `ColdDataDir`. That is an `Archival: true` node synced from genesis (~3.5 TB on mainnet). The block database of a node that started from a catchpoint lacks the early rounds; `ttimport` doesn't detect that up front, and the replay fails partway with `ledger does not have entry N`.
   - The archival node can keep running. Blocks it writes during the import are left for a rerun, which replays only the new rounds. This was tested with a writer appending blocks to the archive the way algod's block queue does.
-- **Write access to the archive's directory**, for SQLite's `-wal` and `-shm` files. An algod's ledger directory is private to its user, so on Linux run `ttimport` as root (or as that user): when root creates those files, SQLite gives them to the database's owner, so the archival node is unaffected. On macOS, copy the archive to a disk you own if it belongs to another user.
+- **Write access to the archive's directory**, for SQLite's `-wal` and `-shm` files. Run `ttimport` as the user that owns the data directory: it refuses to run as root on a data directory that another user owns, whose node could not open the files root writes. On macOS, copy the archive to a disk you own if it belongs to another user.
 - **Disk for the new data directory:**
   - the history: about 70 GB on mainnet (65.5 GiB in October 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
   - the account DB of a non-archival node;
@@ -82,7 +82,7 @@ A time travel node's history comes from every round's state delta since genesis:
 
 The examples build `~/tt` and start it with `goal`. To build the node of a dtalgorand package instead, import into the package's data directory before the node's first start, then start it as the package does. The package's `config.json` already sets `EnableTimeTravel` and `TimeTravelHoldersIndex`, so an import from genesis keeps the [holders index](#building-the-asset-holders-index) from round 0 and needs no build.
 
-- **Debian:** `/var/lib/dtalgorand`, as root, then hand the result to the `dtalgorand` user with `chown -R dtalgorand:dtalgorand`, including the `TimeTravelDBDir` directory if set, and also after a failed or interrupted run, which leaves files only root can read (see [From an archival node's blocks](../../installer/dtalgorand/README.md#from-an-archival-nodes-blocks)).
+- **Debian:** `/var/lib/dtalgorand`, as the `dtalgorand` user (`sudo -u dtalgorand ttimport ...`), with no `chown`: the node runs as that user (see [From an archival node's blocks](../../installer/dtalgorand/README.md#from-an-archival-nodes-blocks)).
 - **macOS (Homebrew):** `$(brew --prefix)/var/dtalgorand`, as yourself, with no `chown`: the node runs as you. The archive is wherever that archival node's data directory is (`/var/lib/algorand/...` in the examples is the Linux package's), and its directory must be writable by you.
 
   ```sh

@@ -80,6 +80,10 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	if err := checkRunAs(*dataDir, os.Geteuid()); err != nil {
+		fmt.Fprintln(os.Stderr, "ttimport:", err)
+		os.Exit(1)
+	}
 	// lock tracking records a stack trace per Lock, ~25% of the import's CPU
 	deadlock.Opts.Disable = true
 	logging.Base().SetLevel(logging.Warn)
