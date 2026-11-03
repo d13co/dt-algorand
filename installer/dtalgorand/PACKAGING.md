@@ -51,7 +51,7 @@ The `darwin` workflow builds the tarball on pull requests that touch the packagi
 
 ## Releasing
 
-Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the .deb, attaches it to a GitHub release and, once approved, publishes it to apt.d13.co. In parallel it builds the macOS tarball on a Mac runner, attaches it to the same release and, once approved, points the `d13co/tap` formula at it. Number the fork revisions from 1 on each upstream base: after merging upstream's `v5.0.3-stable`, the next release is `v5.0.3-dt1`; a fork-only fix on top of it is `v5.0.3-dt2`. The workflow fails if the tag's `x.y.z` isn't the upstream release `dtalgorand` is based on.
+Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the .deb, attaches it to a GitHub release and, once approved, publishes it to apt.d13.co. In parallel it builds the macOS tarball on a Mac runner, attaches it to the same release and, once approved, points the `d13co/tap` formula at it. The fork revision counts on from the last release and doesn't restart on a new base: `v5.0.4-dt3` was followed by `v5.0.5-dt4` after the merge of upstream's `v5.0.5-stable`, and a fork-only release on top of it is `v5.0.5-dt5`. The workflow fails if the tag's `x.y.z` isn't the upstream release `dtalgorand` is based on.
 
 ## The tap
 
