@@ -34,11 +34,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/algorand/go-algorand/config"
@@ -199,8 +201,10 @@ func openStore(path string) (*timetravel.Store, error) {
 		return nil, fmt.Errorf("no time travel store: %w", err)
 	}
 	s, err := timetravel.Open(path, timetravel.Options{ReadOnly: true})
-	if err != nil {
+	if errors.Is(err, syscall.EAGAIN) { // locked by another process
 		return nil, fmt.Errorf("opening %s: %w (is its algod running?)", path, err)
+	} else if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	return s, nil
 }
