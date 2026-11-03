@@ -71,7 +71,7 @@ tmutil addexclusion /Volumes/<disk>/dtalgorand
 
 ### From a snapshot
 
-[ttsnap](../../tools/ttsnap/README.md) installs another node's history, and the node then catches up from a catchpoint like any non-archival node. See ttsnap's [Trust](../../tools/ttsnap/README.md#trust) section for what is checked.
+[ttsnap](../../tools/ttsnap/README.md) installs another node's history, and the node then catches up from a catchpoint like any non-archival node. See ttsnap's [Trust](../../tools/ttsnap/README.md#trust) section for what is checked. The mainnet producer's history is one of three histories built without a snapshot (two `ttimport` imports of different archival nodes' blocks, one sync from genesis), and all three agreed on content.
 
 1. Download and install the latest snapshot. It needs a data directory whose node has never started (see [Starting over](#starting-over) otherwise). The download resumes when rerun.
 
