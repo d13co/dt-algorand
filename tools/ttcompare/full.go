@@ -40,7 +40,10 @@ const (
 // state at the first common round and each of its versions after it. It reads
 // each store once, in key order, so it takes as long as reading the larger
 // store. Records that repeat their object's previous state are not versions
-// and are skipped on both sides.
+// and are skipped on both sides. The box index and the asset holders index
+// derive from the records, so it checks each store's against its own records
+// (see timetravel.IndexCheck): stores whose records and indexes agree answer
+// alike.
 func (c *comparer) runFull(pathA, pathB string) error {
 	closeStores, err := c.open(pathA, pathB)
 	if err != nil {
@@ -193,6 +196,7 @@ func (e *event) value() ([]byte, bool) {
 type eventStream struct {
 	it     *pebble.Iterator
 	lo, hi uint64
+	check  *timetravel.IndexCheck // gets every record
 
 	obj      []byte // the current object
 	prev     []byte // its latest record so far ('D' before its first)
@@ -204,13 +208,24 @@ type eventStream struct {
 	records, repeats uint64
 }
 
-func newEventStream(s *timetravel.Store, lo, hi uint64) (*eventStream, error) {
+func newEventStream(s *timetravel.Store, lo, hi uint64, check *timetravel.IndexCheck) (*eventStream, error) {
 	it, err := s.DB().NewIter(&pebble.IterOptions{LowerBound: []byte{pfxRecord}, UpperBound: []byte{pfxRecord + 1}})
 	if err != nil {
 		return nil, err
 	}
 	it.First()
-	return &eventStream{it: it, lo: lo, hi: hi}, nil
+	return &eventStream{it: it, lo: lo, hi: hi, check: check}, nil
+}
+
+// step hands the current record to the index check and moves past it; false
+// if the check fails (see err).
+func (es *eventStream) step() bool {
+	if err := es.check.Record(es.it.Key(), es.it.Value()); err != nil {
+		es.finished, es.bad = true, err
+		return false
+	}
+	es.it.Next()
+	return true
 }
 
 // emitBase sets ev to the current object's state at lo, if it exists then.
@@ -254,24 +269,23 @@ func (es *eventStream) next() bool {
 		if rnd <= es.lo {
 			es.count(v)
 			es.prev = append(es.prev[:0], v...)
-			es.it.Next()
+			es.step()
 			continue
 		}
 		if es.baseDue && es.emitBase() {
 			return true
 		}
 		if rnd > es.hi { // a round only this store has
-			es.it.Next()
+			es.step()
 			continue
 		}
 		if es.count(v) {
-			es.it.Next()
+			es.step()
 			continue
 		}
 		es.prev = append(es.prev[:0], v...)
 		es.ev = event{obj: es.obj, rnd: rnd, rec: es.prev}
-		es.it.Next()
-		return true
+		return es.step()
 	}
 	return false
 }
@@ -310,12 +324,22 @@ func compareEvents(a, b *event) int {
 // fullRecords merges the event streams of both stores and reports the events
 // that differ: the first of each object in full, and every one in the counts.
 func (c *comparer) fullRecords() error {
-	sa, err := newEventStream(c.a, c.lo, c.hi)
+	var checks [2]*timetravel.IndexCheck
+	for i, s := range []*timetravel.Store{c.a, c.b} {
+		prefix := fmt.Sprintf("store %c: ", 'A'+i)
+		ic, err := s.NewIndexCheck(func(format string, args ...any) { c.diff(prefix+format, args...) })
+		if err != nil {
+			return err
+		}
+		defer ic.Close()
+		checks[i] = ic
+	}
+	sa, err := newEventStream(c.a, c.lo, c.hi, checks[0])
 	if err != nil {
 		return err
 	}
 	defer sa.it.Close()
-	sb, err := newEventStream(c.b, c.lo, c.hi)
+	sb, err := newEventStream(c.b, c.lo, c.hi, checks[1])
 	if err != nil {
 		return err
 	}
@@ -429,7 +453,27 @@ func (c *comparer) fullRecords() error {
 			fmt.Printf("  %-14s %12d objects, %d differ (%d differing versions)\n", kindName(byte(k)), ks.objs, ks.diffObjs, ks.diffEvents)
 		}
 	}
+
+	for i, ic := range checks {
+		st, err := ic.Finish()
+		if err != nil {
+			return fmt.Errorf("store %c: checking its indexes: %w", 'A'+i, err)
+		}
+		fmt.Printf("store %c indexes: %s, %d problems\n", 'A'+i, describeIndexCheck(st), st.Mismatches)
+	}
 	return nil
+}
+
+func describeIndexCheck(st timetravel.IndexCheckStats) string {
+	box := "box index being rebuilt, not checked"
+	if st.BoxIndex {
+		box = fmt.Sprintf("box index from round %d: %d entries of %d apps", st.BoxIndexFrom, st.BoxEntries, st.BoxApps)
+	}
+	holders := fmt.Sprintf("holders index %s, not checked", st.Holders)
+	if st.Holders == timetravel.HoldersComplete {
+		holders = fmt.Sprintf("holders index: %d entries of %d assets", st.HolderEntries, st.HolderAssets)
+	}
+	return box + "; " + holders
 }
 
 func kindName(k byte) string {

@@ -249,3 +249,40 @@ func TestFullCorrupt(t *testing.T) {
 		})
 	}
 }
+
+// TestFullChecksIndexes checks that -full finds a store whose box or holders
+// index disagrees with its records, although the records agree.
+func TestFullChecksIndexes(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	boxKey := func(app uint64, name string) []byte {
+		return timetravel.KvKey("bx:" + string(binary.BigEndian.AppendUint64(nil, app)) + name)
+	}
+	extra := func(rnd uint64) []timetravel.Change {
+		if rnd%10 != 0 {
+			return nil
+		}
+		return []timetravel.Change{
+			{Key: boxKey(3, "box"), Value: []byte(fmt.Sprint(rnd))},
+			{Key: timetravel.HoldingKey(basics.Address{byte(rnd / 10)}, 5), Value: []byte("h")},
+		}
+	}
+	a := buildStore(t, timetravel.Options{HoldersIndex: true}, 200, extra)
+	b := buildStore(t, timetravel.Options{HoldersIndex: true}, 200, extra)
+	c := compareFull(t, a, b)
+	require.Zero(t, c.diffs)
+
+	// B loses the box index entry of round 100 and the holders index entry
+	// of the account that opted in at round 50
+	s, err := timetravel.Open(b, timetravel.Options{})
+	require.NoError(t, err)
+	k := binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64([]byte{'b'}, 3), 100)
+	require.NoError(t, s.DB().Delete(append(k, "box"...), nil))
+	k = binary.BigEndian.AppendUint64([]byte{'a'}, 5)
+	addr := basics.Address{5}
+	require.NoError(t, s.DB().Delete(append(k, addr[:]...), nil))
+	require.NoError(t, s.Close())
+	c = compareFull(t, a, b)
+	require.Equal(t, 2, c.diffs)
+}

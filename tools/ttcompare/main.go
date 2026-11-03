@@ -24,7 +24,8 @@
 //
 // With -full it compares everything instead of samples: every common round,
 // and every object's state at the first common round and each of its
-// versions after it, in one pass over each store.
+// versions after it, in one pass over each store, and checks each store's box
+// and asset holders indexes against its records.
 //
 // The stores are opened read-only but locked: stop their algods, or compare
 // copies (e.g. btrfs snapshots or reflink copies).
