@@ -186,7 +186,7 @@ How it differs from simulate: there is no signature check, no fee, minimum balan
 | query, 1 worker | 8.0 ms | 2.2 MB | 18,159 |
 | query, 4 workers | 7.2 ms | 3.4 MB | 26,129 |
 
-On a copy of an FNet time travel node (2026-10-26, round 25,339,414, same machine), with GhostV11 sent as ghostkit then sent it to simulate (one app create per group from the fee sink, with the simulate options this fork has since moved to query: `parallel-groups`, `rewrite-validity-window`, `protocol: latest`, resource limit multiplier 128) and the same calls to `/v2/query`, 256 rounds × 16 calls, msgpack, `QueryParallelism` 8 (simulate's parallel groups use the 8 CPUs). Every log was the same in both, and the calls that failed failed alike:
+On a copy of an FNet time travel node (2026-10-26, round 25,339,414, same machine), with GhostV11 sent to simulate the way ghostkit sent it then (one app create per group from the fee sink, with the simulate options this fork has since moved to query: `parallel-groups`, `rewrite-validity-window`, `protocol: latest`, resource limit multiplier 128) and the same calls to `/v2/query`, 256 rounds × 16 calls, msgpack, `QueryParallelism` 8 (simulate's parallel groups use the 8 CPUs). Every log was the same in both, and the calls that failed failed alike:
 
 | workload | simulate | query | response simulate → query | algosdk 3.8.0-dt.2 decode |
 |---|---|---|---|---|

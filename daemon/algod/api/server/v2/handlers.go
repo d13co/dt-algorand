@@ -117,7 +117,8 @@ type Handlers struct {
 	KeygenLimiter *semaphore.Weighted
 
 	// SimulateLimiter limits the simulations that run at once across the node (SimulateParallelism):
-	// one per simulate request. Nil means no limit.
+	// one slot per simulate request, and one per running worker of a POST /v2/query request, so query
+	// traffic can make simulate requests wait or get 503. Nil means no limit.
 	// Non-standard fork feature.
 	SimulateLimiter *semaphore.Weighted
 }
