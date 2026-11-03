@@ -35,27 +35,33 @@ import (
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
 
-// TestSimulateRequestListsFields: simulateRequestLists has the fields of PreEncodedSimulateRequest
-// and then of removedSimulateFields, in that order and with the same tags; its txn groups and the
-// removed fields are left encoded.
+// TestSimulateRequestListsFields: simulateRequestLists has the fields of PreEncodedSimulateRequest,
+// in that order and with the same tags, with its txn groups left encoded; then the removed fields,
+// left encoded under keys of their own.
 func TestSimulateRequestListsFields(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	var want []reflect.StructField
-	for _, typ := range []reflect.Type{reflect.TypeOf(PreEncodedSimulateRequest{}), reflect.TypeOf(removedSimulateFields{})} {
-		for i := range typ.NumField() {
-			want = append(want, typ.Field(i))
-		}
-	}
-	lists := reflect.TypeOf(simulateRequestLists{})
-	require.Equal(t, len(want), lists.NumField())
-	for i, f := range want {
+	request := reflect.TypeFor[PreEncodedSimulateRequest]()
+	lists := reflect.TypeFor[simulateRequestLists]()
+	require.Greater(t, lists.NumField(), request.NumField())
+	keys := map[string]bool{}
+	for i := range lists.NumField() {
 		l := lists.Field(i)
+		key, _, _ := strings.Cut(l.Tag.Get("codec"), ",")
+		require.NotEmpty(t, key, l.Name)
+		require.False(t, keys[key], key)
+		keys[key] = true
+		if i >= request.NumField() {
+			require.Equal(t, reflect.TypeFor[codec.Raw](), l.Type, l.Name)
+			require.Contains(t, l.Tag.Get("codec"), ",omitempty", l.Name)
+			continue
+		}
+		f := request.Field(i)
 		require.Equal(t, f.Name, l.Name)
 		require.Equal(t, f.Tag, l.Tag, f.Name)
-		if f.Name == "TxnGroups" || f.Type.Kind() == reflect.Interface {
-			require.Equal(t, reflect.TypeOf(codec.Raw{}), l.Type, f.Name)
+		if f.Name == "TxnGroups" {
+			require.Equal(t, reflect.TypeFor[codec.Raw](), l.Type, f.Name)
 		} else {
 			require.Equal(t, f.Type, l.Type, f.Name)
 		}

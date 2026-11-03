@@ -22,6 +22,8 @@ package v2
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/algorand/go-codec/codec"
 	"github.com/algorand/msgp/msgp"
@@ -33,10 +35,17 @@ import (
 )
 
 // simulateRequestLists is what a simulate request body decodes into: the fields of
-// PreEncodedSimulateRequest, then those of removedSimulateFields, so that a request that sets one
-// gets an error that names it. Its lists and the removed fields are left encoded, so that they are
-// checked against the limits before they are decoded. The fields are in the order of those types,
-// which a body encoded as an array relies on.
+// PreEncodedSimulateRequest, in its order (which a body encoded as an array relies on), then the
+// removed fields. Its lists and the removed fields are left encoded, so that they are checked
+// against the limits before they are decoded.
+//
+// The removed fields are the options that earlier releases of the fork took and POST /v2/query
+// replaced. A request that sets one is refused with an error that names it, rather than simulated
+// without it. Their tags are the only list of them: removedFields reads the keys from there.
+//
+// TODO(dt6): drop the removed fields (and removedFields, removedFieldSet, maxRemovedFieldBytes) two
+// releases after v5.0.5-dt4, the last release that took them. Without them, a request that still
+// sends one fails to decode with an unknown-field error, even when it sends a zero value.
 type simulateRequestLists struct {
 	TxnGroups             codec.Raw                  `codec:"txn-groups"`
 	Round                 basics.Round               `codec:"round,omitempty"`
@@ -63,6 +72,60 @@ type simulateGroupLists struct {
 // a longer one is set.
 const maxRemovedFieldBytes = 64
 
+// removedFields returns the keys of the removed fields that l sets, in field order. They are the
+// fields after those of PreEncodedSimulateRequest. A value longer than maxRemovedFieldBytes is set
+// without being decoded.
+func (l *simulateRequestLists) removedFields(handle codec.Handle) ([]string, error) {
+	v := reflect.ValueOf(l).Elem()
+	var set []string
+	for i := reflect.TypeFor[PreEncodedSimulateRequest]().NumField(); i < v.NumField(); i++ {
+		raw := v.Field(i).Interface().(codec.Raw)
+		if len(raw) == 0 {
+			continue
+		}
+		if len(raw) <= maxRemovedFieldBytes {
+			var value any
+			if err := decode(handle, raw, &value); err != nil {
+				return nil, err
+			}
+			if !removedFieldSet(value) {
+				continue
+			}
+		}
+		key, _, _ := strings.Cut(v.Type().Field(i).Tag.Get("codec"), ",")
+		set = append(set, key)
+	}
+	return set, nil
+}
+
+// removedFieldSet reports whether a removed field's decoded value asks for something: null, false,
+// 0, "" and an empty array or map don't. A value of the wrong type does.
+func removedFieldSet(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case string:
+		return v != ""
+	case []byte:
+		return len(v) > 0
+	case int64:
+		return v != 0
+	case uint64:
+		return v != 0
+	case float64:
+		return v != 0
+	case []any:
+		return len(v) > 0
+	case map[any]any:
+		return len(v) > 0
+	case map[string]any:
+		return len(v) > 0
+	}
+	return true
+}
+
 // decodeSimulateRequest decodes body, msgpack or else JSON, whatever its Content-Type. It refuses
 // the removed fields, more than maxGroups groups, and groups of no txns or more than maxGroupSize,
 // before it decodes the txns. As in a full decode, a key listed twice keeps its last value.
@@ -78,29 +141,12 @@ func decodeSimulateRequest(body []byte, maxGroups, maxGroupSize int) (PreEncoded
 	}
 	isJSON := handle == protocol.JSONStrictHandle
 
-	var removed removedSimulateFields
-	for _, f := range []struct {
-		raw codec.Raw
-		dst *any
-	}{
-		{lists.Rounds, &removed.Rounds},
-		{lists.ParallelGroups, &removed.ParallelGroups},
-		{lists.SkipValidityWindow, &removed.SkipValidityWindow},
-		{lists.RewriteValidityWindow, &removed.RewriteValidityWindow},
-		{lists.Protocol, &removed.Protocol},
-	} {
-		switch {
-		case len(f.raw) == 0:
-		case len(f.raw) > maxRemovedFieldBytes:
-			*f.dst = true
-		default:
-			if err := decode(handle, f.raw, f.dst); err != nil {
-				return PreEncodedSimulateRequest{}, err
-			}
-		}
-	}
-	if err := removed.check(); err != nil {
+	removed, err := lists.removedFields(handle)
+	if err != nil {
 		return PreEncodedSimulateRequest{}, err
+	}
+	if len(removed) > 0 {
+		return PreEncodedSimulateRequest{}, fmt.Errorf("simulate no longer takes %s: use POST /v2/query for read-only calls at several rounds, in isolation or under another protocol", strings.Join(removed, ", "))
 	}
 
 	r := PreEncodedSimulateRequest{
