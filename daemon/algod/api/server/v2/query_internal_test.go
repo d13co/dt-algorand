@@ -74,7 +74,7 @@ func TestQueryRequestListsFields(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	full, lists := reflect.TypeOf(PreEncodedQueryRequest{}), reflect.TypeOf(queryRequestLists{})
+	full, lists := reflect.TypeFor[PreEncodedQueryRequest](), reflect.TypeFor[queryRequestLists]()
 	require.Equal(t, full.NumField(), lists.NumField())
 	for i := range full.NumField() {
 		f, l := full.Field(i), lists.Field(i)

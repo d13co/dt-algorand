@@ -66,9 +66,9 @@ func TestSimulateRequestListsFields(t *testing.T) {
 			require.Equal(t, f.Type, l.Type, f.Name)
 		}
 	}
-	group := reflect.TypeOf(PreEncodedSimulateRequestTransactionGroup{})
+	group := reflect.TypeFor[PreEncodedSimulateRequestTransactionGroup]()
 	require.Equal(t, 1, group.NumField())
-	require.Equal(t, group.Field(0).Tag, reflect.TypeOf(simulateGroupLists{}).Field(0).Tag)
+	require.Equal(t, group.Field(0).Tag, reflect.TypeFor[simulateGroupLists]().Field(0).Tag)
 }
 
 // simulateTestTxns are txns that set the lists a txn has.
