@@ -37,7 +37,7 @@ jobs:
           cd tools/block-generator
           go test -v ./...
       - name: Test tools/x-repo-types
-        # The SDK is go-dtalgorand-sdk, pinned by the replace in
+        # The SDK is dt-go-algorand-sdk, pinned by the replace in
         # tools/x-repo-types/go.mod: a new upstream SDK release can't break this.
         run: |
           cd tools/x-repo-types

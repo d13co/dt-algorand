@@ -346,7 +346,7 @@ shorttest: build-race
 integration: build-race
 	./test/scripts/run_integration_tests.sh
 
-# Compare types against a local go-dtalgorand-sdk checkout instead of the
+# Compare types against a local dt-go-algorand-sdk checkout instead of the
 # release pinned in tools/x-repo-types/go.mod, which is what the "Test tools
 # modules" CI job uses. Set CASE to a TestCrossRepoTypes subtest (e.g.
 # CASE=goal-v-sdk-eval-delta) to run just one, and SDK_DIR to override the
