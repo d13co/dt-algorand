@@ -66,6 +66,7 @@ func TestConnectionLimiterBasic(t *testing.T) {
 		for j := 0; j < numConnections-limit; j++ {
 			index := <-doneCh
 			assert.Equal(t, http.StatusTooManyRequests, recorders[index].Code)
+			assert.Equal(t, "1", recorders[index].Header().Get("Retry-After"))
 		}
 
 		// Let handlers finish.

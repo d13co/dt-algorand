@@ -24,7 +24,7 @@ import (
 
 // MakeConnectionLimiter makes an echo middleware that limits the number of
 // simultaneous connections. All connections above the limit will be returned
-// the 429 Too Many Requests http error.
+// the 429 Too Many Requests http error, with Retry-After: 1.
 func MakeConnectionLimiter(limit uint64) echo.MiddlewareFunc {
 	sem := make(chan struct{}, limit)
 
@@ -41,6 +41,7 @@ func MakeConnectionLimiter(limit uint64) echo.MiddlewareFunc {
 				}()
 				return next(ctx)
 			default:
+				ctx.Response().Header().Set("Retry-After", "1")
 				return ctx.NoContent(http.StatusTooManyRequests)
 			}
 		}

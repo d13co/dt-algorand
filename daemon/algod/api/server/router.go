@@ -78,6 +78,27 @@ func registerHandlers(router *echo.Echo, prefix string, routes lib.Routes, ctx l
 	}
 }
 
+// useMiddleware adds the middleware every request goes through. The connection limiter comes after
+// CORS, so that its 429 carries the CORS headers a browser needs to read it, and an OPTIONS request,
+// which CORS answers itself, never takes a slot. It comes before Gzip, so that a refused request
+// costs no gzip writer, and the gzip trailer is written while the request still holds its slot.
+// Refused requests are logged, as every other request is.
+func useMiddleware(e *echo.Echo, logger logging.Logger, pna bool, numConnectionsLimit uint64) {
+	e.Pre(
+		v2.RecordArrival, // first: the time limits of expensive requests count from it
+		middleware.RemoveTrailingSlash())
+	e.Use(middlewares.MakeLogger(logger))
+	// Optional middleware for Private Network Access Header (PNA). Must come before CORS middleware.
+	if pna {
+		e.Use(middlewares.MakePNA())
+	}
+	e.Use(
+		middlewares.MakeCORS(TokenHeader, exposedHeaders...),
+		middlewares.MakeConnectionLimiter(numConnectionsLimit),
+		middleware.Gzip(),
+	)
+}
+
 // NewRouter builds and returns a new router with our REST handlers registered.
 func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan struct{}, apiToken string, adminAPIToken string, listener net.Listener, numConnectionsLimit uint64) *echo.Echo {
 	// check admin token and init admin middleware
@@ -107,19 +128,7 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 	e.Listener = listener
 	e.HideBanner = true
 
-	e.Pre(
-		v2.RecordArrival, // first: the time limits of expensive requests count from it
-		middlewares.MakeConnectionLimiter(numConnectionsLimit),
-		middleware.RemoveTrailingSlash())
-	e.Use(
-		middlewares.MakeLogger(logger),
-		middleware.Gzip(),
-	)
-	// Optional middleware for Private Network Access Header (PNA). Must come before CORS middleware.
-	if node.Config().EnablePrivateNetworkAccessHeader {
-		e.Use(middlewares.MakePNA())
-	}
-	e.Use(middlewares.MakeCORS(TokenHeader, exposedHeaders...))
+	useMiddleware(e, logger, node.Config().EnablePrivateNetworkAccessHeader, numConnectionsLimit)
 
 	// Request Context
 	ctx := lib.ReqContext{Node: node, Log: logger, Shutdown: shutdown}

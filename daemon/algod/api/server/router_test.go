@@ -18,6 +18,8 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -91,4 +93,80 @@ func TestExposedHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	assert.Equal(t, "Retry-After,X-Algod-Effort,X-Algod-TT-Round", rec.Header().Get("Access-Control-Expose-Headers"))
+}
+
+// TestConnectionLimitCORS checks that a browser can read the 429 of a node at its connection limit:
+// it carries the CORS headers and Retry-After, and a preflight is answered without taking a slot.
+func TestConnectionLimitCORS(t *testing.T) {
+	partitiontest.PartitionTest(t)
+
+	e := echo.New()
+	useMiddleware(e, logging.TestingLog(t), true, 1)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	e.GET("/slow", func(c echo.Context) error {
+		entered <- struct{}{}
+		<-release
+		return c.NoContent(http.StatusOK)
+	})
+	e.GET("/health", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+
+	const origin = "http://algorand.com"
+	serve := func(method, path string, header map[string]string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Take the only slot.
+	done := make(chan *httptest.ResponseRecorder, 1)
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	go func() { done <- serve(http.MethodGet, "/slow", nil) }()
+	select {
+	case <-entered:
+	case rec := <-done:
+		t.Fatalf("the request that should hold the slot was answered %d", rec.Code)
+	}
+
+	rec := serve(http.MethodGet, "/health", map[string]string{"Origin": origin, "Accept-Encoding": "gzip"})
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.ElementsMatch(t, exposedHeaders, strings.Split(rec.Header().Get("Access-Control-Expose-Headers"), ","))
+	assert.Equal(t, "1", rec.Header().Get("Retry-After"))
+	// Refused before Gzip: nothing is compressed.
+	assert.Empty(t, rec.Header().Get("Content-Encoding"))
+	assert.Empty(t, rec.Body.String())
+
+	// Unknown paths and methods count too.
+	assert.Equal(t, http.StatusTooManyRequests, serve(http.MethodGet, "/nope", nil).Code)
+	assert.Equal(t, http.StatusTooManyRequests, serve(http.MethodPut, "/health", nil).Code)
+
+	rec = serve(http.MethodOptions, "/health", map[string]string{
+		"Origin":                                 origin,
+		"Access-Control-Request-Method":          http.MethodGet,
+		"Access-Control-Request-Headers":         TokenHeader,
+		"Access-Control-Request-Private-Network": "true",
+	})
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), http.MethodGet)
+	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), TokenHeader)
+	assert.Equal(t, "true", rec.Header().Get("Access-Control-Allow-Private-Network"))
+
+	// An OPTIONS request that is not a preflight still gets the router's Allow header.
+	rec = serve(http.MethodOptions, "/health", nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Contains(t, rec.Header().Get("Allow"), http.MethodGet)
+
+	unblock()
+	assert.Equal(t, http.StatusOK, (<-done).Code)
+	rec = serve(http.MethodGet, "/health", map[string]string{"Origin": origin})
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("Retry-After"))
 }
