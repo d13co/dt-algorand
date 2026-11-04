@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Run the tools/x-repo-types cross-repo type comparison against a local
-# go-dtalgorand-sdk checkout rather than the release pinned in
+# dt-go-algorand-sdk checkout rather than the release pinned in
 # tools/x-repo-types/go.mod.
 #
 # The "Test tools modules" CI job compares against that release, so when a
@@ -16,7 +16,8 @@
 #
 # "case" is a TestCrossRepoTypes subtest name, e.g. goal-v-sdk-eval-delta. With
 # no argument, every case runs (several minutes). Set SDK_DIR to override the
-# default sibling checkout location, ../go-dtalgorand-sdk.
+# default sibling checkout location, ../go-dtalgorand-sdk (the directory
+# name from before the repository was renamed to dt-go-algorand-sdk).
 
 set -eo pipefail
 
@@ -25,7 +26,7 @@ XRT_DIR="$REPO_ROOT/tools/x-repo-types"
 SDK_DIR=${SDK_DIR:-"$REPO_ROOT/../go-dtalgorand-sdk"}
 
 if [ ! -d "$SDK_DIR" ]; then
-    echo "[$0] ERROR: no go-dtalgorand-sdk checkout at ${SDK_DIR}. Set SDK_DIR to point at one."
+    echo "[$0] ERROR: no dt-go-algorand-sdk checkout at ${SDK_DIR}. Set SDK_DIR to point at one."
     exit 1
 fi
 # go.mod replace directives need an absolute, symlink-free path.
