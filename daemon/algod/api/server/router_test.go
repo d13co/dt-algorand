@@ -139,7 +139,8 @@ func TestConnectionLimitCORS(t *testing.T) {
 	assert.Equal(t, "*", rec.Header().Get("Access-Control-Allow-Origin"))
 	assert.ElementsMatch(t, exposedHeaders, strings.Split(rec.Header().Get("Access-Control-Expose-Headers"), ","))
 	assert.Equal(t, "1", rec.Header().Get("Retry-After"))
-	// Refused before Gzip: nothing is compressed.
+	// Refused before Gzip, which would add Vary: Accept-Encoding.
+	assert.NotContains(t, rec.Header().Values("Vary"), "Accept-Encoding")
 	assert.Empty(t, rec.Header().Get("Content-Encoding"))
 	assert.Empty(t, rec.Body.String())
 

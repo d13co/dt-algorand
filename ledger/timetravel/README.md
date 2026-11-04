@@ -90,7 +90,7 @@ A simulate request that sets one of the removed fields gets a 400 that names the
 
 ### Overload limits
 
-Every simulate request is bounded in time and stops when nobody waits for it:
+Every simulate request is bounded in time and stops when nobody waits for it, and the node limits how many requests it serves at once:
 
 - **Time limit.** A request may run for `RestWriteTimeoutSeconds` less a margin to encode and write the answer before the server's write deadline: a tenth of the timeout and at least a second, so 108 s at the default 120 s, or half the timeout when it is under 2 s; no limit at 0. The deadline counts from the request's arrival, so a slow request body uses up the time too. A request that reaches it gets a 504.
 - **Client gone.** When the client disconnects (or a load balancer closes the connection), the simulation stops and no response is written.
