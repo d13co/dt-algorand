@@ -1963,8 +1963,11 @@ int 1`,
 	}
 
 	t.Run("1 round in the future", func(t *testing.T) {
+		// a request error (a 400), as query's, not a ledger error (a 500) that clients retry
 		_, err := s.Simulate(simulation.Request{Round: latestRound + 1, TxnGroups: [][]transactions.SignedTxn{{stxn}}})
-		require.ErrorContains(t, err, fmt.Sprintf("ledger does not have entry %d", latestRound+1))
+		var invalid simulation.InvalidRequestError
+		require.ErrorAs(t, err, &invalid)
+		require.ErrorContains(t, err, fmt.Sprintf("round %d is after the latest round %d", latestRound+1, latestRound))
 	})
 }
 
