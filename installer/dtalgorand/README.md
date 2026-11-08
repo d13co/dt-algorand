@@ -17,14 +17,14 @@ Add the apt.d13.co repository and install the package (amd64 or arm64):
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo curl -fsSL https://apt.d13.co/key.asc -o /etc/apt/keyrings/d13co.asc
-gpg --show-keys /etc/apt/keyrings/d13co.asc   # exactly one primary key: F66E77133063650C159F405AC4D2171FB5B60471
+gpg --show-keys /etc/apt/keyrings/d13co.asc
 echo "deb [signed-by=/etc/apt/keyrings/d13co.asc] https://apt.d13.co stable main" |
   sudo tee /etc/apt/sources.list.d/d13co.list
 sudo apt update
 sudo apt install dtalgorand
 ```
 
-apt trusts every key in `d13co.asc`, hence the check before `apt update`.
+`gpg --show-keys` must list exactly one primary key, `F66E77133063650C159F405AC4D2171FB5B60471`: apt trusts every key in `d13co.asc`, hence the check before `apt update`.
 
 The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, the dtalgorand commands take the data directory from `$DTALGORAND_DATA` and ignore `$ALGORAND_DATA`, which may point at a stock node. Likewise, without `-k`, `dtgoal` takes kmd's data directory from `$DTALGORAND_KMD`, not `$ALGORAND_KMD`. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
 
@@ -58,12 +58,16 @@ Below, `D` is the data directory: `/var/lib/dtalgorand` with the .deb, `$(brew -
 
 **Optionally, before anything else, put the history on a fast disk.** It goes in `<TimeTravelDBDir>/mainnet-v1.0/ledger.timetravel`.
 
+On Linux, put it outside `/home` (the unit's `ProtectHome` keeps the node out of it):
+
 ```sh
-# Linux (the unit's ProtectHome keeps the node out of /home)
 sudo install -d -o dtalgorand -g dtalgorand /mnt/fast/dtalgorand
 sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p TimeTravelDBDir -v /mnt/fast/dtalgorand
+```
 
-# macOS (keep the disk mounted whenever the node runs, and out of Time Machine)
+On macOS, use a disk that stays mounted whenever the node runs, and exclude it from Time Machine:
+
+```sh
 mkdir -p /Volumes/<disk>/dtalgorand
 dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p TimeTravelDBDir -v /Volumes/<disk>/dtalgorand
 tmutil addexclusion /Volumes/<disk>/dtalgorand
@@ -75,32 +79,60 @@ tmutil addexclusion /Volumes/<disk>/dtalgorand
 
 1. Download and install the latest snapshot. It needs a data directory whose node has never started (see [Starting over](#starting-over) otherwise). The download resumes when rerun.
 
+   On Linux:
+
    ```sh
-   sudo -u dtalgorand ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d /var/lib/dtalgorand    # Linux
-   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d $(brew --prefix)/var/dtalgorand           # macOS
+   sudo -u dtalgorand ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d /var/lib/dtalgorand
+   ```
+
+   On macOS:
+
+   ```sh
+   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d $(brew --prefix)/var/dtalgorand
    ```
 
    The producer keeps its last two snapshots, so a download has between about 8 and 15 hours, depending on when it starts, before its snapshot is deleted. One that takes longer fails: rerun `fetch` to move to the latest snapshot, which keeps the files the two share.
 
 2. Build the asset holders index, with the node still stopped (about 5 minutes on mainnet). The snapshot doesn't carry it. The index serves `GET /v2/assets/{asset-id}/holders` (`dtgoal asset holders`); without it the node runs as usual, logs a warning at start, and that endpoint answers 503. To do without it, set `TimeTravelHoldersIndex` to `false` instead (`dtalgocfg set -d D -p TimeTravelHoldersIndex -v false`, as `dtalgorand` on Linux), and skip this step.
 
+   On Linux:
+
    ```sh
-   sudo -u dtalgorand ttimport -holders-index -d /var/lib/dtalgorand    # Linux
-   ttimport -holders-index -d $(brew --prefix)/var/dtalgorand           # macOS
+   sudo -u dtalgorand ttimport -holders-index -d /var/lib/dtalgorand
+   ```
+
+   On macOS:
+
+   ```sh
+   ttimport -holders-index -d $(brew --prefix)/var/dtalgorand
    ```
 
 3. Start the node:
 
+   On Linux:
+
    ```sh
-   sudo systemctl enable --now dtalgorand    # Linux
-   brew services start dtalgorand            # macOS
+   sudo systemctl enable --now dtalgorand
+   ```
+
+   On macOS:
+
+   ```sh
+   brew services start dtalgorand
    ```
 
 4. Once `dtgoal node status` answers ([Checking the node](#checking-the-node)), catch up from the network's latest catchpoint. algod takes a minute or more to open the history, and `catchup` fails until it has: rerun it then.
 
+   On Linux:
+
    ```sh
-   sudo -u dtalgorand ttsnap catchup -d /var/lib/dtalgorand    # Linux
-   ttsnap catchup -d $(brew --prefix)/var/dtalgorand           # macOS
+   sudo -u dtalgorand ttsnap catchup -d /var/lib/dtalgorand
+   ```
+
+   On macOS:
+
+   ```sh
+   ttsnap catchup -d $(brew --prefix)/var/dtalgorand
    ```
 
    `catchup` starts the catchup and returns. Follow it with `dtgoal node status` ([Checking the node](#checking-the-node)): it is done when the `Catchpoint` lines are gone and the node syncs normally. Before applying the catchpoint, the node deletes the snapshot's rounds after the catchpoint's balances round (minutes on mainnet) and later writes them again from its own evaluation. If `catchup` says the network's latest catchpoint is past the snapshot, see [When the latest catchpoint is past the snapshot](../../tools/ttsnap/README.md#when-the-latest-catchpoint-is-past-the-snapshot).
@@ -133,22 +165,33 @@ The package's `config.json` turns the holders index on, so the import keeps it f
 
 Start the node; nothing else is needed:
 
+On Linux:
+
 ```sh
-sudo systemctl enable --now dtalgorand    # Linux
-brew services start dtalgorand            # macOS
+sudo systemctl enable --now dtalgorand
+```
+
+On macOS:
+
+```sh
+brew services start dtalgorand
 ```
 
 This takes weeks on mainnet. The node checks certificates as any node does, and keeps the holders index from round 0. A Mac stops the node while it sleeps (see [macOS notes](#macos-notes)), so a laptop is a poor fit for this path.
 
 Optionally, once the node has caught up (and after an import from an archival node too), stop it and remove the no-op records the node didn't catch as it wrote: on mainnet this saved 4% (68.4 → 65.6 GiB) and took about 1.5 hours on a small VPS, plus the box index rebuild. See [Removing no-op records](../../tools/ttimport/README.md#removing-no-op-records).
 
+On Linux, as `dtalgorand`, so that the files it writes stay the node's:
+
 ```sh
-# Linux (as dtalgorand, so the files it writes stay the node's)
 sudo systemctl stop dtalgorand
 sudo -u dtalgorand ttimport -dedup -d /var/lib/dtalgorand
 sudo systemctl start dtalgorand
+```
 
-# macOS
+On macOS:
+
+```sh
 brew services stop dtalgorand
 ttimport -dedup -d $(brew --prefix)/var/dtalgorand
 brew services start dtalgorand
@@ -156,18 +199,32 @@ brew services start dtalgorand
 
 ### Checking the node
 
+On Linux:
+
 ```sh
-sudo -u dtalgorand dtgoal node status -d /var/lib/dtalgorand    # Linux
-dtgoal node status -d $(brew --prefix)/var/dtalgorand           # macOS
+sudo -u dtalgorand dtgoal node status -d /var/lib/dtalgorand
+```
+
+On macOS:
+
+```sh
+dtgoal node status -d $(brew --prefix)/var/dtalgorand
 ```
 
 - **Synced:** `Last committed block` matches the network's (for example `curl -s https://mainnet-api.4160.nodely.dev/v2/status`), and `Sync Time` stays near 0.
 - **During a catchpoint catchup:** `Catchpoint` lines show its progress.
 
-The REST API's address is in `D/algod.net` and its token in `D/algod.token`. algod picks port 8080 if it is free and a random port otherwise, so a stock `algorand` node on the same host can take 8080. To pin the port, set `EndpointAddress` and restart the node: `sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on Linux, `dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on macOS. To check that time travel works:
+The REST API's address is in `D/algod.net` and its token in `D/algod.token`. algod picks port 8080 if it is free and a random port otherwise, so a stock `algorand` node on the same host can take 8080. To pin the port, set `EndpointAddress` and restart the node: `sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on Linux, `dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on macOS. To check that time travel works, on Linux:
 
 ```sh
-D=/var/lib/dtalgorand    # or $(brew --prefix)/var/dtalgorand
+D=/var/lib/dtalgorand
+curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2/ledger/supply?round=1000"
+```
+
+On macOS:
+
+```sh
+D=$(brew --prefix)/var/dtalgorand
 curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2/ledger/supply?round=1000"
 ```
 
@@ -179,9 +236,16 @@ curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2
 2. If the node holds participation keys (see [Participation](#participation)), move them aside first: any `*.partkey` files in `D/mainnet-v1.0`, and `partregistry.sqlite` with its `-wal` and `-shm` files, which are in `D/mainnet-v1.0` too unless `ColdDataDir` is set (then in its `mainnet-v1.0`).
 3. Delete the genesis directory, and the `mainnet-v1.0` directory under each `*Dir` setting of `config.json` you set (`TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`, `CatchpointDir`, `StateproofDir`, `CrashDBDir`):
 
+   On Linux, if you put the history on `/mnt/fast` as above (otherwise add your `<TimeTravelDBDir>/mainnet-v1.0`, or drop the second path if you didn't set it):
+
    ```sh
-   sudo rm -rf /var/lib/dtalgorand/mainnet-v1.0 /mnt/fast/dtalgorand/mainnet-v1.0    # Linux, history on /mnt/fast
-   rm -rf $(brew --prefix)/var/dtalgorand/mainnet-v1.0                               # macOS
+   sudo rm -rf /var/lib/dtalgorand/mainnet-v1.0 /mnt/fast/dtalgorand/mainnet-v1.0
+   ```
+
+   On macOS:
+
+   ```sh
+   rm -rf $(brew --prefix)/var/dtalgorand/mainnet-v1.0
    ```
 
 4. Follow the path again from its first step. Its start step starts the node (on Linux, `enable --now` enables it again).

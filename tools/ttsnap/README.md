@@ -6,12 +6,23 @@
 
 The installer README's [From a snapshot](../../installer/dtalgorand/README.md#from-a-snapshot) has the steps for the dtalgorand packages, on Linux and macOS. In short, on a data directory whose node has never started, as the node's user:
 
-```sh
-ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d <data dir>   # download and install the history
-ttimport -holders-index -d <data dir>                                 # if config.json sets TimeTravelHoldersIndex
-# start algod, wait until goal node status answers, then:
-ttsnap catchup -d <data dir>                                          # catch up from the network's latest catchpoint
-```
+1. Download and install the history:
+
+   ```sh
+   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d <data dir>
+   ```
+
+2. If `config.json` sets `TimeTravelHoldersIndex`, build the asset holders index:
+
+   ```sh
+   ttimport -holders-index -d <data dir>
+   ```
+
+3. Start algod, and once `dtgoal node status` (`goal` upstream) answers, catch up from the network's latest catchpoint:
+
+   ```sh
+   ttsnap catchup -d <data dir>
+   ```
 
 `https://tt-snapshots-mainnet.d13.co` serves mainnet's snapshots. Keep `EnableTimeTravel: true` and `Archival: false` (archival nodes can't catch up from a catchpoint), and set `TimeTravelDBDir` before `fetch` if the history goes on another disk. A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
 
@@ -47,13 +58,17 @@ This happens after an install that took longer than about 7.7 hours, or when the
 
 With algod stopped, `ttsnap verify -d <data dir>` checks the headers (minutes on mainnet), and with `-deltas` compares `-sample` random rounds (`-seed` fixes them) with an archival node's `/v2/deltas`:
 
+On Linux:
+
 ```sh
-# Linux
 sudo systemctl stop dtalgorand
 sudo -u dtalgorand ttsnap verify -d /var/lib/dtalgorand -deltas https://mainnet-api.4160.nodely.dev -sample 1000
 sudo systemctl start dtalgorand
+```
 
-# macOS
+On macOS:
+
+```sh
 brew services stop dtalgorand
 ttsnap verify -d $(brew --prefix)/var/dtalgorand -deltas https://mainnet-api.4160.nodely.dev -sample 1000
 brew services start dtalgorand
@@ -117,11 +132,11 @@ An attester runs a time travel node whose history it built itself: synced from g
 An attester can run on macOS, with the Homebrew package (`-d $(brew --prefix)/var/dtalgorand`), as long as its node built its own history (synced or imported with `ttimport`): one installed with `ttsnap fetch` can't attest.
 
 ```sh
-ttsnap keygen -o ~/attester_key -name <your name> -role attester   # give the printed line to the consumers
+ttsnap keygen -o ~/attester_key -name <your name> -role attester
 ttsnap attest -key ~/attester_key -d <data dir> -url https://tt-snapshots-mainnet.d13.co -o <out>
 ```
 
-`attest` writes `<out>/snapshots/<genesis id>/statements/<round>/<key id>.sig`, for the producer's tree (or the on-chain registry). It refuses a node whose history was installed from a snapshot (`fetch` marks the store, and writes `ttsnap.json` to the genesis directory), and a history whose statement differs from the snapshot's. `-manifest` attests a given snapshot instead of the latest, `-round R` a round of its own, and `-workers` sets the goroutines that read a stopped node's history; `ttsnap commitment -d <data dir> -round R` prints the statement without signing it. The endpoint reads with half the node's CPUs; stopping algod cancels it.
+`keygen` prints a line to give to the consumers. `attest` writes `<out>/snapshots/<genesis id>/statements/<round>/<key id>.sig`, for the producer's tree (or the on-chain registry). It refuses a node whose history was installed from a snapshot (`fetch` marks the store, and writes `ttsnap.json` to the genesis directory), and a history whose statement differs from the snapshot's. `-manifest` attests a given snapshot instead of the latest, `-round R` a round of its own, and `-workers` sets the goroutines that read a stopped node's history; `ttsnap commitment -d <data dir> -round R` prints the statement without signing it. The endpoint reads with half the node's CPUs; stopping algod cancels it.
 
 A history written before the node recorded expired stake (the `E` records) lacks them for some rounds: its commitment differs from a current node's, as its content does. Rebuild it with `ttimport` before attesting.
 
