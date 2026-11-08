@@ -158,8 +158,8 @@ func queryErrorStatus(err error) int {
 }
 
 // queryStreamQueue holds a stream's events, encoded, until the handler writes them. The request's
-// workers push to it and never wait for the client: a stream holds what a response without one
-// would, its logs and errors, which MaxAPIQueryResponseBytes bounds, in base64.
+// workers push to it and never wait for the client. It holds what MaxAPIQueryResponseBytes bounds,
+// each log's bytes and 48 more, as base64 in events: about 4/3 of it at most.
 type queryStreamQueue struct {
 	mu  deadlock.Mutex
 	buf []byte
@@ -176,7 +176,17 @@ type queryStreamQueue struct {
 // push encodes e at the end of the queue. A log that follows the one before it, of the same call,
 // joins its event.
 func (q *queryStreamQueue) push(e simulation.QueryEvent) {
+	q.encode(e)
+	select {
+	case q.ready <- struct{}{}:
+	default:
+	}
+}
+
+// encode encodes e at the end of the queue, under its lock.
+func (q *queryStreamQueue) encode(e simulation.QueryEvent) {
 	q.mu.Lock()
+	defer q.mu.Unlock()
 	if e.Kind == simulation.QueryEventLog {
 		if q.open && e.Round == q.round && e.Call == q.call && e.Index == q.next {
 			q.buf = append(q.buf, ',')
@@ -198,11 +208,6 @@ func (q *queryStreamQueue) push(e simulation.QueryEvent) {
 	} else {
 		q.closeLogs()
 		q.buf = appendQueryEvent(q.buf, e)
-	}
-	q.mu.Unlock()
-	select {
-	case q.ready <- struct{}{}:
-	default:
 	}
 }
 

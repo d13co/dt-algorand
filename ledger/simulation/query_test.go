@@ -1291,3 +1291,24 @@ int 1`, f.reader)
 	require.Equal(t, latest, rounds[1].Round)
 	require.Empty(t, rounds[1].Error)
 }
+
+// TestQueryWorkerPanic: a panic on a worker outside the calls, here in a stream's sink, stops the
+// request with it as the error instead of crashing the node.
+func TestQueryWorkerPanic(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+	for _, workers := range []int{1, 3} {
+		req := f.request(t, "#pragma version 10\nbyte \"x\"; log; int 1", args("a"), args("b"), args("c"))
+		req.Limits.Parallelism = workers
+		_, err := s.Query(req.WithStream(func(e simulation.QueryEvent) {
+			if e.Kind == simulation.QueryEventCall {
+				panic("sink on fire")
+			}
+		}))
+		require.ErrorContains(t, err, "panic in a query worker: sink on fire", "workers %d", workers)
+	}
+}

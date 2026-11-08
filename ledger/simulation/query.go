@@ -618,8 +618,7 @@ func (run *queryRun) runAll(work []queryWork) {
 			go func() {
 				defer wg.Done()
 				for piece := range ch {
-					run.runPiece(piece)
-					run.pieceDone(run.plans[piece.round])
+					run.runSafely(piece)
 				}
 			}()
 			continue
@@ -629,8 +628,7 @@ func (run *queryRun) runAll(work []queryWork) {
 			for slots.tryAcquire() {
 				piece, ok := <-ch
 				if ok {
-					run.runPiece(piece)
-					run.pieceDone(run.plans[piece.round])
+					run.runSafely(piece)
 				}
 				slots.release()
 				if !ok {
@@ -645,6 +643,20 @@ func (run *queryRun) runAll(work []queryWork) {
 	close(ch)
 	// Every worker has stopped writing to the plans once Wait returns.
 	wg.Wait()
+}
+
+// runSafely runs piece and reports that it ended. A panic, which callQuery doesn't catch outside
+// the calls (a stream's sink, the request's bookkeeping), stops the request with it as the error:
+// on a worker's goroutine it would crash the node.
+func (run *queryRun) runSafely(piece queryWork) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Base().Errorf("recovered from panic in a query worker: %v\n%s", r, debug.Stack())
+			run.cancel(fmt.Errorf("panic in a query worker: %v", r))
+		}
+	}()
+	run.runPiece(piece)
+	run.pieceDone(run.plans[piece.round])
 }
 
 // runPiece runs the calls of piece, on one QueryState, so they share its ledger's cache.
