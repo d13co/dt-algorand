@@ -149,16 +149,13 @@ func (v2 *Handlers) Query(ctx echo.Context, params model.QueryParams) error {
 		func() bool { return trySimulate(limiter) },
 		func() { releaseSimulate(limiter) })
 
+	if wantsQueryStream(ctx.Request()) {
+		return v2.streamQuery(ctx, request, effort)
+	}
+
 	result, err := v2.Node.Query(request)
 	if err != nil {
-		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
-			return answerErr
-		}
-		var invalid simulation.InvalidRequestError
-		if errors.As(err, &invalid) || errors.Is(err, simulation.ErrQueryResponseTooLarge) {
-			return badRequest(ctx, err, err.Error(), v2.Log)
-		}
-		return internalError(ctx, err, err.Error(), v2.Log)
+		return v2.answerQueryError(ctx, err)
 	}
 	if clientGone(ctx) {
 		// There is no one to write the response to.

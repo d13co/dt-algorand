@@ -1138,7 +1138,7 @@ type QueryLimits struct {
 	// MaxCalls The most calls a request may hold (node config MaxAPIQueryCalls).
 	MaxCalls uint64 `json:"max-calls"`
 
-	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. 0 means no limit (node config MaxAPIQueryResponseBytes).
+	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, and one that goes over ends with an end event of status 400. 0 means no limit (node config MaxAPIQueryResponseBytes).
 	MaxResponseBytes uint64 `json:"max-response-bytes"`
 
 	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
@@ -1146,6 +1146,9 @@ type QueryLimits struct {
 
 	// MaxTotalCalls The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.
 	MaxTotalCalls uint64 `json:"max-total-calls"`
+
+	// Stream The streamed answers the node offers. "sse": a request that accepts text/event-stream is answered with Server-Sent Events, each log sent as the called app makes it (see POST /v2/query). Absent on nodes that only answer in full.
+	Stream *[]string `json:"stream,omitempty"`
 }
 
 // QueryProtocolNote A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.

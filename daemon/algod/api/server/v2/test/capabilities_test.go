@@ -73,7 +73,7 @@ func TestCapabilitiesJSON(t *testing.T) {
 	require.JSONEq(t, `{
 		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
 		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000},
-		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024}
+		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024, "stream": ["sse"]}
 	}`, string(capabilitiesJSON(t, capabilitiesRouter(t, config.GetDefaultLocal()))))
 }
 
@@ -84,7 +84,8 @@ func TestCapabilities(t *testing.T) {
 	t.Parallel()
 
 	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
-	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024}
+	sse := []string{"sse"}
+	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024, Stream: &sse}
 	for _, tc := range []struct {
 		name      string
 		configure func(*config.Local)
@@ -104,7 +105,7 @@ func TestCapabilities(t *testing.T) {
 			c.MaxAPIQueryRounds = 1_000_000
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
-			Query: &model.QueryLimits{MaxCalls: 3, MaxCallBudget: 1, MaxRounds: simulation.MaxQueryRounds, MaxTotalCalls: 3 * simulation.MaxQueryRounds},
+			Query: &model.QueryLimits{MaxCalls: 3, MaxCallBudget: 1, MaxRounds: simulation.MaxQueryRounds, MaxTotalCalls: 3 * simulation.MaxQueryRounds, Stream: &sse},
 		}},
 		{"total calls 0 or over calls times rounds", func(c *config.Local) {
 			c.MaxAPIQueryCalls = 10
@@ -112,14 +113,14 @@ func TestCapabilities(t *testing.T) {
 			c.MaxAPIQueryTotalCalls = 0
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
-			Query: &model.QueryLimits{MaxCalls: 10, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 4, MaxTotalCalls: 40},
+			Query: &model.QueryLimits{MaxCalls: 10, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 4, MaxTotalCalls: 40, Stream: &sse},
 		}},
 		// max-calls comes down to max-total-calls: more calls are over it even at one round.
 		{"total calls under calls times rounds", func(c *config.Local) {
 			c.MaxAPIQueryTotalCalls = 100
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
-			Query: &model.QueryLimits{MaxCalls: 100, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 100},
+			Query: &model.QueryLimits{MaxCalls: 100, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 100, Stream: &sse},
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0

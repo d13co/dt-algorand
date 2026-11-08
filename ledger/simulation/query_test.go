@@ -21,12 +21,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/algorand/go-deadlock"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
@@ -1117,4 +1120,174 @@ int 1`, f.reader, strings.Repeat("x", 100))
 	require.Empty(t, rr.Error)
 	require.Contains(t, rr.Calls[0].Error, "no online stake recorded")
 	require.Empty(t, rr.Calls[1].Error)
+}
+
+// collectQueryEvents returns a stream sink and the events it got.
+func collectQueryEvents() (func(simulation.QueryEvent), func() []simulation.QueryEvent) {
+	var mu deadlock.Mutex
+	var events []simulation.QueryEvent
+	return func(e simulation.QueryEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, e)
+		}, func() []simulation.QueryEvent {
+			mu.Lock()
+			defer mu.Unlock()
+			return slices.Clone(events)
+		}
+}
+
+type queryCallKey struct {
+	round basics.Round
+	call  int
+}
+
+// TestQueryStream: a streamed query reports its rounds, then each log as the called app makes it
+// and each call after its logs, then each round after its calls: the same logs, costs, errors and
+// protocol notes as the query's result without a stream, each distinct round once.
+func TestQueryStream(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+	latest := f.env.TxnInfo.LatestRound()
+
+	// the ghost logs 11 times, "fail" fails after the first log, the reader app's logs are not reported
+	program := strings.Replace(f.ghost(), "#pragma version 10\n", "#pragma version 10\nbyte \"first\"; log\ntxna ApplicationArgs 0; byte \"fail\"; ==; bnz bad\n", 1) + "\nbad: err"
+	calls := []simulation.QueryCall{args("a"), args("fail"), args("b"), args("c"), args("d")}
+	for _, workers := range []int{1, 3} {
+		req := f.request(t, program, calls...)
+		req.Rounds = []basics.Round{0, latest - 1, latest}
+		req.Limits.Parallelism = workers
+		want, err := s.Query(req)
+		require.NoError(t, err)
+
+		sink, events := collectQueryEvents()
+		got, err := s.Query(req.WithStream(sink))
+		require.NoError(t, err)
+		for i, rr := range got.Rounds {
+			require.Equal(t, want.Rounds[i].Round, rr.Round)
+			for j, c := range rr.Calls {
+				require.Nil(t, c.Logs)
+				require.Equal(t, want.Rounds[i].Calls[j].Cost, c.Cost)
+			}
+		}
+
+		evs := events()
+		require.Equal(t, simulation.QueryEvent{Kind: simulation.QueryEventStart, LastRound: latest, Rounds: []basics.Round{latest, latest - 1, latest}}, evs[0])
+		logs := make(map[queryCallKey][]string)
+		ended := make(map[queryCallKey]bool)
+		roundsEnded := make(map[basics.Round]bool)
+		for _, e := range evs[1:] {
+			k := queryCallKey{e.Round, e.Call}
+			require.False(t, roundsEnded[e.Round], "event after its round: %+v", e)
+			switch e.Kind {
+			case simulation.QueryEventLog:
+				require.False(t, ended[k])
+				require.Equal(t, len(logs[k]), e.Index)
+				logs[k] = append(logs[k], e.Log)
+			case simulation.QueryEventCall:
+				require.False(t, ended[k])
+				ended[k] = true
+				wc := want.Rounds[slices.IndexFunc(want.Rounds, func(rr simulation.QueryRoundResult) bool { return rr.Round == e.Round })].Calls[e.Call]
+				require.Equal(t, wc.Logs, logs[k], "round %d call %d", e.Round, e.Call)
+				require.Equal(t, len(wc.Logs), e.Logs)
+				require.Equal(t, wc.Cost, e.Cost)
+				require.Equal(t, wc.Error, e.Error)
+			case simulation.QueryEventRound:
+				for c := range calls {
+					require.True(t, ended[queryCallKey{e.Round, c}])
+				}
+				roundsEnded[e.Round] = true
+				require.Empty(t, e.Error)
+				require.Equal(t, want.Rounds[1].Protocol == nil, e.Protocol == nil)
+			default:
+				t.Fatalf("unexpected event %+v", e)
+			}
+		}
+		require.Len(t, roundsEnded, 2)
+		require.Len(t, ended, 2*len(calls))
+		require.Len(t, logs[queryCallKey{latest, 1}], 1) // "fail" logged once before failing
+	}
+}
+
+// TestQueryStreamLimit: a stream counts each log as it comes, once, and stops the request when the
+// logs go over MaxResponseBytes; what it reported fits.
+func TestQueryStreamLimit(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+
+	// each call logs 10 times 100 bytes: 1480 counted
+	program := fmt.Sprintf("#pragma version 10\nint 10\nloop: byte %q; log; int 1; -; dup; bnz loop\npop; int 1\n", strings.Repeat("x", 100))
+	req := f.request(t, program, args("a"), args("b"), args("c"))
+	req.Limits.Parallelism = 1
+	req.Rounds = []basics.Round{0, 0} // counted twice without a stream, once with one
+
+	req.Limits.MaxResponseBytes = 3 * 1480
+	_, err := s.Query(req)
+	require.ErrorIs(t, err, simulation.ErrQueryResponseTooLarge)
+	sink, events := collectQueryEvents()
+	_, err = s.Query(req.WithStream(sink))
+	require.NoError(t, err)
+	require.Equal(t, simulation.QueryEventRound, events()[len(events())-1].Kind)
+
+	req.Limits.MaxResponseBytes = 2*1480 + 500
+	sink, events = collectQueryEvents()
+	_, err = s.Query(req.WithStream(sink))
+	require.ErrorIs(t, err, simulation.ErrQueryResponseTooLarge)
+	streamed := 0
+	for _, e := range events() {
+		if e.Kind == simulation.QueryEventLog {
+			streamed++
+		}
+		require.NotEqual(t, simulation.QueryEventRound, e.Kind)
+	}
+	require.Equal(t, 23, streamed) // 2 calls, and 3 logs of the third
+}
+
+// TestQueryStreamRoundFailure: when the node fails to read a round, the stream reports the round
+// with the error, after whatever it streamed of the round's calls.
+func TestQueryStreamRoundFailure(t *testing.T) { // nolint:paralleltest // sets the lookup fault of every query
+	partitiontest.PartitionTest(t)
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+	latest := f.env.TxnInfo.LatestRound()
+
+	defer simulation.SetLookupFault(func(method string, rnd basics.Round) error {
+		if method == "LookupKv" && rnd == latest-1 {
+			return errors.New("disk on fire")
+		}
+		return nil
+	})()
+	program := fmt.Sprintf(`#pragma version 13
+byte "before"; log
+txna ApplicationArgs 0; byte "box"; ==; bz skip
+int %d; byte "b"; app_box_get; assert; pop
+skip:
+int 1`, f.reader)
+	req := f.request(t, program, args("a"), args("box"))
+	req.Rounds = []basics.Round{latest - 1, latest}
+	req.Limits.Parallelism = 1
+	sink, events := collectQueryEvents()
+	_, err := s.Query(req.WithStream(sink))
+	require.NoError(t, err)
+	var rounds []simulation.QueryEvent
+	for _, e := range events() {
+		if e.Kind == simulation.QueryEventRound {
+			rounds = append(rounds, e)
+		}
+	}
+	require.Len(t, rounds, 2)
+	require.Equal(t, latest-1, rounds[0].Round)
+	require.Equal(t, fmt.Sprintf("reading round %d failed: disk on fire", latest-1), rounds[0].Error)
+	require.Equal(t, latest, rounds[1].Round)
+	require.Empty(t, rounds[1].Error)
 }
