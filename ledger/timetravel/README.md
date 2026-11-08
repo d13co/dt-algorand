@@ -468,15 +468,14 @@ Sync from genesis: the history adds ~0.15–0.27 ms per round of write work in t
 
 ## Reproducing
 
-[tools/ttlab/README.md](../../tools/ttlab/README.md) describes the input data, each command's options and its output.
+[tools/ttlab/README.md](../../tools/ttlab/README.md) describes the input data, each command's options and its output. ttlab is a separate module, so that DuckDB stays out of algod's `go.mod`. The delta directories hold `GET /v2/deltas/{round}?format=msgpack` as `<dir>/<round>.msgp`, and the block directories hold `GET /v2/blocks/{round}?format=msgpack` the same way. `demo` checks the REST API end to end on a dev-mode network: `<dev-mode network dir>` is the `-r` directory of `goal network create -K`.
 
 ```sh
-cd tools/ttlab   # separate module: DuckDB stays out of algod's go.mod
-# deltas: GET /v2/deltas/{round}?format=msgpack -> <dir>/<round>.msgp, blocks likewise
+cd tools/ttlab
 go run . stats -deltas sample-deltas -blocks sample-blocks > stats.csv
 go run . ingest -data run-2026 -from 65700000 -to 65749999 -warm 10000 -db /tmp/s -comp zstd -block 131072 >> m2026.jsonl
 go run . engines -store <store kept with -keep> -out /tmp/eng
 go run . catchpoint -file <catchpoint tar prefix from a relay> -db /tmp/cp
 python3 estimate.py stats.csv 2022=m2022.jsonl 2024=m2024.jsonl 2026=m2026.jsonl
-go run . demo -net <dev-mode network created with goal network create -K>   # REST end to end
+go run . demo -net <dev-mode network dir>
 ```

@@ -4,9 +4,16 @@
 
 It opens the store read-only, but Pebble locks the store while it is open, so **algod must be stopped** (and algod cannot start while ttdump runs). On a running node, goal's `--round` flags and `versions` commands ask algod instead.
 
+On a data directory, ttdump finds the store as algod does:
+
 ```sh
-ttdump -d ~/tt info                       # a data directory: finds the store as algod does
-ttdump -store /fast/fnet-v1/ledger.timetravel info   # or the store itself
+ttdump -d ~/tt info
+```
+
+Or pass the store itself:
+
+```sh
+ttdump -store /fast/fnet-v1/ledger.timetravel info
 ```
 
 With `-d`, ttdump also loads the network's `consensus.json`, as algod does. Copying the store of a running node gives an inconsistent copy; stop the node first.
