@@ -58,14 +58,14 @@ Below, `D` is the data directory: `/var/lib/dtalgorand` with the .deb, `$(brew -
 
 **Optionally, before anything else, put the history on a fast disk.** It goes in `<TimeTravelDBDir>/mainnet-v1.0/ledger.timetravel`.
 
-On Linux, outside `/home` (the unit's `ProtectHome` keeps the node out of it):
+On Linux, put it outside `/home` (the unit's `ProtectHome` keeps the node out of it):
 
 ```sh
 sudo install -d -o dtalgorand -g dtalgorand /mnt/fast/dtalgorand
 sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p TimeTravelDBDir -v /mnt/fast/dtalgorand
 ```
 
-On macOS, on a disk that stays mounted whenever the node runs, excluded from Time Machine:
+On macOS, use a disk that stays mounted whenever the node runs, and exclude it from Time Machine:
 
 ```sh
 mkdir -p /Volumes/<disk>/dtalgorand
@@ -214,9 +214,17 @@ dtgoal node status -d $(brew --prefix)/var/dtalgorand
 - **Synced:** `Last committed block` matches the network's (for example `curl -s https://mainnet-api.4160.nodely.dev/v2/status`), and `Sync Time` stays near 0.
 - **During a catchpoint catchup:** `Catchpoint` lines show its progress.
 
-The REST API's address is in `D/algod.net` and its token in `D/algod.token`. algod picks port 8080 if it is free and a random port otherwise, so a stock `algorand` node on the same host can take 8080. To pin the port, set `EndpointAddress` and restart the node: `sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on Linux, `dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on macOS. To check that time travel works, set `D` to the data directory (on Linux, `D=/var/lib/dtalgorand`; on macOS, `D=$(brew --prefix)/var/dtalgorand`) and run:
+The REST API's address is in `D/algod.net` and its token in `D/algod.token`. algod picks port 8080 if it is free and a random port otherwise, so a stock `algorand` node on the same host can take 8080. To pin the port, set `EndpointAddress` and restart the node: `sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on Linux, `dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p EndpointAddress -v 127.0.0.1:8081` on macOS. To check that time travel works, on Linux:
 
 ```sh
+D=/var/lib/dtalgorand
+curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2/ledger/supply?round=1000"
+```
+
+On macOS:
+
+```sh
+D=$(brew --prefix)/var/dtalgorand
 curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2/ledger/supply?round=1000"
 ```
 
@@ -228,7 +236,7 @@ curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2
 2. If the node holds participation keys (see [Participation](#participation)), move them aside first: any `*.partkey` files in `D/mainnet-v1.0`, and `partregistry.sqlite` with its `-wal` and `-shm` files, which are in `D/mainnet-v1.0` too unless `ColdDataDir` is set (then in its `mainnet-v1.0`).
 3. Delete the genesis directory, and the `mainnet-v1.0` directory under each `*Dir` setting of `config.json` you set (`TimeTravelDBDir`, `HotDataDir`, `ColdDataDir`, `TrackerDBDir`, `BlockDBDir`, `CatchpointDir`, `StateproofDir`, `CrashDBDir`):
 
-   On Linux, with the history on `/mnt/fast` as above:
+   On Linux, if you put the history on `/mnt/fast` as above (otherwise add your `<TimeTravelDBDir>/mainnet-v1.0`, or drop the second path if you didn't set it):
 
    ```sh
    sudo rm -rf /var/lib/dtalgorand/mainnet-v1.0 /mnt/fast/dtalgorand/mainnet-v1.0

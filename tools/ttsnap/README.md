@@ -18,7 +18,7 @@ The installer README's [From a snapshot](../../installer/dtalgorand/README.md#fr
    ttimport -holders-index -d <data dir>
    ```
 
-3. Start algod, and once `goal node status` answers, catch up from the network's latest catchpoint:
+3. Start algod, and once `dtgoal node status` (`goal` upstream) answers, catch up from the network's latest catchpoint:
 
    ```sh
    ttsnap catchup -d <data dir>
