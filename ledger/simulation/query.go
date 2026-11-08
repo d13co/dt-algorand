@@ -611,7 +611,7 @@ func (run *queryRun) runAll(work []queryWork) {
 	wg.Wait()
 }
 
-// runPiece runs the calls of piece, on one QueryState, so they share its lookups.
+// runPiece runs the calls of piece, on one QueryState, so they share its ledger's cache.
 func (run *queryRun) runPiece(piece queryWork) {
 	qr := run.plans[piece.round]
 	if qr.err != nil || run.ctx.Err() != nil || run.failed(qr) {
@@ -631,26 +631,13 @@ func (run *queryRun) runPiece(piece queryWork) {
 		}()
 	}
 
-	var ql *queryLedger
-	var qs *eval.QueryState
-	// fresh starts over with an empty cache. Its error is the round's.
-	fresh := func() bool {
-		ql = &queryLedger{simulatorLedger: qr.ledger}
-		var err error
-		if qs, err = eval.NewQueryState(ql, qr.prevHdr, qr.nextHdr, qr.totals, !qr.ledger.pastStart); err != nil {
-			run.fail(qr, err)
-			return false
-		}
-		tracer.ledger, tracer.warm = ql, false
-		return true
-	}
-	if !fresh() {
+	ql := newQueryLedger(qr.ledger)
+	qs, err := eval.NewQueryState(ql, qr.prevHdr, qr.nextHdr, qr.totals, !qr.ledger.pastStart)
+	if err != nil {
+		run.fail(qr, err)
 		return
 	}
-	resetBytes := maxQueryCacheBytes
-	if tracer.stateLimit > 0 {
-		resetBytes = min(resetBytes, tracer.stateLimit/2)
-	}
+	tracer.ledger = ql
 	opts := eval.QueryCallOptions{
 		Budget:           run.req.Budget,
 		MaxLogBytes:      run.req.Limits.MaxCallLogBytes,
@@ -661,33 +648,17 @@ func (run *queryRun) runPiece(piece queryWork) {
 		if run.ctx.Err() != nil || run.failed(qr) {
 			return
 		}
-		// call runs call i into logs and err. It returns false when the piece must stop.
-		var logs []string
-		var err error
-		call := func() bool {
-			tracer.startCall(i)
-			logs, err = callQuery(qs, qr.txns[i], opts)
-			if tracer.abort.aborted != nil {
-				// The request is stopping; the call did not finish.
-				return false
-			}
-			if ql.err != nil {
-				// The node failed to read the round: no answer of this round can be trusted.
-				run.fail(qr, ql.err)
-				return false
-			}
-			return true
-		}
-		if !call() {
+		ql.startCall()
+		tracer.startCall(i)
+		logs, err := callQuery(qs, qr.txns[i], opts)
+		if tracer.abort.aborted != nil {
+			// The request is stopping; the call did not finish.
 			return
 		}
-		if tracer.overState() && tracer.warm {
-			// Over the state limit on a cache earlier calls filled: run the call again on an empty
-			// one, so that whether it is over depends only on what it reads itself, not on which
-			// calls ran before it on the same worker.
-			if !fresh() || !call() {
-				return
-			}
+		if ql.err != nil {
+			// The node failed to read the round: no answer of this round can be trusted.
+			run.fail(qr, ql.err)
+			return
 		}
 		res := QueryCallResult{Logs: logs, Cost: tracer.cost}
 		switch {
@@ -700,15 +671,6 @@ func (run *queryRun) runPiece(piece queryWork) {
 			return
 		}
 		qr.calls[i] = res
-		tracer.warm = true
-		// Start over with an empty cache once it holds enough, so that the memory a piece holds
-		// stays bounded, and after a call over the state limit, which leaves it over for the next.
-		// Below half the limit, a call that reads as much again is not over on the warm cache.
-		if (ql.bytes > resetBytes || tracer.overState()) && i+1 < piece.hi {
-			if !fresh() {
-				return
-			}
-		}
 	}
 }
 
@@ -730,12 +692,6 @@ func (run *queryRun) failed(qr *queryRound) bool {
 	defer run.mu.Unlock()
 	return qr.failed != nil
 }
-
-// maxQueryCacheBytes is the most memory, as queryLedger counts it, of the lookups a worker keeps
-// cached before it starts over with a new state, between calls. A piece may hold every call of
-// the request; every worker holds a slot of SimulateParallelism, so the node's total stays
-// bounded. Within a call, MaxCallStateBytes bounds it.
-const maxQueryCacheBytes = 32 << 20
 
 // queryLogOverhead is what the response bytes of a call count for each of its logs, besides its
 // bytes: the memory of its string header, then of the []byte header encoding makes.
@@ -802,12 +758,11 @@ type queryTracer struct {
 	// call is the index of the running call, and cost the budget it used so far.
 	call int
 	cost int
-	// ledger is that of the call's state, whose bytes stateLimit bounds (0: no limit). warm is set
-	// once a call ran on the state, and stateOver once the running call read more than stateLimit:
-	// every later opcode of the call stops its program.
+	// ledger is that of the call's state, whose bytes stateLimit bounds (0: no limit). stateOver is
+	// set once the running call read more than stateLimit: every later opcode of the call stops its
+	// program.
 	ledger     *queryLedger
 	stateLimit int
-	warm       bool
 	stateOver  bool
 	// gaps, when set, are those of a protocol override, and hits the notes the calls hit.
 	gaps       *protocolGaps

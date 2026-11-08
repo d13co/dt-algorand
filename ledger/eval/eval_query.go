@@ -39,11 +39,13 @@ import (
 // the next block, alone in its group. There are no signatures, fees, minimum balances, duplicate or
 // lease checks, and no block. A call may read any app's boxes, as if every app had set
 // ForeignBoxReads. A call may write state, but its writes are dropped when it ends, so
-// every call sees the state the round left. The state's lookups are cached: later calls reuse the
-// reads of earlier ones.
+// every call sees the state the round left. Each call starts with an empty lookup cache, so the
+// state asks its ledger once for each object a call reads, whatever earlier calls read: a ledger
+// that caches across calls sees the reads of each call in full.
 //
 // A QueryState is not safe for concurrent use.
 type QueryState struct {
+	base     *roundCowBase
 	cow      *roundCowState
 	proto    config.ConsensusParams
 	specials transactions.SpecialAddresses
@@ -87,6 +89,7 @@ func NewQueryState(l LedgerForCowBase, prevHdr, nextHdr bookkeeping.BlockHeader,
 		return nil, fmt.Errorf("overflowed withdrawing the rewards of round %d", nextHdr.Round)
 	}
 	return &QueryState{
+		base:  base,
 		cow:   cow,
 		proto: proto,
 		specials: transactions.SpecialAddresses{
@@ -121,6 +124,10 @@ var ErrQueryNotAppCall = errors.New("query: not an app call")
 // call fails part way, and the call's error. The calls of inner transactions are paid from an
 // unlimited fee credit, so inner fees left to their default are 0.
 func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (logs []string, err error) {
+	// Start on an empty lookup cache. The state's own writes, the rewards withdrawn from the pool,
+	// are in q.cow, not in the base.
+	q.base.resetQueryCache()
+
 	txn := &stxn.Txn
 	if txn.Type != protocol.ApplicationCallTx {
 		return nil, ErrQueryNotAppCall
@@ -153,4 +160,30 @@ func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (l
 	err = apply.ApplicationCall(txn.ApplicationCallTxnFields, txn.Header, child, &ad, 0, ep, q.cow.Counter())
 	// The program logs into its EvalParams' txn, which ApplicationCall does not clear on failure.
 	return ep.TxnGroup[0].EvalDelta.Logs, err
+}
+
+// maxKeptQueryCacheLen is the most entries a cache map of a QueryState's base may have held for it to
+// be cleared and reused by the next call: a larger one is replaced, so that one call that read much
+// doesn't leave its memory to every later call.
+const maxKeptQueryCacheLen = 1024
+
+// resetQueryCache empties the base's caches, as makeRoundCowBase makes them.
+func (x *roundCowBase) resetQueryCache() {
+	x.accounts = resetQueryCacheMap(x.accounts)
+	x.onlineAccounts = resetQueryCacheMap(x.onlineAccounts)
+	x.totalOnline = basics.MicroAlgos{}
+	x.appParams = resetQueryCacheMap(x.appParams)
+	x.assetParams = resetQueryCacheMap(x.assetParams)
+	x.appLocalStates = resetQueryCacheMap(x.appLocalStates)
+	x.assets = resetQueryCacheMap(x.assets)
+	x.creators = resetQueryCacheMap(x.creators)
+	x.kvStore = resetQueryCacheMap(x.kvStore)
+}
+
+func resetQueryCacheMap[K comparable, V any](m map[K]V) map[K]V {
+	if len(m) > maxKeptQueryCacheLen {
+		return make(map[K]V)
+	}
+	clear(m)
+	return m
 }

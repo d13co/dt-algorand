@@ -25,3 +25,11 @@ func SetLookupFault(fault func(method string, rnd basics.Round) error) (restore 
 	lookupFault = fault
 	return func() { lookupFault = nil }
 }
+
+// SetQueryCacheBytes sets how many bytes a query worker keeps cached for later calls, until the
+// returned function is called. It is not safe to use with tests that run in parallel.
+func SetQueryCacheBytes(n int) (restore func()) {
+	old := maxQueryCacheBytes
+	maxQueryCacheBytes = n
+	return func() { maxQueryCacheBytes = old }
+}

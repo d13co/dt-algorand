@@ -18,14 +18,19 @@ package eval
 
 import (
 	"encoding/binary"
+	"fmt"
+	"reflect"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
+	"github.com/algorand/go-algorand/ledger/ledgercore"
 	ledgertesting "github.com/algorand/go-algorand/ledger/testing"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/test/partitiontest"
@@ -96,6 +101,85 @@ int 1`)
 	require.Zero(t, q.cow.mods.Accts.Len())
 	require.Empty(t, q.cow.mods.Creatables)
 	require.Zero(t, q.cow.txnCount)
+}
+
+// countingQueryLedger counts the account lookups of its ledger, by address.
+type countingQueryLedger struct {
+	LedgerForCowBase
+	lookups map[basics.Address]int
+}
+
+func (l *countingQueryLedger) LookupWithoutRewards(rnd basics.Round, addr basics.Address) (ledgercore.AccountData, basics.Round, error) {
+	l.lookups[addr]++
+	return l.LedgerForCowBase.LookupWithoutRewards(rnd, addr)
+}
+
+// TestQueryStateCacheResetPerCall: each call starts with an empty lookup cache, so it asks the
+// ledger once for each account it reads, however often it reads it and whatever the calls before
+// it read.
+func TestQueryStateCacheResetPerCall(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	genesisInitState, addrs, _ := ledgertesting.Genesis(10)
+	tl := newTestLedger(t, bookkeeping.GenesisBalances{
+		Balances:    genesisInitState.Accounts,
+		FeeSink:     testSinkAddr,
+		RewardsPool: testPoolAddr,
+	})
+	l := &countingQueryLedger{LedgerForCowBase: tl, lookups: make(map[basics.Address]int)}
+	prevHdr, err := l.BlockHdr(0)
+	require.NoError(t, err)
+	_, totals, err := tl.LatestTotals()
+	require.NoError(t, err)
+	q, err := NewQueryState(l, prevHdr, bookkeeping.MakeBlock(prevHdr).BlockHeader, totals, true)
+	require.NoError(t, err)
+
+	stxn := queryCreate(t, prevHdr, fmt.Sprintf(`#pragma version 10
+addr %[1]s; balance; pop
+addr %[1]s; balance; pop
+int 1`, addrs[0]))
+	stxn.Txn.Accounts = []basics.Address{addrs[0]}
+	for i := 1; i <= 3; i++ {
+		_, err := q.Call(stxn, QueryCallOptions{})
+		require.NoError(t, err)
+		require.Equal(t, i, l.lookups[addrs[0]], "call %d", i)
+	}
+}
+
+// TestQueryStateResetCache: resetQueryCache leaves a base as makeRoundCowBase makes it, whatever
+// its caches held. It fills every map of the base, so a cache added to roundCowBase that
+// resetQueryCache misses fails it.
+func TestQueryStateResetCache(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	for _, n := range []int{1, maxKeptQueryCacheLen + 1} {
+		b := makeRoundCowBase(nil, 7, 8, 9, config.Consensus[protocol.ConsensusCurrentVersion])
+		v := reflect.ValueOf(b).Elem()
+		for i := range v.NumField() {
+			f := v.Field(i)
+			if f.Kind() != reflect.Map {
+				continue
+			}
+			f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
+			for k := range n {
+				key := reflect.New(f.Type().Key()).Elem()
+				switch key.Kind() {
+				case reflect.String:
+					key.SetString(fmt.Sprint(k))
+				default:
+					// every other key type starts with an address or an index: vary its first two bytes
+					reflect.NewAt(reflect.TypeFor[uint16](), unsafe.Pointer(key.Addr().Pointer())).Elem().SetUint(uint64(k))
+				}
+				f.SetMapIndex(key, reflect.New(f.Type().Elem()).Elem())
+			}
+			require.Equal(t, n, f.Len(), v.Type().Field(i).Name)
+		}
+		b.totalOnline = basics.MicroAlgos{Raw: 1}
+		b.resetQueryCache()
+		require.Equal(t, makeRoundCowBase(nil, 7, 8, 9, config.Consensus[protocol.ConsensusCurrentVersion]), b)
+	}
 }
 
 // TestQueryStateFailure: a failed call keeps the logs it made.

@@ -935,6 +935,24 @@ func TestQueryTimeTravel(t *testing.T) {
 	}
 }
 
+// queryStateProgram reads the balances of the accounts numbered arg0 up to arg1, 256 bytes of state
+// each.
+const queryStateProgram = `#pragma version 10
+txna ApplicationArgs 0; btoi; store 0
+txna ApplicationArgs 1; btoi; store 1
+loop:
+load 0; load 1; >=; bnz done
+load 0; itob; int 24; bzero; concat; balance; pop
+load 0; int 1; +; store 0
+b loop
+done:
+int 1`
+
+// stateSpan is a call of queryStateProgram that reads the accounts numbered lo up to hi.
+func stateSpan(lo, hi uint64) simulation.QueryCall {
+	return simulation.QueryCall{Args: [][]byte{[]byte(u64(lo)), []byte(u64(hi))}}
+}
+
 // TestQueryCallStateLimit: a call that reads more ledger state than MaxCallStateBytes fails and the
 // others run on; whether a call is over depends only on what it reads, not on what the calls before
 // it on the same worker left cached, so the answers are the same with one worker or several.
@@ -945,23 +963,10 @@ func TestQueryCallStateLimit(t *testing.T) {
 	f := makeQueryFixture(t)
 	defer f.env.Close()
 	s := simulation.MakeSimulator(f.env.Ledger, false)
+	program, span := queryStateProgram, stateSpan
 
-	// reads the balances of the accounts numbered arg0 up to arg1, 256 bytes of state each
-	program := `#pragma version 10
-txna ApplicationArgs 0; btoi; store 0
-txna ApplicationArgs 1; btoi; store 1
-loop:
-load 0; load 1; >=; bnz done
-load 0; itob; int 24; bzero; concat; balance; pop
-load 0; int 1; +; store 0
-b loop
-done:
-int 1`
-	span := func(lo, hi uint64) simulation.QueryCall {
-		return simulation.QueryCall{Args: [][]byte{[]byte(u64(lo)), []byte(u64(hi))}}
-	}
-	// 80 accounts (under half the limit, so the cache is kept) and 150 fit in 50,000 bytes alone,
-	// but not together; 250 never fit
+	// 80 accounts and 150 fit in 50,000 bytes alone, but not together; 250 never fit, also when
+	// the calls before it on the worker left the first 230 cached
 	calls := []simulation.QueryCall{span(0, 80), span(80, 230), span(0, 250), span(0, 0), span(300, 450)}
 	over := []bool{false, false, true, false, false}
 	for _, workers := range []int{1, 3} {
@@ -989,6 +994,47 @@ int 1`
 	require.NoError(t, err)
 	for i, c := range result.Rounds[0].Calls {
 		require.Empty(t, c.Error, "call %d", i)
+	}
+}
+
+// TestQueryCacheEviction: the answers, costs and errors of the calls are the same however much a
+// worker keeps cached and however the calls are split among workers, including calls over
+// MaxCallStateBytes on lookups that earlier calls cached.
+func TestQueryCacheEviction(t *testing.T) { // nolint:paralleltest // sets the cache size of every query
+	partitiontest.PartitionTest(t)
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+
+	var calls []simulation.QueryCall
+	for i := range uint64(12) {
+		calls = append(calls, stateSpan(i*40, i*40+100+i%3*60), stateSpan(0, 0))
+	}
+	run := func(cacheBytes, workers int) simulation.QueryResult {
+		defer simulation.SetQueryCacheBytes(cacheBytes)()
+		req := f.request(t, queryStateProgram+"\nbyte \"done\"; log", calls...)
+		req.Limits.MaxCallStateBytes = 50_000
+		req.Limits.Parallelism = workers
+		result, err := s.Query(req)
+		require.NoError(t, err)
+		require.Empty(t, result.Rounds[0].Error)
+		return result
+	}
+	want := run(32<<20, 1)
+	over := 0
+	for _, c := range want.Rounds[0].Calls {
+		if c.Error != "" {
+			require.Contains(t, c.Error, "MaxAPIQueryCallStateBytes")
+			over++
+		}
+	}
+	require.Positive(t, over)
+	require.Less(t, over, len(calls))
+	for _, cacheBytes := range []int{0, 10_000, 40_000} {
+		for _, workers := range []int{1, 3} {
+			require.Equal(t, want, run(cacheBytes, workers), "cache %d workers %d", cacheBytes, workers)
+		}
 	}
 }
 
