@@ -25,8 +25,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -51,16 +53,24 @@ const QueryStreamType = "text/event-stream"
 const queryStreamFlushInterval = 20 * time.Millisecond
 
 // queryStreamKeepalive is how long a stream may go without a write before it sends a comment, so
-// that proxies with an idle timeout keep it open while a call runs.
+// that proxies with an idle timeout keep it open while a call runs. It is checked every third of
+// that, so a stream goes at most 4/3 of it without a write.
 const queryStreamKeepalive = 15 * time.Second
 
-// wantsQueryStream reports whether r accepts text/event-stream.
+// wantsQueryStream reports whether r accepts text/event-stream, with a q above 0.
 func wantsQueryStream(r *http.Request) bool {
 	for _, v := range r.Header.Values(echo.HeaderAccept) {
 		for _, part := range strings.Split(v, ",") {
-			if mt, _, err := mime.ParseMediaType(part); err == nil && mt == QueryStreamType {
-				return true
+			mt, params, err := mime.ParseMediaType(part)
+			if err != nil || mt != QueryStreamType {
+				continue
 			}
+			if q, ok := params["q"]; ok {
+				if f, err := strconv.ParseFloat(q, 64); err != nil || f <= 0 {
+					continue
+				}
+			}
+			return true
 		}
 	}
 	return false
@@ -76,6 +86,13 @@ func (v2 *Handlers) streamQuery(ctx echo.Context, request simulation.QueryReques
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Off the handler's goroutine, a panic would crash the node: it is the query's error.
+		defer func() {
+			if r := recover(); r != nil {
+				v2.Log.Errorf("recovered from panic in a streamed query: %v\n%s", r, debug.Stack())
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
 		_, err = v2.Node.Query(request)
 	}()
 
@@ -87,7 +104,8 @@ func (v2 *Handlers) streamQuery(ctx echo.Context, request simulation.QueryReques
 		}
 	}
 	w := startQueryStream(ctx.Response(), effort)
-	keepalive := time.NewTicker(queryStreamKeepalive)
+	w.write(q.take()) // the start event, and the headers, go out now
+	keepalive := time.NewTicker(queryStreamKeepalive / 3)
 	defer keepalive.Stop()
 	for {
 		select {

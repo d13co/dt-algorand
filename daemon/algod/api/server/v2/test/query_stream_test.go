@@ -289,3 +289,61 @@ func TestQueryRESTStreamLive(t *testing.T) {
 	opcodes, _, _ := strings.Cut(end.Effort, ",")
 	require.True(t, strings.HasPrefix(res.Trailer.Get(v2.EffortHeader), opcodes+","), res.Trailer.Get(v2.EffortHeader))
 }
+
+// TestQueryRESTStreamStartsAtOnce: the stream starts, headers and start event, as soon as the
+// request runs, also when its first call is silent until the node's time limit.
+func TestQueryRESTStreamStartsAtOnce(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := prepareQueryEnv(t)
+	defer env.Close()
+	srv := httptest.NewServer(newSimRouter(t, newSimNode(t, env, func(c *config.Local) {
+		c.RestWriteTimeoutSeconds = 3 // a time limit of 2 s
+		c.MaxAPIQueryCallBudget = 1 << 40
+	})))
+	defer srv.Close()
+
+	request := v2.PreEncodedQueryRequest{Program: assembleQuery(t, "#pragma version 10\nloop: b loop"), Calls: queryCalls("a")}
+	start := time.Now()
+	res := postQueryStream(t, srv, encodeQueryRequest(t, request, "msgpack"), false)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Less(t, time.Since(start), time.Second, "headers")
+	events := readSSE(t, res.Body)
+	require.NoError(t, res.Body.Close())
+	require.Len(t, events, 2)
+	require.Equal(t, "start", events[0].name)
+	require.Less(t, events[0].at.Sub(start), time.Second)
+	require.Equal(t, "end", events[1].name)
+	require.Contains(t, events[1].data, `"status":504`)
+}
+
+// TestQueryRESTStreamAccept: only an Accept that takes text/event-stream with a q above 0 gets a
+// stream.
+func TestQueryRESTStreamAccept(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := prepareQueryEnv(t)
+	defer env.Close()
+	h := newSimRouter(t, newSimNode(t, env))
+	body := encodeQueryRequest(t, v2.PreEncodedQueryRequest{Program: assembleQuery(t, queryRoundApp), Calls: queryCalls("a")}, "msgpack")
+	for accept, stream := range map[string]bool{
+		"text/event-stream":                         true,
+		"application/json, text/event-stream;q=0.5": true,
+		"text/event-stream; charset=utf-8":          true,
+		"text/event-stream;q=0":                     false,
+		"text/event-stream;q=0.0, application/json": false,
+		"application/json":                          false,
+		"":                                          false,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v2/query?format=json", bytes.NewReader(body))
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, accept)
+		require.Equal(t, stream, strings.HasPrefix(rec.Header().Get("Content-Type"), v2.QueryStreamType), accept)
+	}
+}
