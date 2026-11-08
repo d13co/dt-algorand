@@ -8,10 +8,10 @@ It is a separate Go module so that DuckDB and SQLite stay out of algod's `go.mod
 
 ```sh
 cd tools/ttlab
-go build -o ttlab .    # or: go run . <command> ...
+go build -o ttlab .
 ```
 
-`go.mod` replaces `github.com/algorand/go-algorand` with `../..`, so ttlab builds against the checkout it sits in. Like algod it needs libsodium in `crypto/libs`; a fresh worktree can copy it from another checkout. The first build also compiles DuckDB's cgo bindings.
+Or skip the build and use `go run . <command> ...`. `go.mod` replaces `github.com/algorand/go-algorand` with `../..`, so ttlab builds against the checkout it sits in. Like algod it needs libsodium in `crypto/libs`; a fresh worktree can copy it from another checkout. The first build also compiles DuckDB's cgo bindings.
 
 ## Commands
 
@@ -37,9 +37,17 @@ Nodely's public mainnet API (`https://mainnet-api.4160.nodely.dev`, no token) se
 ```sh
 N=https://mainnet-api.4160.nodely.dev
 mkdir run-2026 sample-deltas sample-blocks
-# a contiguous run, for ingest
+```
+
+A contiguous run, for `ingest`:
+
+```sh
 seq 65700000 65749999 | xargs -P 25 -I{} curl -sf -o run-2026/{}.msgp "$N/v2/deltas/{}?format=msgpack"
-# a sample every 20,000 rounds, for stats
+```
+
+A sample every 20,000 rounds, for `stats`:
+
+```sh
 seq 0 20000 65800000 | xargs -P 25 -I{} curl -sf -o sample-deltas/{}.msgp "$N/v2/deltas/{}?format=msgpack"
 seq 0 20000 65800000 | xargs -P 25 -I{} curl -sf -o sample-blocks/{}.msgp "$N/v2/blocks/{}?format=msgpack"
 ```
@@ -108,9 +116,16 @@ Scales the `ingest` results up to mainnet's whole history. Each era's run stands
 
 ## catchpoint
 
+The latest catchpoint's label (`<round>#<hash>`), and the relays:
+
 ```sh
-curl -s https://algorand-catchpoints.s3.us-east-2.amazonaws.com/channel/mainnet/latest.catchpoint   # label: <round>#<hash>
-dig +short SRV _algobootstrap._tcp.mainnet.algorand.network                                        # relays
+curl -s https://algorand-catchpoints.s3.us-east-2.amazonaws.com/channel/mainnet/latest.catchpoint
+dig +short SRV _algobootstrap._tcp.mainnet.algorand.network
+```
+
+Take `<round>` from the label, convert it to base 36, fetch a prefix of the catchpoint file from a relay, and read it:
+
+```sh
 python3 -c 'import sys; f=lambda n: f(n//36)+"0123456789abcdefghijklmnopqrstuvwxyz"[n%36] if n else ""; print(f(int(sys.argv[1])))' <round>
 curl -s http://<relay>:4160/v1/mainnet-v1.0/ledger/<round in base 36> | head -c 30000000 > cp.tar
 ./ttlab catchpoint -file cp.tar -db /tmp/cp
@@ -124,7 +139,11 @@ Needs `algod` and `goal` built from this branch on the `PATH` (`make install`).
 
 ```sh
 goal network create -K -r ~/ttnet -t test/testdata/nettemplates/DevModeNetwork.json
-# add "EnableTimeTravel": true to ~/ttnet/Node/config.json (Archival stays off)
+```
+
+Add `"EnableTimeTravel": true` to `~/ttnet/Node/config.json` (`Archival` stays off), then:
+
+```sh
 goal network start -r ~/ttnet
 tools/ttlab/ttlab demo -net ~/ttnet
 goal network stop -r ~/ttnet

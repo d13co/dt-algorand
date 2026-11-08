@@ -14,41 +14,44 @@ Finally, all the `goal` commands assume that `${DTALGORAND_DATA}` has been set. 
 
 ### A:
 
+Set `NETWORKS` to where you want to keep the network files (the data directories go beneath it), create the directory if you don't have it yet, and set `NAME` to your network's name:
+
 ```sh
-# set this to where you want to keep the network files (and data dirs will go beneath)
 NETWORKS=~/networks
-
-# create a networks directory if you don't already have it
 mkdir -p ${NETWORKS}
-
-# set this to "name" your network
 NAME=niftynetwork
+```
 
-# assuming here that are currently working out of the root directory of the go-algorand repo
+Create the network, from the root directory of the go-algorand repo:
+
+```sh
 goal network create -n ${NAME} -r ${NETWORKS}/${NAME} -t ./test/testdata/nettemplates/OneNodeFuture.json
+```
 
-# after the next command and for the rest of the README, we assume that `${DTALGORAND_DATA}` is set
+Set `DTALGORAND_DATA`, which the rest of this README assumes is set, and start the network:
+
+```sh
 export DTALGORAND_DATA=${NETWORKS}/${NAME}/Primary
 echo $DTALGORAND_DATA
-
-# start the network
 goal node start
+```
 
-# see if it worked (run a few times, note block increasing)
-goal node status
-sleep 4  # assuming you're copy/pasting this entire block
+Check that it works: the block number goes up from one status to the next. The `sleep`s are there so that you can paste the whole block at once; otherwise run `goal node status` a few times.
+
+```sh
 goal node status
 sleep 4
 goal node status
+sleep 4
+goal node status
+```
 
-# find the account with all the money
+Find the account with all the money, put it in a variable, and send some money from the account to itself:
+
+```sh
 goal account list
-
-# put it in a variable
 ACCOUNT=`goal account list | awk '{print $2}'`
 echo $ACCOUNT
-
-# send some money from the account to itself
 goal clerk send --to ${ACCOUNT} --from ${ACCOUNT} --amount 10
 ```
 
@@ -63,11 +66,11 @@ Here's an example with the following assumptions:
 * the clear program has relative path `cmd/goal/examples/clear.teal`
 * there are no local or global storage requirements
 
+Create the app, and take note of its "app index":
+
 ```sh
 TEALDIR=cmd/goal/examples
 echo $TEALDIR
-
-# create the app and TAKE NOTE of its "app index"
 goal app create --creator ${ACCOUNT} --approval-prog ${TEALDIR}/boxes.teal --clear-prog ${TEALDIR}/clear.teal
 ```
 
@@ -89,19 +92,19 @@ Created app with app index 2
 ### A:
 Assuming you followed the previous step, and that the _app index_ is 2:
 
+Store the app index and the app's account address in variables for later use:
+
 ```sh
-# store the app index for later usage
 APPID=2
 echo $APPID
-
-# store the app's account address into a variable
 APP_ACCOUNT=`goal app info --app-id ${APPID} | grep "Application account" | awk '{print $3}'`
 echo $APP_ACCOUNT
+```
 
-# fund the app's account (here we're being very conservative and sending 10 algos)
+Fund the app's account (here we're being very conservative and sending 10 algos), and check its balance:
+
+```sh
 goal clerk send --to ${APP_ACCOUNT} --from ${ACCOUNT} --amount 10000000
-
-# verify the balance of the app's account
 goal account balance --address ${APP_ACCOUNT}
 ```
 
@@ -122,14 +125,21 @@ Here's an example with the following assumptions:
 * another referenced box is named `an_ABI_box`
   * this second box is provided contents `[2,3,5]` of ABI-type `(uint8,uint8,uint8)`
 
+Create a box with a simple non-ABI name. Note how the `--box` flag needs to be set so as to refer to the box being touched:
+
 ```sh
-# create a box with a simple non-ABI name. Note how the `--box` flag needs to be set so as to refer to the box being touched
 goal app call --from $ACCOUNT --app-id ${APPID} --box "str:greatBox" --app-arg "str:create" --app-arg "str:greatBox"
+```
 
-# create another box
+Create another box:
+
+```sh
 goal app call --from ${ACCOUNT} --app-id ${APPID} --box "str:an_ABI_box" --app-arg "str:create" --app-arg "str:an_ABI_box"
+```
 
-# set the contents to ABI type `(uint8,uint8,uint8)` with value `[2,3,5]`
+Set its contents to ABI type `(uint8,uint8,uint8)` with value `[2,3,5]`:
+
+```sh
 goal app call --from ${ACCOUNT} --app-id ${APPID} --box "str:an_ABI_box" --app-arg "str:set" --app-arg "str:an_ABI_box"  --app-arg "abi:(uint8,uint8,uint8):[2,3,5]"
 ```
 
@@ -138,11 +148,15 @@ goal app call --from ${ACCOUNT} --app-id ${APPID} --box "str:an_ABI_box" --app-a
 ### A:
 Assuming you followed the previous step to create `greatBox` and `an_ABI_box`:
 
-```sh
-# get all boxes for a given app
-goal app box list --app-id ${APPID}
+Get all boxes for a given app:
 
-# get the box details for a given box
+```sh
+goal app box list --app-id ${APPID}
+```
+
+Get the box details for a given box:
+
+```sh
 goal app box info --app-id ${APPID} --name "str:an_ABI_box"
 ```
 
@@ -153,21 +167,31 @@ goal app box info --app-id ${APPID} --name "str:an_ABI_box"
 ### A:
 The read commands take `--round`, and `versions` subcommands list the rounds at which an object changed, with the fields that changed:
 
+The box and the app as of round 1000:
+
 ```sh
-# the box and the app as of round 1000
 goal app box info --app-id ${APPID} --name "str:greatBox" --round 1000
 goal app info --app-id ${APPID} --round 1000
+```
 
-# every change of the box, of the app's params and global state, and of an account
+Every change of the box; of every box of the app since round 1000 (no `--name`); of the app's params and global state; and of an account:
+
+```sh
 goal app box versions --app-id ${APPID} --name "str:greatBox"
-goal app box versions --app-id ${APPID} --min-round 1000   # every box of the app (no --name)
+goal app box versions --app-id ${APPID} --min-round 1000
 goal app versions --app-id ${APPID} --min-round 1000 --all
 goal account versions --address ${ACCOUNT} --exclude all
+```
 
-# the raw pages, as JSON
+The raw pages, as JSON:
+
+```sh
 goal asset versions --assetid ${ASSETID} --json
+```
 
-# the holders of an asset as of round 1000: address, amount, "frozen" (needs TimeTravelHoldersIndex)
+The holders of an asset as of round 1000: address, amount, "frozen" (needs `TimeTravelHoldersIndex`):
+
+```sh
 goal asset holders --assetid ${ASSETID} --round 1000 --all
 ```
 
