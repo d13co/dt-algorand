@@ -148,8 +148,8 @@ int 1`, addrs[0]))
 }
 
 // TestQueryStateResetCache: resetQueryCache leaves a base as makeRoundCowBase makes it, whatever
-// its caches held. It fills every map of the base, so a cache added to roundCowBase that
-// resetQueryCache misses fails it.
+// its caches held. It fills every map of the base, so a map resetQueryCache kept without emptying
+// it fails it.
 func TestQueryStateResetCache(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()

@@ -285,9 +285,13 @@ func TestQueryRESTStreamLive(t *testing.T) {
 	require.Contains(t, end.Error, "RestWriteTimeoutSeconds")
 	require.Contains(t, end.Effort, "opcodes=")
 	require.NotContains(t, end.Effort, "opcodes=0,")
-	// the trailer is set after the end event: it counts its bytes too
-	opcodes, _, _ := strings.Cut(end.Effort, ",")
-	require.True(t, strings.HasPrefix(res.Trailer.Get(v2.EffortHeader), opcodes+","), res.Trailer.Get(v2.EffortHeader))
+	// the trailer is the end event's effort, and both count the whole stream, end event included
+	require.Equal(t, end.Effort, res.Trailer.Get(v2.EffortHeader))
+	size := 0
+	for _, e := range events {
+		size += len("event: \ndata: \n\n") + len(e.name) + len(e.data)
+	}
+	require.Contains(t, end.Effort, fmt.Sprintf("response-bytes=%d,", size))
 }
 
 // TestQueryRESTStreamStartsAtOnce: the stream starts, headers and start event, as soon as the

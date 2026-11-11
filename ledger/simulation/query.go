@@ -27,6 +27,7 @@ import (
 	"math"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/algorand/go-deadlock"
 
@@ -305,7 +306,10 @@ type queryRound struct {
 	// error then. charged is what its calls added to the response size. Guarded by queryRun.mu.
 	failed  error
 	charged uint64
-	calls   []QueryCallResult
+	// void is set with failed, for the calls of the round that still run to see without the lock:
+	// they stop at their next opcode.
+	void  atomic.Bool
+	calls []QueryCallResult
 	// uses is how many entries of the request's rounds are this round: its results are in the
 	// response that many times.
 	uses uint64
@@ -736,6 +740,7 @@ func (run *queryRun) fail(qr *queryRound, err error) {
 	defer run.mu.Unlock()
 	if qr.failed == nil {
 		qr.failed = err
+		qr.void.Store(true)
 		if run.req.stream == nil {
 			run.size -= qr.charged
 			qr.charged = 0
@@ -865,10 +870,14 @@ func (t *queryTracer) BeforeProgram(cx *logic.EvalContext) {
 	cx.SetIOBudget(budget)
 }
 
-// BeforeOpcode stops the program once the request ends, and notes when the opcode hits a gap of the
+// BeforeOpcode stops the program once the request ends, or once its round failed in another piece
+// of work, whose results the response leaves out. It notes when the opcode hits a gap of the
 // protocol override.
 func (t *queryTracer) BeforeOpcode(cx *logic.EvalContext) {
 	t.abort.checkAbort(cx)
+	if t.round.void.Load() {
+		panic(logic.EvalAborted{Cause: errQueryRoundFailed})
+	}
 	if t.overState() {
 		panic(logic.EvalAborted{Cause: errQueryCallState})
 	}
@@ -895,6 +904,9 @@ func (t *queryTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalError e
 	t.cost += cx.Cost()
 	t.abort.effort.AddOpcodes(uint64(cx.Cost()))
 }
+
+// errQueryRoundFailed stops a call whose round failed while it ran. Its result is dropped.
+var errQueryRoundFailed = errors.New("the node failed to read the call's round")
 
 // errQueryCallState stops a call that read more ledger state than it may.
 var errQueryCallState = errors.New("the call read more ledger state than MaxAPIQueryCallStateBytes allows")

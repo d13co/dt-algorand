@@ -167,17 +167,20 @@ func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (l
 // doesn't leave its memory to every later call.
 const maxKeptQueryCacheLen = 1024
 
-// resetQueryCache empties the base's caches, as makeRoundCowBase makes them.
+// resetQueryCache empties the base's caches. The base becomes what makeRoundCowBase makes, so a
+// cache added to roundCowBase is emptied without being named here; the maps named below are only
+// kept so the next call doesn't grow its own from empty.
 func (x *roundCowBase) resetQueryCache() {
-	x.accounts = resetQueryCacheMap(x.accounts)
-	x.onlineAccounts = resetQueryCacheMap(x.onlineAccounts)
-	x.totalOnline = basics.MicroAlgos{}
-	x.appParams = resetQueryCacheMap(x.appParams)
-	x.assetParams = resetQueryCacheMap(x.assetParams)
-	x.appLocalStates = resetQueryCacheMap(x.appLocalStates)
-	x.assets = resetQueryCacheMap(x.assets)
-	x.creators = resetQueryCacheMap(x.creators)
-	x.kvStore = resetQueryCacheMap(x.kvStore)
+	old := *x
+	*x = *makeRoundCowBase(old.l, old.rnd, old.txnCount, old.stateProofNextRnd, old.proto)
+	x.accounts = resetQueryCacheMap(old.accounts)
+	x.onlineAccounts = resetQueryCacheMap(old.onlineAccounts)
+	x.appParams = resetQueryCacheMap(old.appParams)
+	x.assetParams = resetQueryCacheMap(old.assetParams)
+	x.appLocalStates = resetQueryCacheMap(old.appLocalStates)
+	x.assets = resetQueryCacheMap(old.assets)
+	x.creators = resetQueryCacheMap(old.creators)
+	x.kvStore = resetQueryCacheMap(old.kvStore)
 }
 
 func resetQueryCacheMap[K comparable, V any](m map[K]V) map[K]V {

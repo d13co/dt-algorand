@@ -1292,6 +1292,53 @@ int 1`, f.reader)
 	require.Empty(t, rounds[1].Error)
 }
 
+// TestQueryRoundFailureStopsCalls: once a round failed, its calls that still run in other pieces of
+// work stop at their next opcode instead of using up their budget for results that are dropped.
+func TestQueryRoundFailureStopsCalls(t *testing.T) { // nolint:paralleltest // sets the lookup fault of every query
+	partitiontest.PartitionTest(t)
+
+	f := makeQueryFixture(t)
+	defer f.env.Close()
+	s := simulation.MakeSimulator(f.env.Ledger, false)
+
+	// The first call fails reading the box once the second one runs; the second would read it after
+	// a long loop.
+	started, failing := make(chan struct{}), make(chan struct{})
+	var boxReads atomic.Int32
+	defer simulation.SetLookupFault(func(method string, rnd basics.Round) error {
+		if method != "LookupKv" {
+			return nil
+		}
+		if boxReads.Add(1) == 1 {
+			close(failing)
+			<-started
+		}
+		return errors.New("disk on fire")
+	})()
+	program := fmt.Sprintf(`#pragma version 13
+txna ApplicationArgs 0; byte "spin"; ==; bz read
+byte "started"; log
+int 0
+loop:
+int 1; +; dup; int 40000; <; bnz loop
+pop
+read:
+int %d; byte "b"; app_box_get; assert; pop
+int 1`, f.reader)
+	req := f.request(t, program, args("box"), args("spin"))
+	req.Limits.Parallelism = 2
+	result, err := s.Query(req.WithStream(func(e simulation.QueryEvent) {
+		if e.Kind == simulation.QueryEventLog {
+			close(started)
+			<-failing
+		}
+	}))
+	require.NoError(t, err)
+	require.Len(t, result.Rounds, 1)
+	require.Contains(t, result.Rounds[0].Error, "disk on fire")
+	require.EqualValues(t, 1, boxReads.Load(), "the spinning call ran on to its box read")
+}
+
 // TestQueryWorkerPanic: a panic on a worker outside the calls, here in a stream's sink, stops the
 // request with it as the error instead of crashing the node.
 func TestQueryWorkerPanic(t *testing.T) {

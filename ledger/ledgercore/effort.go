@@ -108,7 +108,11 @@ func (e *Effort) Counts() EffortCounts {
 // Header returns the counters as an RFC 9651 dictionary of integers, the value of the
 // X-Algod-Effort response header.
 func (e *Effort) Header() string {
-	c := e.Counts()
+	return e.Counts().Header()
+}
+
+// Header returns c as the value of the X-Algod-Effort response header.
+func (c EffortCounts) Header() string {
 	return fmt.Sprintf("opcodes=%d, lookups=%d, history=%d, scanned=%d, response-bytes=%d, eval-us=%d",
 		c.Opcodes, c.Lookups, c.History, c.Scanned, c.ResponseBytes, c.Eval.Microseconds())
 }
