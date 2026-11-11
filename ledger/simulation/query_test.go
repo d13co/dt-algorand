@@ -1301,9 +1301,10 @@ func TestQueryRoundFailureStopsCalls(t *testing.T) { // nolint:paralleltest // s
 	defer f.env.Close()
 	s := simulation.MakeSimulator(f.env.Ledger, false)
 
-	// The first call fails reading the box once the second one runs; the second would read it after
-	// a long loop.
-	started, failing := make(chan struct{}), make(chan struct{})
+	// The first call fails reading the box once the second one runs; the second, held at its first
+	// log until the round has failed, would read the box after a loop.
+	started, failing, failed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer simulation.SetRoundFailed(func() { close(failed) })()
 	var boxReads atomic.Int32
 	defer simulation.SetLookupFault(func(method string, rnd basics.Round) error {
 		if method != "LookupKv" {
@@ -1320,7 +1321,7 @@ txna ApplicationArgs 0; byte "spin"; ==; bz read
 byte "started"; log
 int 0
 loop:
-int 1; +; dup; int 40000; <; bnz loop
+int 1; +; dup; int 100; <; bnz loop
 pop
 read:
 int %d; byte "b"; app_box_get; assert; pop
@@ -1331,6 +1332,7 @@ int 1`, f.reader)
 		if e.Kind == simulation.QueryEventLog {
 			close(started)
 			<-failing
+			<-failed
 		}
 	}))
 	require.NoError(t, err)

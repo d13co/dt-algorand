@@ -741,12 +741,18 @@ func (run *queryRun) fail(qr *queryRound, err error) {
 	if qr.failed == nil {
 		qr.failed = err
 		qr.void.Store(true)
+		if roundFailed != nil {
+			roundFailed()
+		}
 		if run.req.stream == nil {
 			run.size -= qr.charged
 			qr.charged = 0
 		}
 	}
 }
+
+// roundFailed, set only by tests, is called when a round fails, once its calls can see it.
+var roundFailed func()
 
 // failed reports whether qr's round failed.
 func (run *queryRun) failed(qr *queryRound) bool {

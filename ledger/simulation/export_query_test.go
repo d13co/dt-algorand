@@ -26,6 +26,13 @@ func SetLookupFault(fault func(method string, rnd basics.Round) error) (restore 
 	return func() { lookupFault = nil }
 }
 
+// SetRoundFailed has f called when a query's round fails, until the returned function is called. It
+// is not safe to use with tests that run in parallel.
+func SetRoundFailed(f func()) (restore func()) {
+	roundFailed = f
+	return func() { roundFailed = nil }
+}
+
 // SetQueryCacheBytes sets how many bytes a query worker keeps cached for later calls, until the
 // returned function is called. It is not safe to use with tests that run in parallel.
 func SetQueryCacheBytes(n int) (restore func()) {
