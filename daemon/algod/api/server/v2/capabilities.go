@@ -61,6 +61,7 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxResponseBytes:  q.MaxResponseBytes,
 			MaxRounds:         uint64(q.MaxRounds),
 			MaxTotalCalls:     uint64(q.MaxTotalCalls),
+			Stream:            &[]string{"sse"},
 		}
 	}
 	return model.CapabilitiesResponse{

@@ -1138,7 +1138,7 @@ type QueryLimits struct {
 	// MaxCalls The most calls a request may hold (node config MaxAPIQueryCalls).
 	MaxCalls uint64 `json:"max-calls"`
 
-	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. 0 means no limit (node config MaxAPIQueryResponseBytes).
+	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, also when its round is listed twice or fails later, and one that goes over ends with an end event of status 400. 0 means no limit (node config MaxAPIQueryResponseBytes).
 	MaxResponseBytes uint64 `json:"max-response-bytes"`
 
 	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
@@ -1146,6 +1146,9 @@ type QueryLimits struct {
 
 	// MaxTotalCalls The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.
 	MaxTotalCalls uint64 `json:"max-total-calls"`
+
+	// Stream The streamed answers the node offers. "sse": a request that accepts text/event-stream is answered with Server-Sent Events, each log sent as the called app makes it (see POST /v2/query). Absent on nodes that only answer in full.
+	Stream *[]string `json:"stream,omitempty"`
 }
 
 // QueryProtocolNote A note about running a round under a later protocol. Codes: semantics-changed (consensus parameters that affect transactions differ, listed in message), no-heartbeat-challenges, no-load-history, block-incentive-fields, block-hash-fields, online-stake-includes-expired, account-incentive-fields, app-version-starts-at-upgrade. Non-standard fork feature.
@@ -1227,6 +1230,72 @@ type QueryRoundResult struct {
 
 	// Round The queried round: the calls run in the round after it, on the state it left.
 	Round basics.Round `json:"round"`
+}
+
+// QueryStreamCall The data of a call event of a streamed POST /v2/query answer: a call that ended, sent after its logs. Non-standard fork feature.
+type QueryStreamCall struct {
+	// C The index of the call in the request's calls.
+	C int `json:"c"`
+
+	// Cost The opcode budget the call used, the apps it called included.
+	Cost int `json:"cost"`
+
+	// Error The call's error, if it failed. Its logs up to the failure were sent.
+	Error *string `json:"error,omitempty"`
+
+	// Logs How many logs the call made: all were sent in log events before this one.
+	Logs int `json:"logs"`
+
+	// R The round the call ran at.
+	R basics.Round `json:"r"`
+}
+
+// QueryStreamEnd The data of the end event of a streamed POST /v2/query answer: always the last event. A stream without it was cut off. Non-standard fork feature.
+type QueryStreamEnd struct {
+	// Effort The work the request did, as the X-Algod-Effort header reports it, on a node with EnableEffortHeader. The same value is in the X-Algod-Effort trailer; its response-bytes count the whole stream before compression, this event included.
+	Effort *string `json:"effort,omitempty"`
+
+	// Error Why the request stopped early, if it did.
+	Error *string `json:"error,omitempty"`
+
+	// Status With error: the HTTP status the answer would have without a stream.
+	Status *int `json:"status,omitempty"`
+}
+
+// QueryStreamLog The data of a log event of a streamed POST /v2/query answer: logs of one call, sent as the called app makes them. An event has one or more consecutive logs; how a call's logs are split across events depends on timing, and clients must not rely on it: the call event that follows them has their count. Non-standard fork feature.
+type QueryStreamLog struct {
+	// C The index of the call in the request's calls.
+	C int `json:"c"`
+
+	// D Consecutive logs of the call, from index i.
+	D [][]byte `json:"d"`
+
+	// I The index of the first log of d among the call's logs.
+	I int `json:"i"`
+
+	// R The round the call ran at.
+	R basics.Round `json:"r"`
+}
+
+// QueryStreamRound The data of a round event of a streamed POST /v2/query answer: a round whose calls all ended. Each distinct round is reported once, however many entries of the request's rounds it has. Non-standard fork feature.
+type QueryStreamRound struct {
+	// Error Why the round could not be queried, as in QueryRoundResult. The round has no results then: its earlier events don't count.
+	Error *string `json:"error,omitempty"`
+
+	// Protocol How the protocol a POST /v2/query request asked for applied to a queried round. Non-standard fork feature.
+	Protocol *QueryProtocolOverride `json:"protocol,omitempty"`
+
+	// R The queried round.
+	R basics.Round `json:"r"`
+}
+
+// QueryStreamStart The data of the start event of a streamed POST /v2/query answer (text/event-stream): the first event, sent once the request is valid and its rounds are read. Non-standard fork feature.
+type QueryStreamStart struct {
+	// LastRound The node's latest round when the request started.
+	LastRound basics.Round `json:"last-round"`
+
+	// Rounds The round of each entry of the request's rounds, in order, with 0 resolved to the latest round.
+	Rounds []basics.Round `json:"rounds"`
 }
 
 // ScratchChange A write operation into a scratch slot.

@@ -53,6 +53,16 @@ func requestTimeLimit(cfg config.Local) time.Duration {
 	return timeout - margin
 }
 
+// requestWriteMargin returns the time requestTimeLimit leaves of RestWriteTimeoutSeconds to write
+// the answer. 0 means there is no write deadline.
+func requestWriteMargin(cfg config.Local) time.Duration {
+	timeout := time.Duration(cfg.RestWriteTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		return 0
+	}
+	return timeout - requestTimeLimit(cfg)
+}
+
 // arrivalKey is the echo.Context key RecordArrival stores the arrival time of a request under.
 const arrivalKey = "dtalgorand.arrival"
 

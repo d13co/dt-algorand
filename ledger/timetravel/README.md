@@ -171,11 +171,46 @@ Each call:
 - runs inner transactions normally (up to the protocol's 256 per call), paid from an unlimited fee credit, so inner fees left at their default are 0;
 - is not checked for fees, minimum balances, signatures, duplicates or leases, and may write state (at the latest round, an inner payment that closes an account whose minimum balance is above the base is still refused, as simulate refuses it there; at a past round only consensus rules apply); its writes are dropped when it ends, so every call sees the state R left. Its sender pays no fee, so a sender's balance is the one R left, where simulate has already taken the fee; the rewards pool has the round's rewards withdrawn, as at the start of a block;
 - reports its own error, partial logs included; the other calls are unaffected;
-- may read at most `max-call-state-bytes` of ledger state (accounts, holdings, local states, asset and app params with their programs and global state, boxes; each counted once however often it is read): a call that reads more fails with that error, and the others run on. A worker keeps what its calls read cached, so a call over the limit after earlier calls filled the cache runs again on an empty one: whether a call is over depends only on what it reads itself, never on the calls before it or on `QueryParallelism`.
+- may read at most `max-call-state-bytes` of ledger state (accounts, holdings, local states, asset and app params with their programs and global state, boxes; each counted once however often it is read): a call that reads more fails with that error, and the others run on. A worker's calls share a cache of what they read, but every object a call reads counts toward its limit, whether an earlier call cached it or not: whether a call is over depends only on what it reads itself, never on the calls before it or on `QueryParallelism`.
 
 Each call result has the called app's `logs` (each of its programs may log up to `max-call-log-bytes`, in up to 2048 logs), its `cost` (the budget it used, the apps it called included) and its `error`, with the disassembly around the failing opcode. Inner transactions, state changes and budgets are never echoed. A round that can't be queried (outside the history, or a protocol it can't run under) has an `error` and no calls; so does a round the node fails to read while the calls run (`reading round R failed: ...`, for instance a history read error), rather than passing the failure off as the calls' errors. Online account reads (`online_stake`, `voter_params_get`) are the exception: they read the balance round, 320 rounds back, which a history may lack for good (see above), so their errors fail only the call that made them. A failed round's logs don't count toward `max-response-bytes`. A round's `protocol` is present when the request named a protocol, or when the default `latest` changed the round's; its notes' hits name the call in `group`.
 
-Errors of the whole request: 400 for an invalid request or once its results pass `max-response-bytes` (their logs and errors, each log counting 48 bytes more, a round listed twice counting twice), 503 with `Retry-After` when the node is busy, 504 at the node's time limit. The calls run on up to `QueryParallelism` workers. The first runs in the request's slot of `SimulateParallelism`, the node-wide limit simulate uses too; each other worker takes a free slot before each share of work, gives it back after, and stops when none is free, never waiting, so a busy node runs the request on fewer workers rather than making new requests wait. A round's calls are split into only as many shares as keep the workers busy (one per round once the request lists as many rounds as there are workers), so with fewer rounds than workers each extra worker keeps its slot for most of the request, and new requests meet a busy node sooner; a worker runs its share of a round's calls on one state, so they share its lookups, and starts over with a new one between calls once its cache holds about 32 MiB; within a call, `max-call-state-bytes` bounds it. `EnableEffortHeader` reports opcodes and lookups as for simulate.
+Errors of the whole request: 400 for an invalid request or once its results pass `max-response-bytes` (their logs and errors, each log counting 48 bytes more, a round listed twice counting twice), 503 with `Retry-After` when the node is busy, 504 at the node's time limit. The calls run on up to `QueryParallelism` workers. The first runs in the request's slot of `SimulateParallelism`, the node-wide limit simulate uses too; each other worker takes a free slot before each share of work, gives it back after, and stops when none is free, never waiting, so a busy node runs the request on fewer workers rather than making new requests wait. A round's calls are split into only as many shares as keep the workers busy (one per round once the request lists as many rounds as there are workers), so with fewer rounds than workers each extra worker keeps its slot for most of the request, and new requests meet a busy node sooner; the calls of a worker's share of a round share a cache of what they read; once it holds more than about 32 MiB, the objects of the calls run longest ago go first, so what every call reads, such as the called app, stays cached. Within a call, `max-call-state-bytes` bounds it. `EnableEffortHeader` reports opcodes and lookups as for simulate.
+
+#### Streamed answers
+
+A request that accepts `text/event-stream` (`Accept: text/event-stream`) gets its results as [Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html), each log sent as the called app makes it, instead of one answer at the end. The request is the same, in either format; `format` is ignored, since events are text with JSON data. Nodes that offer it list `"sse"` in `stream` of [`query` in GET /v2/capabilities](#capabilities-get-v2capabilities).
+
+```
+event: start
+data: {"last-round":52000000,"rounds":[52000000,30000000]}
+
+event: log
+data: {"r":52000000,"c":0,"i":0,"d":["AAAAAAAAAAE=","AAAAAAAAAAI="]}
+
+event: call
+data: {"r":52000000,"c":0,"logs":2,"cost":2310}
+
+event: round
+data: {"r":52000000}
+
+event: end
+data: {}
+```
+
+| event | when | data |
+|---|---|---|
+| `start` | first, once the request is valid and its rounds are read | `last-round`, and `rounds`: the round of each entry of the request's `rounds`, 0 resolved |
+| `log` | as the called app logs (the apps it calls are not reported, as in a full answer) | `r` the round, `c` the call's index, `i` the index of the first log, `d` the logs in base64: logs of one call that are ready together share an event |
+| `call` | when a call ends, after its logs | `r`, `c`, `logs` (how many: check you got them all), `cost`, and `error` if it failed |
+| `round` | when every call of a round ended | `r`, `protocol` as in a full answer, and `error`, which means the round has no results: drop its earlier events |
+| `end` | always last | `effort` with `EnableEffortHeader`; `error` and `status` (the status a full answer would have: 400 over `max-response-bytes`, 504 at the time limit, 500) when the request stopped early |
+
+Each distinct round is reported once, however many entries of `rounds` it has. Events of different calls interleave; a call's events come in order. A stream without `end` was cut off: the connection dropped, or the client read too slowly (below). Its status is unknown, so treat it as failed. A request rejected before it runs (invalid, a round after the latest, busy) gets the status and JSON body it would get without a stream. Comments (`: keepalive`) come after 15 s without an event, so idle proxies keep the connection.
+
+The calls never wait for a slow client: the events are queued, encoded, as the calls make them, and `max-response-bytes` bounds them. In a stream it counts each log once, as it is sent (a round listed twice counts once, and a failed round's logs, already sent, still count); over it, the calls stop and `end` has status 400. So the same request can fit as a stream and not as a full answer. On a node without that limit, the calls a request may make and the log bytes of each (`max-total-calls`, `max-call-log-bytes`) bound the queue, as they do a full answer.
+
+A client has to keep reading: each 64 KiB written must be taken within the node's write margin, the part of `RestWriteTimeoutSeconds` that the time limit leaves (a tenth, at least a second: 12 s by default), or the connection is cut and the query stops; the 64 KiB are counted before compression. While the query runs no write goes past `RestWriteTimeoutSeconds` after the request, as for any answer. Once the query ended, what is still queued has until `RestWriteTimeoutSeconds` after the request, or one margin if that is later, and `end` a margin of its own; a client too far behind for that gets no `end`. Events are written in batches at most every 20 ms, gzipped when the client accepts it, with `X-Accel-Buffering: no` so nginx passes them on. The effort is in `end` and, the same value, in an `X-Algod-Effort` trailer, not in the headers, which go out before the work; its `response-bytes` counts the whole stream before compression, `end` included.
 
 How it differs from simulate: there is no signature check, no fee, minimum balance, duplicate or lease check, no block assembly or end-of-block work (rewards pool, state proof voters), and no execution trace or unnamed-resource bookkeeping per opcode; the response has logs, cost and error only. For time travel queries, wall time is dominated by the history lookups, which stay the same; the gain is the per-call overhead, response size and decode time, and the lookups shared by the calls of a worker.
 
@@ -203,7 +238,7 @@ The simulate responses were decoded into algosdk's `SimulateResponse`, the query
 ```json
 { "time-travel": true, "developer-api": false, "time-limit-seconds": 108,
   "simulate": { "max-txn-groups": 16, "max-extra-opcode-budget": 320000 },
-  "query": { "max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024 } }
+  "query": { "max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024, "stream": ["sse"] } }
 ```
 
 | field | node config | meaning |
@@ -213,7 +248,7 @@ The simulate responses were decoded into algosdk's `SimulateResponse`, the query
 | `time-limit-seconds` | `RestWriteTimeoutSeconds` | longest an expensive request (simulate, query, `/v2/deltas/{round}`, the versions endpoints) may run: the write timeout less a tenth, at least a second and at most half (1 for a limit under a second); 0: no limit |
 | `simulate.max-txn-groups` | `MaxAPISimulateGroups` | most groups in `txn-groups`; a config of 0 counts as 1 |
 | `simulate.max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
-| `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-call-state-bytes` (0: no limit), `max-response-bytes` (0: no limit; the answer is built in memory while the request holds its slot, so a running request can take two to three times this much), `max-rounds` (a config of 0 counts as 1) and `max-total-calls` (`MaxAPIQueryTotalCalls`, default 1024: the calls times the `rounds` entries, so 1024 calls at one round or 64 at 16; at most `max-calls` times `max-rounds`, which a config of 0 means; `max-calls` is never more than it); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint: it then answers 400 (a stock algod answers 404) |
+| `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-call-state-bytes` (0: no limit), `max-response-bytes` (0: no limit; the answer is built in memory while the request holds its slot, so a running request can take two to three times this much), `max-rounds` (a config of 0 counts as 1), `stream` (the streamed answers the node offers: `["sse"]`, [Streamed answers](#streamed-answers); absent on older nodes) and `max-total-calls` (`MaxAPIQueryTotalCalls`, default 1024: the calls times the `rounds` entries, so 1024 calls at one round or 64 at 16; at most `max-calls` times `max-rounds`, which a config of 0 means; `max-calls` is never more than it); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint: it then answers 400 (a stock algod answers 404) |
 
 The response holds the values after these rules, so `time-limit-seconds` and three of `query`'s are the only numbers that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 

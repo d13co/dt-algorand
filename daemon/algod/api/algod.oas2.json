@@ -1471,7 +1471,7 @@
     },
     "/v2/query": {
       "post": {
-        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/capabilities; a node without it does not serve this endpoint: a stock algod answers 404, and a node with queries disabled (node config MaxAPIQueryCalls 0) answers 400. Non-standard fork feature.",
+        "description": "Runs read-only TEAL queries: one program, many calls, each run alone at every listed round. Each call is an app call alone in its group, in the round after the queried one, on the state the queried round left: an app create with program, or a NoOp call of the deployed app app-id. There are no signatures, fees, minimum balances, duplicate or lease checks, and no block; every resource is available without being named, and a call may read any app's boxes (app_box_get, app_box_extract, app_box_len), as if every app allowed foreign box reads. The opcode budget bounds a call, and the box bytes it may write are those of a full group of box references, as in simulate. Writes are allowed and dropped when the call ends: every call sees the state the round left. Inner transactions run normally, and their fees left to the default are 0. The response has the logs, cost and error of each call; inner transactions and state changes are never echoed. A failed call does not affect the others. The limits are in the query object of GET /v2/capabilities; a node without it does not serve this endpoint: a stock algod answers 404, and a node with queries disabled (node config MaxAPIQueryCalls 0) answers 400. A request that accepts text/event-stream, on a node whose query object lists \"sse\" in stream, is answered with Server-Sent Events instead, whatever its format: start (last-round, and the round of each entry of rounds), then log (r, c, i: the round, the call's index and the first log's index, and d: logs in base64) as the called app makes them, one or more consecutive logs of one call per event: how the logs are split across events depends on timing, and clients must not rely on it, call (r, c, logs: how many, cost, error) after its logs, round (r, protocol, error) after its calls, and always end last (effort, and error and status when the request stopped early). Each distinct round is reported once; a round event with an error voids that round's earlier events; a stream without end was cut off: the connection dropped, or the client read too slowly for the node to wait. A request rejected before it runs gets the status and body it would get without a stream. Non-standard fork feature.",
         "tags": ["dtalgorand"],
         "consumes": ["application/json", "application/msgpack"],
         "produces": ["application/json", "application/msgpack"],
@@ -5025,6 +5025,134 @@
         }
       }
     },
+    "QueryStreamStart": {
+      "description": "The data of the start event of a streamed POST /v2/query answer (text/event-stream): the first event, sent once the request is valid and its rounds are read. Non-standard fork feature.",
+      "type": "object",
+      "required": [
+        "last-round",
+        "rounds"
+      ],
+      "properties": {
+        "last-round": {
+          "description": "The node's latest round when the request started.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "rounds": {
+          "description": "The round of each entry of the request's rounds, in order, with 0 resolved to the latest round.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          }
+        }
+      }
+    },
+    "QueryStreamLog": {
+      "description": "The data of a log event of a streamed POST /v2/query answer: logs of one call, sent as the called app makes them. An event has one or more consecutive logs; how a call's logs are split across events depends on timing, and clients must not rely on it: the call event that follows them has their count. Non-standard fork feature.",
+      "type": "object",
+      "required": [
+        "r",
+        "c",
+        "i",
+        "d"
+      ],
+      "properties": {
+        "r": {
+          "description": "The round the call ran at.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "c": {
+          "description": "The index of the call in the request's calls.",
+          "type": "integer"
+        },
+        "i": {
+          "description": "The index of the first log of d among the call's logs.",
+          "type": "integer"
+        },
+        "d": {
+          "description": "Consecutive logs of the call, from index i.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          }
+        }
+      }
+    },
+    "QueryStreamCall": {
+      "description": "The data of a call event of a streamed POST /v2/query answer: a call that ended, sent after its logs. Non-standard fork feature.",
+      "type": "object",
+      "required": [
+        "r",
+        "c",
+        "logs",
+        "cost"
+      ],
+      "properties": {
+        "r": {
+          "description": "The round the call ran at.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "c": {
+          "description": "The index of the call in the request's calls.",
+          "type": "integer"
+        },
+        "logs": {
+          "description": "How many logs the call made: all were sent in log events before this one.",
+          "type": "integer"
+        },
+        "cost": {
+          "description": "The opcode budget the call used, the apps it called included.",
+          "type": "integer"
+        },
+        "error": {
+          "description": "The call's error, if it failed. Its logs up to the failure were sent.",
+          "type": "string"
+        }
+      }
+    },
+    "QueryStreamRound": {
+      "description": "The data of a round event of a streamed POST /v2/query answer: a round whose calls all ended. Each distinct round is reported once, however many entries of the request's rounds it has. Non-standard fork feature.",
+      "type": "object",
+      "required": [
+        "r"
+      ],
+      "properties": {
+        "r": {
+          "description": "The queried round.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "protocol": {
+          "$ref": "#/definitions/QueryProtocolOverride"
+        },
+        "error": {
+          "description": "Why the round could not be queried, as in QueryRoundResult. The round has no results then: its earlier events don't count.",
+          "type": "string"
+        }
+      }
+    },
+    "QueryStreamEnd": {
+      "description": "The data of the end event of a streamed POST /v2/query answer: always the last event. A stream without it was cut off. Non-standard fork feature.",
+      "type": "object",
+      "properties": {
+        "effort": {
+          "description": "The work the request did, as the X-Algod-Effort header reports it, on a node with EnableEffortHeader. The same value is in the X-Algod-Effort trailer; its response-bytes count the whole stream before compression, this event included.",
+          "type": "string"
+        },
+        "error": {
+          "description": "Why the request stopped early, if it did.",
+          "type": "string"
+        },
+        "status": {
+          "description": "With error: the HTTP status the answer would have without a stream.",
+          "type": "integer"
+        }
+      }
+    },
     "QueryLimits": {
       "description": "The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.",
       "type": "object",
@@ -5051,7 +5179,7 @@
           "x-go-type": "uint64"
         },
         "max-response-bytes": {
-          "description": "The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. 0 means no limit (node config MaxAPIQueryResponseBytes).",
+          "description": "The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, also when its round is listed twice or fails later, and one that goes over ends with an end event of status 400. 0 means no limit (node config MaxAPIQueryResponseBytes).",
           "type": "integer",
           "x-go-type": "uint64"
         },
@@ -5064,6 +5192,13 @@
           "description": "The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.",
           "type": "integer",
           "x-go-type": "uint64"
+        },
+        "stream": {
+          "description": "The streamed answers the node offers. \"sse\": a request that accepts text/event-stream is answered with Server-Sent Events, each log sent as the called app makes it (see POST /v2/query). Absent on nodes that only answer in full.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
