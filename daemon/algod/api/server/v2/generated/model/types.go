@@ -1262,7 +1262,7 @@ type QueryStreamEnd struct {
 	Status *int `json:"status,omitempty"`
 }
 
-// QueryStreamLog The data of a log event of a streamed POST /v2/query answer: logs of one call, sent as the called app makes them. Non-standard fork feature.
+// QueryStreamLog The data of a log event of a streamed POST /v2/query answer: logs of one call, sent as the called app makes them. An event has one or more consecutive logs; how a call's logs are split across events depends on timing, and clients must not rely on it: the call event that follows them has their count. Non-standard fork feature.
 type QueryStreamLog struct {
 	// C The index of the call in the request's calls.
 	C int `json:"c"`
