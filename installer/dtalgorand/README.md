@@ -26,7 +26,7 @@ sudo apt install dtalgorand
 
 `gpg --show-keys` must list exactly one primary key, `F66E77133063650C159F405AC4D2171FB5B60471`: apt trusts every key in `d13co.asc`, hence the check before `apt update`.
 
-The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, the dtalgorand commands take the data directory from `$DTALGORAND_DATA` and ignore `$ALGORAND_DATA`, which may point at a stock node. Likewise, without `-k`, `dtgoal` takes kmd's data directory from `$DTALGORAND_KMD`, not `$ALGORAND_KMD`. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
+The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, the dtalgorand commands other than `ttsnap` and `ttimport` take the data directory from `$DTALGORAND_DATA` (see [Finishing the install](#finishing-the-install)) and ignore `$ALGORAND_DATA`, which may point at a stock node. Likewise, without `-k`, `dtgoal` takes kmd's data directory from `$DTALGORAND_KMD`, not `$ALGORAND_KMD`. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
 
 The package does not enable or start `dtalgorand.service`. It turns on unattended upgrades from apt.d13.co (`/etc/apt/apt.conf.d/51dtalgorand-upgrades`), and an upgrade restarts the nodes that are running.
 
@@ -36,9 +36,31 @@ The package does not enable or start `dtalgorand.service`. It turns on unattende
 brew install d13co/tap/dtalgorand
 ```
 
-The commands are linked with the same `dt` prefix in `$(brew --prefix)/bin`, and the node's data directory is `$(brew --prefix)/var/dtalgorand`. The node runs as you, under launchd (`brew services`).
+The commands are linked with the same `dt` prefix in `$(brew --prefix)/bin`, and the node's data directory is `$(brew --prefix)/var/dtalgorand`.
 
-Don't run `brew services start dtalgorand` yet: a first start begins a sync from genesis. Choose a path first (next section).
+The formula doesn't start the node: it gives it a launchd service for `brew services`. `brew services start dtalgorand` writes `~/Library/LaunchAgents/homebrew.mxcl.dtalgorand.plist`, and launchd then runs algod as you, starts it again at every login, and restarts it if it exits. It is a login agent, not a boot daemon: after a reboot, the node waits until you log in, and it stops when you log out. Its output goes to `$(brew --prefix)/var/log/dtalgorand.log`, and algod's own log to `node.log` in the data directory. `brew services stop dtalgorand` stops the node and removes the plist, so it no longer starts at login.
+
+Don't run `brew services start dtalgorand` yet: a first start begins a sync from genesis. Finish the install (next section), then choose a path ([Setting up a node](#setting-up-a-node)).
+
+### Finishing the install
+
+On Linux, there is nothing to set: the commands run as the `dtalgorand` user through `sudo -u dtalgorand`, which doesn't pass your environment on, so they keep `-d`.
+
+On macOS, point the dtalgorand commands at the node's data directory, so that they work without `-d`. Add `DTALGORAND_DATA` to `~/.zshrc` (zsh is the default shell; with bash, write `~/.bash_profile` instead of `~/.zshrc` in both commands below):
+
+```sh
+echo "export DTALGORAND_DATA=$(brew --prefix)/var/dtalgorand" >> ~/.zshrc
+```
+
+The line holds the path as it was when you ran it: `/opt/homebrew/var/dtalgorand` with a default Homebrew. Open a new terminal, or run `source ~/.zshrc`, then check that the commands find the data directory:
+
+```sh
+dtalgocfg get -p EnableTimeTravel
+```
+
+It prints `true` (zsh may show `true%`: the output doesn't end with a newline). If it prints `false`, the variable points somewhere other than the data directory: check the line in `~/.zshrc`. Without the variable, it says that the data directory isn't specified.
+
+`dtgoal`, `dtalgocfg`, `dtalgod`, `dtalgoh` and `dtdiagcfg` read `DTALGORAND_DATA` when `-d` isn't given, and `dtgoal` finds kmd's data directory from it too. `ttsnap` and `ttimport` don't: they always need `-d`. The commands below pass `-d` everywhere, so they work with or without the variable.
 
 ## Setting up a node
 
@@ -266,5 +288,6 @@ Don't point dtalgorand at a validator's data directory: give it its own, or run 
 - The node stops while the Mac sleeps, as does a `ttsnap fetch` (rerun it to resume). Keep the Mac awake on power in System Settings, or run `caffeinate -s -w $(cat $(brew --prefix)/var/dtalgorand/algod.pid)`.
 - Time Machine backs up the history unless you exclude it: `tmutil addexclusion <dir>`.
 - Unlike the .deb, an upgrade doesn't restart the node: run `brew services restart dtalgorand`.
+- Start, stop and restart the node with `brew services`. `dtgoal node start`, `stop` and `restart` refuse, saying the node is managed with systemctl: the data directory's `system.json` is the .deb's, with `"systemd_managed": true`.
 - `brew uninstall dtalgorand` removes the binaries only: after `brew services stop dtalgorand`, delete `D` (and the history's directory, if `TimeTravelDBDir` put it elsewhere) and `$(brew --prefix)/var/log/dtalgorand.log` by hand. `brew untap d13co/tap` removes the tap.
 - A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
