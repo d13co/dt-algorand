@@ -19,6 +19,7 @@ package logic
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -37,6 +38,17 @@ type stubTraveller struct {
 	reached map[basics.Round]bool
 	// live counts the ledgers Seek returned that are not released, and released those released.
 	live, released int
+	// change answers Change, which records its requests in asked.
+	change func(req TimeTravelChangeRequest) (TimeTravelChange, error)
+	asked  []TimeTravelChangeRequest
+}
+
+func (s *stubTraveller) Change(req TimeTravelChangeRequest) (TimeTravelChange, error) {
+	s.asked = append(s.asked, req)
+	if s.change == nil {
+		return TimeTravelChange{}, errors.New("no change lookups")
+	}
+	return s.change(req)
 }
 
 func (s *stubTraveller) Seek(rnd basics.Round, firstReach func() error) (TimeTravelLedger, func(), error) {
@@ -178,7 +190,11 @@ func TestTimeTravelOpcodes(t *testing.T) {
 	for _, spec := range OpSpecs {
 		require.Equal(t, IsTimeTravelOp(&spec), spec.Opcode == timeTravelPrefix)
 	}
-	require.Equal(t, SeekOpcodes, OpGroups[TimeTravelOpGroup])
+	require.Equal(t, append(append(slices.Clone(SeekOpcodes), ChangeOpcodes...), SearchOpcodes...), OpGroups[TimeTravelOpGroup])
+	for _, name := range OpGroups[TimeTravelOpGroup] {
+		require.Equal(t, uint64(timeTravelVersion), OpsByName[timeTravelVersion][name].Version, name)
+		require.NotContains(t, OpsByName[timeTravelVersion-1], name)
+	}
 }
 
 // TestTimeTravelSeekBoxes: what a program writes to boxes on every ledger it seeks to counts toward
@@ -223,4 +239,85 @@ int 1`, size), env())
 	}
 	testApp(t, recreates(3), env())
 	testApp(t, recreates(4), env(), "write budget exceeded")
+}
+
+// TestTimeTravelChange: each change lookup passes its args, and from and to, to the traveller, and
+// pushes the round and status of the change, the new value of a state key (as its type, 0 when there
+// is none) and the name of a box under a prefix.
+func TestTimeTravelChange(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	ep, tx, stub := makeTimeTravelEnv(1000)
+	stub.change = func(req TimeTravelChangeRequest) (TimeTravelChange, error) {
+		c := TimeTravelChange{Round: req.From + 1, Status: TimeTravelChanged}
+		switch string(req.Key) {
+		case "u":
+			c.Value = &basics.TealValue{Type: basics.TealUintType, Uint: 9}
+		case "b":
+			c.Value = &basics.TealValue{Type: basics.TealBytesType, Bytes: "nine"}
+		case "gone":
+			c.Status = TimeTravelDeleted
+		case "p":
+			c.Name = []byte("p1")
+		}
+		return c, nil
+	}
+	addr := tx.Sender
+	testApp(t, fmt.Sprintf(`addr %[1]s; int 10; int 20; tt_acct_change; int 2; ==; assert; int 11; ==; assert
+addr %[1]s; int 7; int 10; int 20; tt_holding_change; pop; pop
+addr %[1]s; int 8; int 10; int 20; tt_local_change; pop; pop
+int 7; int 10; int 20; tt_asset_change; pop; pop
+int 8; int 10; int 20; tt_app_change; pop; pop
+int 8; byte "box"; int 10; int 20; tt_box_change; pop; pop
+int 8; byte "u"; int 20; int 10; tt_global_key_change; int 9; ==; assert; pop; pop
+int 8; byte "b"; int 20; int 10; tt_global_key_change; byte "nine"; ==; assert; pop; pop
+addr %[1]s; int 8; byte "gone"; int 10; int 20; tt_local_key_change; !; assert; int 3; ==; assert; pop
+int 8; byte "p"; int 10; int 20; tt_box_prefix_change; byte "p1"; ==; assert; pop; pop
+int 1`, addr), ep)
+	want := []TimeTravelChangeRequest{
+		{Kind: ChangeOfAccount, Address: addr, From: 10, To: 20},
+		{Kind: ChangeOfHolding, Address: addr, ID: 7, From: 10, To: 20},
+		{Kind: ChangeOfLocal, Address: addr, ID: 8, From: 10, To: 20},
+		{Kind: ChangeOfAsset, ID: 7, From: 10, To: 20},
+		{Kind: ChangeOfApp, ID: 8, From: 10, To: 20},
+		{Kind: ChangeOfBox, ID: 8, Key: []byte("box"), From: 10, To: 20},
+		{Kind: ChangeOfGlobalKey, ID: 8, Key: []byte("u"), From: 20, To: 10},
+		{Kind: ChangeOfGlobalKey, ID: 8, Key: []byte("b"), From: 20, To: 10},
+		{Kind: ChangeOfLocalKey, Address: addr, ID: 8, Key: []byte("gone"), From: 10, To: 20},
+		{Kind: ChangeOfBoxPrefix, ID: 8, Key: []byte("p"), From: 10, To: 20},
+	}
+	require.Equal(t, want, stub.asked)
+
+	// a stack address must be 32 bytes, as the assembler can't tell of one computed
+	testApp(t, "byte 0x01; dup; concat; int 1; int 2; tt_acct_change; int 1", ep, "tt_acct_change: an address is 32 bytes, not 2")
+	// the traveller's error fails the program
+	stub.change = func(TimeTravelChangeRequest) (TimeTravelChange, error) {
+		return TimeTravelChange{}, errors.New("no history here")
+	}
+	testApp(t, "int 8; int 1; int 2; tt_app_change; int 1", ep, "no history here")
+}
+
+// TestTimeTravelChangeCost: a change lookup costs ttChangeCost, and ttVersionCost more for each
+// version it examined; a lookup the budget can't pay for fails after it ran.
+func TestTimeTravelChangeCost(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	ep, _, stub := makeTimeTravelEnv(1000)
+	versions := uint64(0)
+	stub.change = func(TimeTravelChangeRequest) (TimeTravelChange, error) {
+		return TimeTravelChange{Versions: versions}, nil
+	}
+	for _, versions = range []uint64{0, 1, 7} {
+		// 6: the three ints, the two pops and the second global OpcodeBudget
+		testApp(t, fmt.Sprintf(`global OpcodeBudget; int 8; int 1; int 2; tt_app_change; pop; pop; global OpcodeBudget; -; int %d; ==`,
+			6+ttChangeCost+int(versions)*ttVersionCost), ep)
+	}
+
+	proto := *ep.Proto
+	proto.MaxAppProgramCost = 1000
+	ep.Proto = &proto
+	versions = 100
+	testApp(t, "int 8; int 1; int 2; tt_app_change; pop; pop; int 1", ep, "dynamic cost budget exceeded, executing tt_app_change")
 }

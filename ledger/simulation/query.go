@@ -73,8 +73,13 @@ type QueryLimits struct {
 	// Parallelism is the most workers that run the calls of a request at once.
 	Parallelism int
 	// MaxSeekRounds is the most rounds a call may move its reads to with tt_seek. 0 turns time
-	// travel off.
+	// travel off: its change lookups too.
 	MaxSeekRounds int
+	// MaxScanStepBytes is the most bytes one key or box prefix search may read before it returns
+	// where to resume, and MaxCallScanBytes the most a call's searches may read in all; a search
+	// once they are spent fails the call. 0 MaxCallScanBytes turns the searches off.
+	MaxScanStepBytes uint64
+	MaxCallScanBytes uint64
 }
 
 // QueryLimitsFromConfig returns the query limits of a node configured with cfg, clamped as the
@@ -88,6 +93,11 @@ func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 	}
 	// More calls than maxTotalCalls are over it even at one round, so max-calls never reports them.
 	maxCalls = min(maxCalls, maxTotalCalls)
+	// A search reads at most what the call may, and with no step, up to that.
+	scanStep := cfg.MaxAPIQueryCallScanBytes
+	if cfg.MaxAPIQueryScanStepBytes > 0 {
+		scanStep = min(scanStep, cfg.MaxAPIQueryScanStepBytes)
+	}
 	return QueryLimits{
 		MaxCalls:          int(maxCalls),
 		MaxCallBudget:     int(max(1, min(cfg.MaxAPIQueryCallBudget, MaxExtraOpcodeBudgetCeiling))),
@@ -98,6 +108,8 @@ func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 		MaxTotalCalls:     int(maxTotalCalls),
 		Parallelism:       max(1, min(cfg.QueryParallelism, MaxQueryRounds)),
 		MaxSeekRounds:     int(min(cfg.MaxAPIQuerySeekRounds, math.MaxInt32)),
+		MaxScanStepBytes:  scanStep,
+		MaxCallScanBytes:  cfg.MaxAPIQueryCallScanBytes,
 	}
 }
 

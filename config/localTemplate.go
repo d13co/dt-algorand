@@ -664,6 +664,19 @@ type Local struct {
 	// from GET /v2/capabilities (max-seek-rounds). Non-standard fork feature.
 	MaxAPIQuerySeekRounds uint64 `version[39]:"64"`
 
+	// MaxAPIQueryScanStepBytes is the most bytes of history one search of a POST /v2/query program for a change
+	// of a state key or of a box under a name prefix (tt_global_key_change, tt_local_key_change,
+	// tt_box_prefix_change) may read. A search that reads that much without finding a change returns status 4
+	// and the round to resume from, and the program searches again. 0, or a value above
+	// MaxAPIQueryCallScanBytes, means MaxAPIQueryCallScanBytes. Clients read it from GET /v2/capabilities
+	// (max-scan-step-bytes). Non-standard fork feature.
+	MaxAPIQueryScanStepBytes uint64 `version[39]:"4194304"`
+
+	// MaxAPIQueryCallScanBytes is the most bytes of history the searches of one POST /v2/query call may read
+	// in all (see MaxAPIQueryScanStepBytes): a search once they are spent fails the call. 0 turns the searches
+	// off. Clients read it from GET /v2/capabilities (max-call-scan-bytes). Non-standard fork feature.
+	MaxAPIQueryCallScanBytes uint64 `version[39]:"67108864"`
+
 	// MaxAPIQueryTotalCalls is the most calls one POST /v2/query request may run in all: its calls times the
 	// rounds it lists (1 when it lists none), duplicates included, as for MaxAPIQueryRounds. A request over it
 	// fails with 400 before it takes a slot. The default allows 1024 calls at one round, or 64 calls at 16

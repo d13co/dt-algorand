@@ -116,7 +116,8 @@ type QueryCallOptions struct {
 	// BeforeTxnGroup or BeforeTxn for the call itself.
 	Tracer logic.EvalTracer
 	// TimeTravel, when set, serves the time-travel opcodes of the call's programs, which move their
-	// reads to past rounds, on ledgers typically from QueryState.Fork of a state of the round.
+	// reads to past rounds, on ledgers typically from QueryState.Fork of a state of the round, and
+	// find when state changed.
 	TimeTravel logic.TimeTraveller
 }
 

@@ -63,11 +63,19 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxResponseBytes:  q.MaxResponseBytes,
 			MaxRounds:         uint64(q.MaxRounds),
 			MaxSeekRounds:     uint64(q.MaxSeekRounds),
+			MaxScanStepBytes:  q.MaxScanStepBytes,
+			MaxCallScanBytes:  q.MaxCallScanBytes,
 			MaxTotalCalls:     uint64(q.MaxTotalCalls),
 			Stream:            &[]string{"sse"},
 		}
 		if q.MaxSeekRounds > 0 {
 			opcodes := slices.Clone(logic.SeekOpcodes)
+			if cfg.EnableTimeTravel { // the change lookups read the history
+				opcodes = append(opcodes, logic.ChangeOpcodes...)
+				if q.MaxCallScanBytes > 0 {
+					opcodes = append(opcodes, logic.SearchOpcodes...)
+				}
+			}
 			query.Opcodes = &opcodes
 		}
 	}

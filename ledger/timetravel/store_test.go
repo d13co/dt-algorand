@@ -192,6 +192,7 @@ func pagedBoxChanges(t *testing.T, s *Store, app, lo, hi uint64, desc bool, o Bo
 		}
 		require.Positive(t, end.Scanned)
 		require.GreaterOrEqual(t, end.Scanned, o.MaxScanned, "a scan stops once the budget is spent")
+		require.GreaterOrEqual(t, end.Bytes, o.MaxBytes, "a scan stops once the budget is spent")
 		if o.MaxScanned == 1 {
 			for _, c := range out[n:] {
 				require.Equal(t, out[n].rnd, c.rnd, "one round a scan")
@@ -224,16 +225,19 @@ var boxPrefixes = [][]byte{[]byte("\x00"), []byte("a"), []byte("a\x00"), []byte(
 func checkBoxPrefixes(t *testing.T, s *Store, objs [][]byte, history []map[string][]byte, app uint64, ranges [][2]uint64) {
 	for _, rg := range ranges {
 		for _, desc := range []bool{false, true} {
-			for _, budget := range []uint64{0, 1, 2} {
+			// budgets in index entries, and in bytes
+			for _, budget := range []BoxChangesOpts{{}, {MaxScanned: 1}, {MaxScanned: 2}, {MaxBytes: 1}, {MaxBytes: 300}} {
 				want := modelBoxChanges(objs, history, app, rg[0], rg[1], desc)
-				got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, BoxChangesOpts{MaxScanned: budget})
+				got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, budget)
 				require.NoError(t, err)
-				require.Equal(t, want, got, "app %d range %v desc %v budget %d", app, rg, desc, budget)
+				require.Equal(t, want, got, "app %d range %v desc %v budget %+v", app, rg, desc, budget)
 				for _, pfx := range boxPrefixes {
+					o := budget
+					o.Prefix = pfx
 					want := modelPrefixChanges(objs, history, app, rg[0], rg[1], desc, pfx)
-					got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, BoxChangesOpts{Prefix: pfx, MaxScanned: budget})
+					got, err := pagedBoxChanges(t, s, app, rg[0], rg[1], desc, o)
 					require.NoError(t, err)
-					require.Equal(t, want, got, "app %d range %v desc %v prefix %q budget %d", app, rg, desc, pfx, budget)
+					require.Equal(t, want, got, "app %d range %v desc %v prefix %q budget %+v", app, rg, desc, pfx, budget)
 				}
 			}
 		}
@@ -1115,4 +1119,74 @@ func TestStoreIndexBoxesConcurrent(t *testing.T) {
 	require.NoError(t, <-errc)
 	boxChangesOpened = nil
 	require.Equal(t, want[false], boxChanges(t, s, modelApps[0], 0, rounds, false, 0))
+}
+
+// TestStoreVersionsScan: a VersionsScan bounded in bytes, resumed from where each scan stops,
+// passes the versions VersionsPrev does, in either direction, over stored repeats too; each scan
+// stops only once it has read its budget, and makes progress.
+func TestStoreVersionsScan(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	objs := modelObjects()
+	const rounds = 40
+	changes, _ := modelRounds(5, objs, rounds)
+	for _, dedup := range []int{0, -1} { // -1 keeps the repeats
+		t.Run(fmt.Sprintf("dedup=%d", dedup), func(t *testing.T) {
+			s, err := Open(t.TempDir(), Options{DedupEntries: dedup})
+			require.NoError(t, err)
+			defer s.Close()
+			for r, chs := range changes {
+				require.NoError(t, s.AddRound(uint64(r), chs, []byte{byte(r)}, nil))
+			}
+			type version struct {
+				rnd       uint64
+				val, prev string
+				ok, pok   bool
+			}
+			rng := rand.New(rand.NewSource(6))
+			ranges := [][2]uint64{{0, rounds}, {0, 0}, {rounds - 1, rounds - 1}, {5, 4}}
+			for range 10 {
+				lo := uint64(rng.Intn(rounds))
+				ranges = append(ranges, [2]uint64{lo, lo + uint64(rng.Intn(rounds))})
+			}
+			for _, obj := range objs {
+				for _, rg := range ranges {
+					for _, desc := range []bool{false, true} {
+						var want []version
+						require.NoError(t, s.VersionsPrev(obj, rg[0], rg[1], desc, func(rnd uint64, val []byte, ok bool, prev []byte, pok bool) bool {
+							want = append(want, version{rnd, string(val), string(prev), ok, pok})
+							return true
+						}))
+						for _, budget := range []uint64{0, 1, 60, 500} {
+							var got []version
+							lo, hi := rg[0], rg[1]
+							for {
+								end, err := s.VersionsScan(obj, lo, hi, desc, budget, func(rnd uint64, val []byte, ok bool, prev []byte, pok bool) bool {
+									got = append(got, version{rnd, string(val), string(prev), ok, pok})
+									return true
+								})
+								require.NoError(t, err)
+								if !end.More {
+									break
+								}
+								require.Positive(t, budget)
+								require.GreaterOrEqual(t, end.Bytes, budget)
+								if desc {
+									require.Less(t, end.Next, hi)
+									require.GreaterOrEqual(t, end.Next, lo)
+									hi = end.Next
+								} else {
+									require.Greater(t, end.Next, lo)
+									require.LessOrEqual(t, end.Next, hi)
+									lo = end.Next
+								}
+							}
+							require.Equal(t, want, got, "obj %x range %v desc %v budget %d", obj, rg, desc, budget)
+						}
+					}
+				}
+			}
+		})
+	}
 }
