@@ -837,6 +837,7 @@ func TestTimeTravelVersions(t *testing.T) {
 		}
 
 		checkKeyVersions(t, l, addrs, kv)
+		checkKeyChanges(t, l, addrs, kv)
 
 		// as of rounds: every round, both ways, paged, and a sparse subset
 		var every, sparse []basics.Round
@@ -1437,6 +1438,7 @@ func TestTimeTravelAppBoxVersions(t *testing.T) {
 		}
 
 		checkBoxPrefixVersions(t, l, app, every, oracle, asOf)
+		checkBoxPrefixChanges(t, l, app)
 
 		p, err := l.AppBoxVersions(app+100, VersionRange{Max: latest, Limit: 10})
 		require.NoError(t, err)
@@ -1659,6 +1661,26 @@ func TestTimeTravelAppBoxVersionsPartialIndex(t *testing.T) {
 	p, err := histAppBoxVersions(h, 1, VersionRange{Min: 10, Max: 19, Limit: 100})
 	require.NoError(t, err)
 	require.Len(t, p.Versions, 10)
+
+	// a box prefix search needs the index from its low round, but one that finds a change in the
+	// rounds it has, newest first, does not reach the rounds before them
+	_, err = histBoxPrefixChange(h, 1, nil, 5, 19, 0)
+	require.ErrorIs(t, err, ErrNoBoxIndex)
+	_, err = histBoxPrefixChange(h, 1, nil, 9, 5, 0)
+	require.ErrorIs(t, err, ErrNoBoxIndex)
+	c, err := histBoxPrefixChange(h, 1, nil, 19, 5, 0)
+	require.NoError(t, err)
+	// newest first, the round of the change is read again for its first name: two versions
+	require.Equal(t, Change{Status: ChangeUpdated, Round: 19, Name: []byte("a"), Bytes: c.Bytes, Versions: 2}, c)
+	for _, rg := range [][2]basics.Round{{10, 19}, {10, 5}} { // the index's first round, both ways
+		c, err = histBoxPrefixChange(h, 1, nil, rg[0], rg[1], 0)
+		require.NoError(t, err)
+		versions := uint64(1)
+		if rg[0] > rg[1] {
+			versions = 2
+		}
+		require.Equal(t, Change{Status: ChangeUpdated, Round: 10, Name: []byte("a"), Bytes: c.Bytes, Versions: versions}, c)
+	}
 }
 
 // TestTimeTravelEmptyBoxValue checks that a zero-length box has an empty,

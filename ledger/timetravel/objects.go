@@ -191,6 +191,9 @@ func BoxOf(obj []byte) (app uint64, name []byte, ok bool) {
 	return binary.BigEndian.Uint64([]byte(k[len(boxKeyPrefix):])), []byte(k[len(boxKeyPrefix)+8:]), true
 }
 
+// BoxKey is the object key of box name of app.
+func BoxKey(app uint64, name []byte) []byte { return boxObject(app, name) }
+
 // boxObject is the object key of box name of app.
 func boxObject(app uint64, name []byte) []byte {
 	return KvKey(string(append(binary.BigEndian.AppendUint64([]byte(boxKeyPrefix), app), name...)))

@@ -545,6 +545,11 @@ func create(file string) *os.File {
 func main() {
 	const docVersion = 13
 
+	// The docs are of the chain's AVM: they leave out the time-travel opcodes, which only POST
+	// /v2/query runs (ledger/timetravel/README.md). Non-standard fork feature.
+	logic.OpSpecs = slices.DeleteFunc(slices.Clone(logic.OpSpecs), func(spec logic.OpSpec) bool { return logic.IsTimeTravelOp(&spec) })
+	delete(logic.OpGroups, logic.TimeTravelOpGroup)
+
 	opGroups := make(map[string][]string, len(logic.OpSpecs))
 	for grp, names := range logic.OpGroups {
 		fname := fmt.Sprintf("%s.md", strings.ToLower(grp))

@@ -1195,75 +1195,10 @@ func (v *histView) Versions(obj []byte, lo, hi uint64, desc bool, fn func(rnd ui
 }
 
 // VersionsPrev is timetravel.Store.VersionsPrev with the in-memory rounds
-// merged in. fn must not modify val or prev.
+// merged in: VersionsScan without a budget. fn must not modify val or prev.
 func (v *histView) VersionsPrev(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) error {
-	if v.effort != nil {
-		var scanned uint64
-		defer func() { v.effort.AddScanned(scanned) }()
-		inner := fn
-		fn = func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
-			scanned++
-			return inner(rnd, val, ok, prev, prevOK)
-		}
-	}
-	type version struct {
-		rnd    uint64
-		val    []byte
-		ok     bool
-		prev   []byte // the value at rnd-1
-		prevOK bool
-	}
-	// the in-memory rounds that change obj, oldest first
-	var mem []version
-	for i := range v.pending {
-		p := &v.pending[i]
-		if p.rnd <= v.last || uint64(p.rnd) < lo || uint64(p.rnd) > hi {
-			continue
-		}
-		if j, ok := p.idx[string(obj)]; ok {
-			mem = append(mem, version{rnd: uint64(p.rnd), val: p.changes[j].Value, ok: !p.changes[j].Deleted})
-		}
-	}
-	if len(mem) > 0 {
-		prev, prevOK, err := v.Get(obj, mem[0].rnd-1)
-		if err != nil {
-			return err
-		}
-		changed := mem[:0]
-		for _, m := range mem {
-			if prevOK != m.ok || (m.ok && !bytes.Equal(prev, m.val)) {
-				m.prev, m.prevOK = prev, prevOK
-				changed = append(changed, m)
-			}
-			prev, prevOK = m.val, m.ok
-		}
-		mem = changed
-	}
-	if desc {
-		for i := len(mem) - 1; i >= 0; i-- {
-			if !fn(mem[i].rnd, mem[i].val, mem[i].ok, mem[i].prev, mem[i].prevOK) {
-				return nil
-			}
-		}
-	}
-	if storeHi := min(hi, uint64(v.last)); lo <= storeHi {
-		stopped := false
-		err := v.store.VersionsPrev(obj, lo, storeHi, desc, func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool {
-			stopped = !fn(rnd, val, ok, prev, prevOK)
-			return !stopped
-		})
-		if err != nil || stopped {
-			return err
-		}
-	}
-	if !desc {
-		for _, m := range mem {
-			if !fn(m.rnd, m.val, m.ok, m.prev, m.prevOK) {
-				return nil
-			}
-		}
-	}
-	return nil
+	_, err := v.VersionsScan(obj, lo, hi, desc, 0, fn)
+	return err
 }
 
 // Objects is timetravel.Store.Objects with the in-memory rounds merged in.
@@ -1312,7 +1247,8 @@ func (v *histView) Objects(prefix []byte, fn func(obj []byte) bool) error {
 
 // BoxChanges is timetravel.Store.BoxChanges with the in-memory rounds merged
 // in, under the same options: each box an in-memory round writes counts as
-// an index entry toward o.MaxScanned. fn must not modify name or val.
+// an index entry toward o.MaxScanned, and its object key, as the index
+// entry's, toward o.MaxBytes. fn must not modify name or val.
 func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxChangesOpts, fn func(rnd uint64, name, val []byte, ok bool) bool) (timetravel.BoxChangesEnd, error) {
 	var end timetravel.BoxChangesEnd
 	// the effort counts the index entries stepped through, matched or not
@@ -1326,6 +1262,7 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxCha
 	type memRound struct {
 		rnd     uint64
 		scanned uint64
+		bytes   uint64
 		changes []change
 	}
 	var mem []memRound // oldest first
@@ -1345,6 +1282,7 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxCha
 				continue
 			}
 			m.scanned++
+			m.bytes += uint64(len(ch.Key))
 			if !bytes.HasPrefix(name, o.Prefix) {
 				continue
 			}
@@ -1352,6 +1290,7 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxCha
 			if err != nil {
 				return end, err
 			}
+			m.bytes += uint64(len(ch.Value) + len(prev))
 			if prevOK != !ch.Deleted || (prevOK && !bytes.Equal(prev, ch.Value)) {
 				m.changes = append(m.changes, change{name, ch.Value, !ch.Deleted})
 			}
@@ -1361,7 +1300,7 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxCha
 			mem = append(mem, m)
 		}
 	}
-	spent := func() bool { return o.MaxScanned > 0 && end.Scanned >= o.MaxScanned }
+	spent := func() bool { return end.Scanned > 0 && o.Spent(end) }
 	// readMem reads an in-memory round; false: stop, at the budget (More) or
 	// as fn says
 	readMem := func(m *memRound) bool {
@@ -1370,6 +1309,7 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxCha
 			return false
 		}
 		end.Scanned += m.scanned
+		end.Bytes += m.bytes
 		for i := range m.changes {
 			c := &m.changes[i]
 			if desc {
@@ -1397,12 +1337,16 @@ func (v *histView) BoxChanges(app, lo, hi uint64, desc bool, o timetravel.BoxCha
 		if o.MaxScanned > 0 {
 			so.MaxScanned = o.MaxScanned - end.Scanned
 		}
+		if o.MaxBytes > 0 {
+			so.MaxBytes = o.MaxBytes - end.Bytes
+		}
 		stopped := false
 		se, err := v.store.BoxChanges(app, lo, storeHi, desc, so, func(rnd uint64, name, val []byte, ok bool) bool {
 			stopped = !fn(rnd, name, val, ok)
 			return !stopped
 		})
 		end.Scanned += se.Scanned
+		end.Bytes += se.Bytes
 		if err != nil || stopped {
 			return end, err
 		}

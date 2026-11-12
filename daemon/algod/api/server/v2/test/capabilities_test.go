@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -73,8 +74,28 @@ func TestCapabilitiesJSON(t *testing.T) {
 	require.JSONEq(t, `{
 		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
 		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000},
-		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024, "stream": ["sse"]}
+		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-scan-bytes": 67108864, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-scan-step-bytes": 4194304, "max-seek-rounds": 64, "max-total-calls": 1024, "opcodes": ["tt_seek"], "stream": ["sse"]}
 	}`, string(capabilitiesJSON(t, capabilitiesRouter(t, config.GetDefaultLocal()))))
+}
+
+// The time-travel opcodes a node runs: without history, only tt_seek.
+var (
+	changeOpcodes = append([]string{"tt_seek"}, "tt_acct_change", "tt_holding_change", "tt_local_change", "tt_asset_change", "tt_app_change", "tt_box_change")
+	allOpcodes    = append(slices.Clone(changeOpcodes), "tt_global_key_change", "tt_local_key_change", "tt_box_prefix_change")
+)
+
+func withOpcodes(q model.QueryLimits, opcodes []string) *model.QueryLimits {
+	if opcodes == nil {
+		q.Opcodes = nil
+	} else {
+		q.Opcodes = &opcodes
+	}
+	return &q
+}
+
+func withScan(q model.QueryLimits, step, total uint64) model.QueryLimits {
+	q.MaxScanStepBytes, q.MaxCallScanBytes = step, total
+	return q
 }
 
 // TestCapabilities checks how the answer follows the node config. TestCapabilitiesJSON covers the
@@ -85,7 +106,8 @@ func TestCapabilities(t *testing.T) {
 
 	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
 	sse := []string{"sse"}
-	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024, Stream: &sse}
+	seek := []string{"tt_seek"}
+	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxSeekRounds: 64, MaxScanStepBytes: 4 << 20, MaxCallScanBytes: 64 << 20, MaxTotalCalls: 1024, Opcodes: &seek, Stream: &sse}
 	for _, tc := range []struct {
 		name      string
 		configure func(*config.Local)
@@ -103,6 +125,8 @@ func TestCapabilities(t *testing.T) {
 			c.MaxAPIQueryResponseBytes = 0
 			c.MaxAPIQueryCallStateBytes = 0
 			c.MaxAPIQueryRounds = 1_000_000
+			c.MaxAPIQuerySeekRounds = 0
+			c.MaxAPIQueryCallScanBytes = 0
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
 			Query: &model.QueryLimits{MaxCalls: 3, MaxCallBudget: 1, MaxRounds: simulation.MaxQueryRounds, MaxTotalCalls: 3 * simulation.MaxQueryRounds, Stream: &sse},
@@ -113,14 +137,14 @@ func TestCapabilities(t *testing.T) {
 			c.MaxAPIQueryTotalCalls = 0
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
-			Query: &model.QueryLimits{MaxCalls: 10, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 4, MaxTotalCalls: 40, Stream: &sse},
+			Query: &model.QueryLimits{MaxCalls: 10, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 4, MaxSeekRounds: 64, MaxScanStepBytes: 4 << 20, MaxCallScanBytes: 64 << 20, MaxTotalCalls: 40, Opcodes: &seek, Stream: &sse},
 		}},
 		// max-calls comes down to max-total-calls: more calls are over it even at one round.
 		{"total calls under calls times rounds", func(c *config.Local) {
 			c.MaxAPIQueryTotalCalls = 100
 		}, model.CapabilitiesResponse{
 			TimeLimitSeconds: 108, Simulate: defaultSimulate,
-			Query: &model.QueryLimits{MaxCalls: 100, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 100, Stream: &sse},
+			Query: &model.QueryLimits{MaxCalls: 100, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxSeekRounds: 64, MaxScanStepBytes: 4 << 20, MaxCallScanBytes: 64 << 20, MaxTotalCalls: 100, Opcodes: &seek, Stream: &sse},
 		}},
 		{"below the floors", func(c *config.Local) {
 			c.MaxAPISimulateGroups = 0
@@ -150,7 +174,30 @@ func TestCapabilities(t *testing.T) {
 		}, model.CapabilitiesResponse{
 			TimeTravel: true, DeveloperApi: true, TimeLimitSeconds: 58,
 			Simulate: model.SimulateLimits{MaxTxnGroups: 3, MaxExtraOpcodeBudget: 1_000},
-			Query:    defaultQuery,
+			Query:    withOpcodes(*defaultQuery, allOpcodes),
+		}},
+		// the searches' step is at most their total, which is also the step of 0
+		{"time travel without searches", func(c *config.Local) {
+			c.EnableTimeTravel = true
+			c.MaxAPIQueryCallScanBytes = 0
+		}, model.CapabilitiesResponse{
+			TimeTravel: true, TimeLimitSeconds: 108, Simulate: defaultSimulate,
+			Query: withOpcodes(withScan(*defaultQuery, 0, 0), changeOpcodes),
+		}},
+		{"scan step over the total, and 0", func(c *config.Local) {
+			c.EnableTimeTravel = true
+			c.MaxAPIQueryCallScanBytes = 1000
+			c.MaxAPIQueryScanStepBytes = 0
+		}, model.CapabilitiesResponse{
+			TimeTravel: true, TimeLimitSeconds: 108, Simulate: defaultSimulate,
+			Query: withOpcodes(withScan(*defaultQuery, 1000, 1000), allOpcodes),
+		}},
+		{"time travel off", func(c *config.Local) {
+			c.EnableTimeTravel = true
+			c.MaxAPIQuerySeekRounds = 0
+		}, model.CapabilitiesResponse{
+			TimeTravel: true, TimeLimitSeconds: 108, Simulate: defaultSimulate,
+			Query: func() *model.QueryLimits { q := withOpcodes(*defaultQuery, nil); q.MaxSeekRounds = 0; return q }(),
 		}},
 		{"deprecated settings", func(c *config.Local) {
 			c.MaxAPISimulateRounds = 5

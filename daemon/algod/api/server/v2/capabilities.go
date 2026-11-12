@@ -21,12 +21,14 @@ package v2
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/ledger/simulation"
 )
 
@@ -60,8 +62,21 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxCallStateBytes: q.MaxCallStateBytes,
 			MaxResponseBytes:  q.MaxResponseBytes,
 			MaxRounds:         uint64(q.MaxRounds),
+			MaxSeekRounds:     uint64(q.MaxSeekRounds),
+			MaxScanStepBytes:  q.MaxScanStepBytes,
+			MaxCallScanBytes:  q.MaxCallScanBytes,
 			MaxTotalCalls:     uint64(q.MaxTotalCalls),
 			Stream:            &[]string{"sse"},
+		}
+		if q.MaxSeekRounds > 0 {
+			opcodes := slices.Clone(logic.SeekOpcodes)
+			if cfg.EnableTimeTravel { // the change lookups read the history
+				opcodes = append(opcodes, logic.ChangeOpcodes...)
+				if q.MaxCallScanBytes > 0 {
+					opcodes = append(opcodes, logic.SearchOpcodes...)
+				}
+			}
+			query.Opcodes = &opcodes
 		}
 	}
 	return model.CapabilitiesResponse{

@@ -72,6 +72,14 @@ type QueryLimits struct {
 	MaxTotalCalls int
 	// Parallelism is the most workers that run the calls of a request at once.
 	Parallelism int
+	// MaxSeekRounds is the most rounds a call may move its reads to with tt_seek. 0 turns time
+	// travel off: its change lookups too.
+	MaxSeekRounds int
+	// MaxScanStepBytes is the most bytes one key or box prefix search may read before it returns
+	// where to resume, and MaxCallScanBytes the most a call's searches may read in all; a search
+	// once they are spent fails the call. 0 MaxCallScanBytes turns the searches off.
+	MaxScanStepBytes uint64
+	MaxCallScanBytes uint64
 }
 
 // QueryLimitsFromConfig returns the query limits of a node configured with cfg, clamped as the
@@ -85,6 +93,11 @@ func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 	}
 	// More calls than maxTotalCalls are over it even at one round, so max-calls never reports them.
 	maxCalls = min(maxCalls, maxTotalCalls)
+	// A search reads at most what the call may, and with no step, up to that.
+	scanStep := cfg.MaxAPIQueryCallScanBytes
+	if cfg.MaxAPIQueryScanStepBytes > 0 {
+		scanStep = min(scanStep, cfg.MaxAPIQueryScanStepBytes)
+	}
 	return QueryLimits{
 		MaxCalls:          int(maxCalls),
 		MaxCallBudget:     int(max(1, min(cfg.MaxAPIQueryCallBudget, MaxExtraOpcodeBudgetCeiling))),
@@ -94,6 +107,9 @@ func QueryLimitsFromConfig(cfg config.Local) QueryLimits {
 		MaxRounds:         int(maxRounds),
 		MaxTotalCalls:     int(maxTotalCalls),
 		Parallelism:       max(1, min(cfg.QueryParallelism, MaxQueryRounds)),
+		MaxSeekRounds:     int(min(cfg.MaxAPIQuerySeekRounds, math.MaxInt32)),
+		MaxScanStepBytes:  scanStep,
+		MaxCallScanBytes:  cfg.MaxAPIQueryCallScanBytes,
 	}
 }
 
@@ -322,6 +338,30 @@ type queryRound struct {
 
 // prepareRound reads what the calls at round rnd need. Its error is the round's.
 func (s Simulator) prepareRound(req *QueryRequest, rnd, latest basics.Round) *queryRound {
+	override := req.Protocol
+	switch override {
+	case ProtocolRound:
+		override = ""
+	case "":
+		override = ProtocolLatest
+	}
+	qr := s.prepareState(override, rnd, latest)
+	if qr.err != nil {
+		return qr
+	}
+	proto := config.Consensus[qr.nextHdr.CurrentProtocol]
+	qr.txns = make([]transactions.SignedTxn, len(req.Calls))
+	for i := range req.Calls {
+		qr.txns[i] = req.callTxn(&req.Calls[i], qr.nextHdr, proto)
+	}
+	qr.calls = make([]QueryCallResult, len(req.Calls))
+	return qr
+}
+
+// prepareState reads the state round rnd left and the header of the block after it, run under
+// the protocol override (as QueryRequest.Protocol names it), or the protocol it really ran when
+// override is "". Its error is the round's.
+func (s Simulator) prepareState(override string, rnd, latest basics.Round) *queryRound {
 	qr := &queryRound{round: rnd, ledger: s.ledger}
 	qr.ledger.start = rnd
 	qr.ledger.pastStart = rnd < latest
@@ -330,12 +370,8 @@ func (s Simulator) prepareRound(req *QueryRequest, rnd, latest basics.Round) *qu
 		qr.err = err
 		return qr
 	}
-	if req.Protocol != ProtocolRound {
-		name := req.Protocol
-		if name == "" {
-			name = ProtocolLatest
-		}
-		qr.override, qr.gaps, err = qr.ledger.overrideProtocol(name, prevHdr, latest)
+	if override != "" {
+		qr.override, qr.gaps, err = qr.ledger.overrideProtocol(override, prevHdr, latest)
 		if err != nil {
 			qr.err = err
 			return qr
@@ -371,11 +407,6 @@ func (s Simulator) prepareRound(req *QueryRequest, rnd, latest basics.Round) *qu
 	nextHdr.RewardsState = prevHdr.NextRewardsState(nextHdr.Round, proto, pool.MicroAlgos, totals.RewardUnits(), logging.Base())
 
 	qr.prevHdr, qr.nextHdr, qr.totals = prevHdr, nextHdr, totals
-	qr.txns = make([]transactions.SignedTxn, len(req.Calls))
-	for i := range req.Calls {
-		qr.txns[i] = req.callTxn(&req.Calls[i], nextHdr, proto)
-	}
-	qr.calls = make([]QueryCallResult, len(req.Calls))
 	return qr
 }
 
@@ -518,6 +549,8 @@ func (s Simulator) Query(req QueryRequest) (QueryResult, error) {
 
 	run := &queryRun{
 		req:     &req,
+		sim:     s,
+		latest:  latest,
 		ctx:     ctx,
 		cancel:  cancel,
 		effort:  effort,
@@ -595,7 +628,11 @@ func (run *queryRun) pieceDone(qr *queryRound) {
 
 // queryRun is one Query's work, shared by its workers.
 type queryRun struct {
-	req    *QueryRequest
+	req *QueryRequest
+	// sim and latest are the simulator and the latest round the request started with, which the
+	// states of the rounds calls seek to are built from.
+	sim    Simulator
+	latest basics.Round
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 	effort *ledgercore.Effort
@@ -698,12 +735,16 @@ func (run *queryRun) runPiece(piece queryWork) {
 		UnnamedResources: allowAllPolicy{},
 		Tracer:           tracer,
 	}
+	seeker := run.newQuerySeeker(qr, ql)
+	opts.TimeTravel = seeker
+	defer seeker.endCall()
 	for i := piece.lo; i < piece.hi; i++ {
 		if run.ctx.Err() != nil || run.failed(qr) {
 			return
 		}
 		ql.startCall()
 		tracer.startCall(i)
+		seeker.startCall()
 		logs, err := callQuery(qs, qr.txns[i], opts)
 		if tracer.abort.aborted != nil {
 			// The request is stopping; the call did not finish.

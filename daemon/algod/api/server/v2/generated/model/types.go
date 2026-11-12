@@ -1132,6 +1132,9 @@ type QueryLimits struct {
 	// MaxCallLogBytes The most bytes each program of a call may log, in up to 2048 logs. 0 means the protocol's limits: 1024 bytes in 32 logs (node config MaxAPIQueryCallLogBytes).
 	MaxCallLogBytes uint64 `json:"max-call-log-bytes"`
 
+	// MaxCallScanBytes The most bytes of history the searches of one call for a change of a state key or of a box under a name prefix (opcodes tt_global_key_change, tt_local_key_change and tt_box_prefix_change) may read in all; a search once they are spent fails the call. 0 means the searches are off (node config MaxAPIQueryCallScanBytes). Nodes built before this field have no searches.
+	MaxCallScanBytes uint64 `json:"max-call-scan-bytes"`
+
 	// MaxCallStateBytes The most bytes of ledger state a call may read: accounts, holdings and local states, asset and app params (programs and global state included), and boxes, each counted once however often the call reads it. A call that reads more fails with an error, and the other calls run on. 0 means no limit (node config MaxAPIQueryCallStateBytes).
 	MaxCallStateBytes uint64 `json:"max-call-state-bytes"`
 
@@ -1144,8 +1147,17 @@ type QueryLimits struct {
 	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
 	MaxRounds uint64 `json:"max-rounds"`
 
+	// MaxScanStepBytes The most bytes of history one search for a change of a state key or of a box under a name prefix may read: one that reads that much without finding a change returns status 4 and the round to resume from. At most max-call-scan-bytes (node config MaxAPIQueryScanStepBytes). Nodes built before this field have no searches.
+	MaxScanStepBytes uint64 `json:"max-scan-step-bytes"`
+
+	// MaxSeekRounds The most rounds one call may move its reads to with the tt_seek opcode; a call that seeks to more fails. Each round counts 4096 bytes toward max-call-state-bytes, besides what the call reads there. 0 means time travel is off (node config MaxAPIQuerySeekRounds). Nodes built before this field have no time travel.
+	MaxSeekRounds uint64 `json:"max-seek-rounds"`
+
 	// MaxTotalCalls The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.
 	MaxTotalCalls uint64 `json:"max-total-calls"`
+
+	// Opcodes The time-travel opcodes the node runs in query programs (non-standard, first byte 0xff; simulate and blocks refuse them): tt_seek, which moves a program's reads to a past round, when max-seek-rounds is above 0; with it, when the node keeps history (time-travel true), the change lookups of an account, holding, local state, asset, app or box (tt_acct_change, tt_holding_change, tt_local_change, tt_asset_change, tt_app_change, tt_box_change), and when max-call-scan-bytes is above 0 the searches of a state key or of a box under a name prefix (tt_global_key_change, tt_local_key_change, tt_box_prefix_change). Absent when the node runs none. Nodes built before this field have none.
+	Opcodes *[]string `json:"opcodes,omitempty"`
 
 	// Stream The streamed answers the node offers. "sse": a request that accepts text/event-stream is answered with Server-Sent Events, each log sent as the called app makes it (see POST /v2/query). Absent on nodes that only answer in full.
 	Stream *[]string `json:"stream,omitempty"`

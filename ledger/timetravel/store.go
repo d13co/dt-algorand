@@ -864,16 +864,23 @@ type BoxChangesOpts struct {
 	// through that many index entries, matching Prefix or not. A round is
 	// never split, and the first is always read.
 	MaxScanned uint64
+	// MaxBytes, if not 0, stops the scan likewise once it has read that many
+	// bytes: the keys of the index entries it steps through, and the values
+	// of the records it reads for those under Prefix (each one's and the one
+	// before it).
+	MaxBytes uint64
 }
 
 // BoxChangesEnd says where a BoxChanges scan stopped.
 type BoxChangesEnd struct {
-	// More reports that the scan budget (MaxScanned) ran out; Next is then
-	// the round to resume from, the first one not read.
+	// More reports that the scan budget (MaxScanned or MaxBytes) ran out;
+	// Next is then the round to resume from, the first one not read.
 	More bool
 	Next uint64
-	// Scanned is the number of index entries stepped through.
+	// Scanned is the number of index entries stepped through, and Bytes what
+	// they and the records read for them come to, as MaxBytes counts them.
 	Scanned uint64
+	Bytes   uint64
 }
 
 // BoxChanges calls fn, in round order (newest first if desc), for every
@@ -942,13 +949,14 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn f
 			return end, boxIndexError(from)
 		}
 		if end.Scanned == 0 || rnd != cur {
-			if o.MaxScanned > 0 && end.Scanned >= o.MaxScanned {
+			if end.Scanned > 0 && o.Spent(end) {
 				end.More, end.Next = true, rnd
 				return end, nil
 			}
 			cur = rnd
 		}
 		end.Scanned++
+		end.Bytes += uint64(len(k))
 		if !bytes.HasPrefix(name, o.Prefix) {
 			continue
 		}
@@ -962,6 +970,7 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn f
 		if err != nil {
 			return end, err
 		}
+		end.Bytes += uint64(len(val) + len(prev))
 		if !found { // a no-op record that RemoveNoops deleted
 			continue
 		}
@@ -976,6 +985,11 @@ func (s *Store) BoxChanges(app, lo, hi uint64, desc bool, o BoxChangesOpts, fn f
 		return end, boxIndexError(from)
 	}
 	return end, nil
+}
+
+// Spent reports whether a scan that got as far as end is out of budget.
+func (o BoxChangesOpts) Spent(end BoxChangesEnd) bool {
+	return (o.MaxScanned > 0 && end.Scanned >= o.MaxScanned) || (o.MaxBytes > 0 && end.Bytes >= o.MaxBytes)
 }
 
 // boxChangesOpened is called by BoxChanges once its iterators are open; tests
@@ -1196,76 +1210,127 @@ func (s *Store) VersionsPrev(obj []byte, lo, hi uint64, desc bool, fn func(rnd u
 	if lo > hi {
 		return nil
 	}
-	return s.fullVersions(obj, lo, hi, desc, fn)
+	_, err := s.fullVersions(obj, lo, hi, desc, 0, fn)
+	return err
+}
+
+// VersionsEnd says where a VersionsScan stopped.
+type VersionsEnd struct {
+	// More reports that the scan budget ran out; Next is then the round to
+	// resume from, as lo ascending or as hi descending. It need not be a
+	// version's round.
+	More bool
+	Next uint64
+	// Bytes is the size of the records read: keys and values, repeats and
+	// the record before the range included.
+	Bytes uint64
+}
+
+// VersionsScan is VersionsPrev bounded by the bytes of the records it reads,
+// stored repeats included, which VersionsPrev steps over at no cost to fn:
+// once it has read maxBytes (0: no limit), it stops before the next record
+// and reports where to resume. It always makes progress first: ascending, it
+// reads one record of the range; descending, it decides one, which takes the
+// record before it. Resuming from Next calls fn with the versions the scan
+// had not reached, and only those.
+func (s *Store) VersionsScan(obj []byte, lo, hi uint64, desc bool, maxBytes uint64, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) (VersionsEnd, error) {
+	if err := s.acquire(); err != nil {
+		return VersionsEnd{}, err
+	}
+	defer s.closeMu.RUnlock()
+	if lo > hi {
+		return VersionsEnd{}, nil
+	}
+	return s.fullVersions(obj, lo, hi, desc, maxBytes, fn)
 }
 
 func sameState(a []byte, aok bool, b []byte, bok bool) bool {
 	return aok == bok && (!aok || bytes.Equal(a, b))
 }
 
-// fullVersions is Versions past its checks. Every record is a full value or
-// a tombstone: one iterator, plus the record before the range to compare the
-// first one with.
-func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) error {
+// fullVersions is Versions past its checks, bounded as VersionsScan. Every
+// record is a full value or a tombstone: one iterator, plus the record before
+// the range to compare the first one with.
+func (s *Store) fullVersions(obj []byte, lo, hi uint64, desc bool, maxBytes uint64, fn func(rnd uint64, val []byte, ok bool, prev []byte, prevOK bool) bool) (VersionsEnd, error) {
+	var end VersionsEnd
 	it, err := s.db.NewIter(&pebble.IterOptions{LowerBound: verKey(pfxRecord, obj, 0), UpperBound: verKey(pfxRecord, obj, hi+1)})
 	if err != nil {
-		return err
+		return end, err
 	}
 	defer it.Close()
-	record := func() (rnd uint64, v []byte, ok bool, err error) {
+	keyRound := func() uint64 {
 		k := it.Key()
+		return binary.BigEndian.Uint64(k[len(k)-8:])
+	}
+	record := func() (rnd uint64, v []byte, ok bool, err error) {
+		end.Bytes += uint64(len(it.Key()) + len(it.Value()))
 		v, ok, err = decodeRecord(it.Value())
 		// Clone keeps an empty value non-nil, as Get returns it
-		return binary.BigEndian.Uint64(k[len(k)-8:]), bytes.Clone(v), ok, err
+		return keyRound(), bytes.Clone(v), ok, err
 	}
+	spent := func() bool { return maxBytes > 0 && end.Bytes >= maxBytes }
 	if !desc {
 		var prev []byte
 		var prevOK bool
 		valid := it.SeekLT(verKey(pfxRecord, obj, lo))
 		if valid {
 			if _, prev, prevOK, err = record(); err != nil {
-				return err
+				return end, err
 			}
 			valid = it.Next()
 		} else {
 			valid = it.SeekGE(verKey(pfxRecord, obj, lo))
 		}
-		for ; valid; valid = it.Next() {
+		for read := false; valid; valid = it.Next() {
+			if read && spent() {
+				end.More, end.Next = true, keyRound()
+				return end, nil
+			}
+			read = true
 			rnd, v, ok, err := record()
 			if err != nil {
-				return err
+				return end, err
 			}
 			if !sameState(prev, prevOK, v, ok) && !fn(rnd, v, ok, prev, prevOK) {
-				return nil
+				return end, nil
 			}
 			prev, prevOK = v, ok
 		}
-		return it.Error()
+		return end, it.Error()
 	}
 	// Newest first: a record is a version if it differs from the next older
-	// one, which may lie before lo.
+	// one, which may lie before lo. Records newer than the candidate are
+	// decided, so a scan resumes from the candidate's round; it stops only
+	// once it has decided one, so that it resumes from an older one.
 	var cand []byte
 	var candRnd uint64
-	var candOK, have bool
+	var candOK, have, decided bool
 	for valid := it.Last(); ; valid = it.Prev() {
 		if !valid {
 			if err := it.Error(); err != nil {
-				return err
+				return end, err
 			}
 			if have && candOK { // the first record ever is a version unless it is a tombstone
 				fn(candRnd, cand, true, nil, false)
 			}
-			return nil
+			return end, nil
+		}
+		if decided && spent() {
+			end.More, end.Next = true, candRnd
+			return end, nil
 		}
 		rnd, v, ok, err := record()
 		if err != nil {
-			return err
+			return end, err
 		}
-		if have && !sameState(v, ok, cand, candOK) && !fn(candRnd, cand, candOK, v, ok) {
-			return nil
+		if have {
+			decided = true
+			if !sameState(v, ok, cand, candOK) && !fn(candRnd, cand, candOK, v, ok) {
+				return end, nil
+			}
 		}
 		if rnd < lo {
-			return nil
+			return end, nil
 		}
 		cand, candRnd, candOK, have = v, rnd, ok, true
 	}

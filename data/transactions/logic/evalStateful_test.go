@@ -3419,7 +3419,7 @@ func TestReturnTypes(t *testing.T) {
 			if (m & spec.Modes) == 0 {
 				continue
 			}
-			if skipCmd[name] || spec.trusted {
+			if skipCmd[name] || spec.trusted || IsTimeTravelOp(&spec) { // those need a query: timetravel_test.go
 				continue
 			}
 			t.Run(fmt.Sprintf("mode=%s,opcode=%s", m, name), func(t *testing.T) {
