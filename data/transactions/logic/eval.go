@@ -3420,15 +3420,19 @@ func (cx *EvalContext) txnFieldToStack(stxn *transactions.SignedTxnWithAD, fs *t
 	}
 
 	txn := &stxn.SignedTxn.Txn
+	firstValid, lastValid := txn.FirstValid, txn.LastValid
+	if !inner { // a txn of the program's group: they move with tt_seek (timetravel.go)
+		firstValid, lastValid = cx.txnValidity(txn)
+	}
 	switch fs.field {
 	case Sender:
 		sv.Bytes = txn.Sender[:]
 	case Fee:
 		sv.Uint = txn.Fee.Raw
 	case FirstValid:
-		sv.Uint = uint64(txn.FirstValid)
+		sv.Uint = uint64(firstValid)
 	case FirstValidTime:
-		rnd, err := cx.availableRound(uint64(txn.FirstValid) - 1)
+		rnd, err := cx.availableRound(uint64(firstValid) - 1)
 		if err != nil {
 			return sv, err
 		}
@@ -3437,11 +3441,11 @@ func (cx *EvalContext) txnFieldToStack(stxn *transactions.SignedTxnWithAD, fs *t
 			return sv, err
 		}
 		if hdr.TimeStamp < 0 {
-			return sv, fmt.Errorf("block(%d) timestamp %d < 0", txn.FirstValid-1, hdr.TimeStamp)
+			return sv, fmt.Errorf("block(%d) timestamp %d < 0", firstValid-1, hdr.TimeStamp)
 		}
 		sv.Uint = uint64(hdr.TimeStamp)
 	case LastValid:
-		sv.Uint = uint64(txn.LastValid)
+		sv.Uint = uint64(lastValid)
 	case Note:
 		sv.Bytes = nilToEmpty(txn.Note)
 	case Receiver:
@@ -5543,11 +5547,12 @@ func addInnerTxn(cx *EvalContext) error {
 	}
 
 	stxn := transactions.SignedTxnWithAD{}
+	firstValid, lastValid := cx.txnValidity(&cx.txn.Txn) // they move with tt_seek (timetravel.go)
 	stxn.Txn.Header = transactions.Header{
 		Sender:     addr,
 		Fee:        fee,
-		FirstValid: cx.txn.Txn.FirstValid,
-		LastValid:  cx.txn.Txn.LastValid,
+		FirstValid: firstValid,
+		LastValid:  lastValid,
 	}
 	cx.subtxns = append(cx.subtxns, stxn)
 	return nil
@@ -6135,10 +6140,7 @@ func opItxnSubmit(cx *EvalContext) (err error) {
 // accessed. If it is, it's returned as a basics.Round. It is named by analogy
 // to the availableAsset and  availableApp helpers.
 func (cx *EvalContext) availableRound(r uint64) (basics.Round, error) {
-	firstValid, lastValid := cx.txn.Txn.FirstValid, cx.txn.Txn.LastValid
-	if cx.TimeTravel != nil {
-		firstValid, lastValid = cx.timeTravelValidity()
-	}
+	firstValid, lastValid := cx.txnValidity(&cx.txn.Txn) // they move with tt_seek (timetravel.go)
 	firstAvail := lastValid - basics.Round(cx.Proto.MaxTxnLife) - 1
 	if firstAvail > lastValid || firstAvail == 0 { // early in chain's life
 		firstAvail = 1

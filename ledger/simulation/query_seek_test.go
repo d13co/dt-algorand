@@ -84,6 +84,11 @@ func TestQuerySeek(t *testing.T) {
 	defer f.env.Close()
 	sender := f.env.Accounts[0]
 	counter := createSeekCounter(f)
+	// logs the validity of the txn that calls it, and the timestamp of its first valid round
+	validity := f.env.CreateApp(sender.Addr, simulationtesting.AppParams{
+		ApprovalProgram:   "#pragma version 10\ntxn FirstValid; itob; log\ntxn LastValid; itob; log\ntxn FirstValidTime; itob; log\nint 1",
+		ClearStateProgram: "#pragma version 10\nint 1",
+	})
 	past := f.env.TxnInfo.LatestRound()
 	// the count is 0 at past, 1 at home
 	callApp(f, counter)
@@ -107,6 +112,7 @@ txna ApplicationArgs 1; byte "late"; ==; bnz late
 txna ApplicationArgs 1; byte "reader"; ==; bnz reader
 txna ApplicationArgs 1; byte "creator"; ==; bnz creator
 txna ApplicationArgs 1; byte "count"; ==; bnz count
+txna ApplicationArgs 1; byte "valid"; ==; bnz valid
 err
 creator:
 global CreatorAddress; log
@@ -139,6 +145,20 @@ load 1; callsub seek
 global Round; itob; log
 addr %[1]s; balance; itob; log
 byte "x"; app_global_get; itob; log
+txn FirstValid; itob; log
+int 1; return
+valid:
+txn FirstValid; itob; log
+txn LastValid; itob; log
+txn FirstValidTime; itob; log
+itxn_begin
+int appl; itxn_field TypeEnum
+int %[6]d; itxn_field ApplicationID
+itxn_submit
+itxn FirstValid; itob; log
+itxn Logs 0; log
+itxn Logs 1; log
+itxn Logs 2; log
 int 1; return
 next:
 txna ApplicationArgs 0; btoi; int 1; +; block BlkTimestamp; pop
@@ -159,12 +179,12 @@ int appl; itxn_field TypeEnum
 int %[2]d; itxn_field ApplicationID
 itxn_submit
 int 1; return
-%[3]s`, f.other.Addr, late, seekSub, f.reader, counter)
+%[3]s`, f.other.Addr, late, seekSub, f.reader, counter, validity)
 
 	req := f.request(t, program,
 		roundArg(past, "read"), roundArg(past, "back"), roundArg(past, "next"),
 		roundArg(past, "late"), roundArg(home, "late"), roundArg(home, "read"), roundArg(past, "reader"),
-		roundArg(past, "creator"), roundArg(past, "count"))
+		roundArg(past, "creator"), roundArg(past, "count"), roundArg(past, "valid"), roundArg(home, "valid"))
 	req.GlobalSchema = basics.StateSchema{NumUint: 1}
 	s := simulation.MakeSimulator(f.env.Ledger, false)
 	result, err := s.Query(req)
@@ -189,7 +209,7 @@ int 1; return
 	require.NotEqual(t, balance(past), balance(home))
 
 	require.Empty(t, calls[1].Error)
-	require.Equal(t, []string{u64(uint64(home + 1)), balance(home), u64(5)}, calls[1].Logs)
+	require.Equal(t, []string{u64(uint64(home + 1)), balance(home), u64(5), u64(uint64(home + 1))}, calls[1].Logs)
 
 	// the block window ends at the round sought to
 	require.Contains(t, calls[2].Error, fmt.Sprintf("round %d is not available", past+1))
@@ -216,6 +236,15 @@ int 1; return
 	// writes stay for the rest of the program (2, then 3)
 	require.Empty(t, calls[8].Error)
 	require.Equal(t, []string{u64(1), u64(1), u64(2), u64(3)}, calls[8].Logs)
+
+	// at a round r, the program's txn and the inner txns it sends are valid in r+1 only, so an app
+	// it calls sees that validity, and the first valid round's time is the timestamp of r
+	for i, r := range []basics.Round{past, home} {
+		call := calls[9+i]
+		require.Empty(t, call.Error)
+		valid := u64(uint64(r + 1))
+		require.Equal(t, []string{valid, valid, timestamp(r), valid, valid, valid, timestamp(r)}, call.Logs)
+	}
 }
 
 // TestQuerySeekErrors: seeks after the query round, beyond MaxSeekRounds, malformed or grouped

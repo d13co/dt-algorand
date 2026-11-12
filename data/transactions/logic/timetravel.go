@@ -29,6 +29,7 @@ import (
 	"math"
 
 	"github.com/algorand/go-algorand/data/basics"
+	"github.com/algorand/go-algorand/data/transactions"
 )
 
 // timeTravelPrefix is the first byte of every time-travel opcode, whose second byte names it. No
@@ -81,7 +82,7 @@ var searchDoc = " A search reads at most max-scan-step-bytes of history: then st
 // timeTravelOpDescs are the docs of the time-travel opcodes.
 var timeTravelOpDescs = map[string]OpDesc{
 	"tt_seek": {"move the program's reads to the state round A left, as if it ran in the block after A. A the round the program started at returns to its own state",
-		"POST /v2/query only (non-standard fork feature); simulate and blocks refuse a program with it. Costs " + fmt.Sprint(ttFirstReachCost) + " more the first time the call reaches A. Fails if A is after the query round, if the call reaches more than max-seek-rounds rounds, if the node has no state of A, or between `itxn_begin` and `itxn_submit`.",
+		"POST /v2/query only (non-standard fork feature); simulate and blocks refuse a program with it. The txns of the program's group then read A+1 as their FirstValid and LastValid, as do the inner txns it sends, and FirstValidTime the timestamp of A; an inner txn's FirstValidTime fails once a later seek's block window lacks A. Costs " + fmt.Sprint(ttFirstReachCost) + " more the first time the call reaches A. Fails if A is after the query round, if the call reaches more than max-seek-rounds rounds, if the node has no state of A, or between `itxn_begin` and `itxn_submit`.",
 		nil, ""},
 
 	"tt_acct_change":    {"round X and status Y of the first change of account A's base record (balance, status, keys and totals, not its holdings, local states or params) between rounds B and C", changeDoc, nil, ""},
@@ -178,7 +179,9 @@ type TimeTraveller interface {
 
 // timeTravel is what a program's seeks change: the ledgers it ran on before its first seek.
 type timeTravel struct {
-	moved   bool
+	moved bool
+	// away is set while the program reads a past round rather than its own.
+	away    bool
 	home    LedgerForLogic
 	homeSig LedgerForSignature
 	// release drops the ledger of the past round the program reads, nil while it reads its own.
@@ -209,6 +212,7 @@ func (cx *EvalContext) timeTravelSeek(rnd basics.Round) error {
 	}
 	if rnd+1 == cx.tt.home.Round() {
 		cx.leavePast()
+		cx.tt.away = false
 		cx.Ledger, cx.SigLedger = cx.tt.home, cx.tt.homeSig
 	} else {
 		l, release, err := cx.TimeTravel.Seek(rnd, func() error {
@@ -221,7 +225,7 @@ func (cx *EvalContext) timeTravelSeek(rnd basics.Round) error {
 			return errors.New("time travel returned no ledger")
 		}
 		cx.leavePast()
-		cx.tt.moved = true
+		cx.tt.moved, cx.tt.away = true, true
 		cx.tt.release = release
 		cx.Ledger, cx.SigLedger = l, l
 	}
@@ -282,13 +286,19 @@ func (cx *EvalContext) startLedger() LedgerForLogic {
 	return cx.Ledger
 }
 
-// timeTravelValidity is the validity availableRound checks the rounds of a query program that may
-// seek against: that of a txn valid only in the round the program reads as the current one, so the
-// window moves with each seek. Before any seek it is the validity of the query's call, whose first
-// and last valid rounds are that round.
-func (cx *EvalContext) timeTravelValidity() (firstValid, lastValid basics.Round) {
-	current := cx.Ledger.Round()
-	return current, current
+// txnValidity is the first and last valid rounds of txn, of the program's group, as the program
+// reads them (txn and gtxn fields, the block window of availableRound) and gives the inner txns it
+// sends. While the program reads a past round, they are those of a txn valid only in the round it
+// reads as the current one, so they move with each seek: the apps it calls see the round they run
+// at, and can read its header (FirstValidTime). At its own round they are txn's own, as before any
+// seek: the query's call, and the inner txns of a program that sought, are valid only in the round
+// their program reads.
+func (cx *EvalContext) txnValidity(txn *transactions.Transaction) (firstValid, lastValid basics.Round) {
+	if cx.tt.away {
+		current := cx.Ledger.Round()
+		return current, current
+	}
+	return txn.FirstValid, txn.LastValid
 }
 
 // TimeTravelChangeKind is what a change lookup looks at.

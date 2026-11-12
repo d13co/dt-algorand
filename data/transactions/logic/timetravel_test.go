@@ -68,6 +68,7 @@ func (s *stubTraveller) Seek(rnd basics.Round, firstReach func() error) (TimeTra
 	l := NewLedger(nil)
 	l.rnd = rnd + 1
 	l.NewApp(s.creator, 888, basics.AppParams{})
+	l.NewAccount(appAddr(888), 1_000_000)
 	s.live++
 	done := false
 	return l, func() {
@@ -80,11 +81,12 @@ func (s *stubTraveller) Seek(rnd basics.Round, firstReach func() error) (TimeTra
 	}, nil
 }
 
-// makeTimeTravelEnv returns an app call of app 888 at round home+1, with a budget of 100,000, and
-// the stub that serves its seeks.
+// makeTimeTravelEnv returns an app call of app 888 at round home+1, valid in that round only as a
+// query's call is, with a budget of 100,000, and the stub that serves its seeks.
 func makeTimeTravelEnv(home basics.Round) (*EvalParams, *transactions.Transaction, *stubTraveller) {
 	ep, tx, ledger := makeSampleEnv()
 	ledger.rnd = home + 1
+	tx.FirstValid, tx.LastValid = home+1, home+1
 	ledger.NewApp(tx.Receiver, 888, basics.AppParams{})
 	ledger.NewAccount(appAddr(888), 1_000_000)
 	proto := *ep.Proto
@@ -118,6 +120,38 @@ int 1`, tx.Receiver), ep)
 	testApp(t, "int 100; tt_seek; int 101; block BlkTimestamp; pop; int 1", ep, "round 101 is not available. It's outside [1-100]")
 	testApp(t, "int 7; tt_seek; int 1", ep, "no state at round 7")
 	testApp(t, "itxn_begin; int 100; tt_seek; int 1", ep, "tt_seek between itxn_begin and itxn_submit")
+}
+
+// TestTimeTravelSeekValidity: while a program reads a past round r, the txns of its group are valid
+// in r+1 only, as are the inner txns it sends, so FirstValidTime reads the timestamp of r; back at
+// its own round, it reads its txn's own validity again.
+func TestTimeTravelSeekValidity(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	ep, tx, _ := makeTimeTravelEnv(1000)
+	// unlike a query's call, valid in more rounds than its own, which a seek back restores
+	tx.FirstValid, tx.LastValid = 42, 1066
+	testApp(t, `txn FirstValid; int 42; ==; assert
+txn LastValid; int 1066; ==; assert
+int 100; tt_seek
+txn FirstValid; int 101; ==; assert
+txn LastValid; int 101; ==; assert
+gtxn 0 FirstValid; int 101; ==; assert
+int 0; gtxns LastValid; int 101; ==; assert
+txn FirstValidTime; int 100; block BlkTimestamp; ==; assert
+itxn_begin
+int pay; itxn_field TypeEnum
+global CurrentApplicationAddress; itxn_field Receiver
+itxn_submit
+itxn FirstValid; int 101; ==; assert
+itxn LastValid; int 101; ==; assert
+itxn FirstValidTime; int 100; block BlkTimestamp; ==; assert
+int 1000; tt_seek
+txn FirstValid; int 42; ==; assert
+txn LastValid; int 1066; ==; assert
+gtxn 0 FirstValid; int 42; ==; assert
+int 1`, ep)
 }
 
 // TestTimeTravelSeekCost: a seek costs ttSeekCost, and ttFirstReachCost more the first time the call
