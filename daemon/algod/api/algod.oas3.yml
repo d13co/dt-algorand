@@ -3106,7 +3106,7 @@
             "x-go-type": "uint64"
           },
           "max-response-bytes": {
-            "description": "The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, also when its round is listed twice or fails later, and one that goes over ends with an end event of status 400. 0 means no limit, but for a stream whose client is 32 MiB of events behind, which is stopped the same way (node config MaxAPIQueryResponseBytes).",
+            "description": "The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, also when its round is listed twice or fails later, and one that goes over ends with an end event of status 400. 0 means no limit (node config MaxAPIQueryResponseBytes).",
             "type": "integer",
             "x-go-type": "uint64"
           },

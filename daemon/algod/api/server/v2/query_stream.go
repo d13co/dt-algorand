@@ -58,17 +58,9 @@ const queryStreamFlushInterval = 20 * time.Millisecond
 // that, so a stream goes at most 4/3 of it without a write.
 const queryStreamKeepalive = 15 * time.Second
 
-// queryStreamBacklogMax is the most bytes of events a stream may hold for its client on a node
-// without MaxAPIQueryResponseBytes, which otherwise bounds them: a stream whose client falls that
-// far behind ends.
-const queryStreamBacklogMax = 32 << 20
-
 // queryStreamWritePiece is the most bytes a stream writes under one write deadline: a client must
 // take that much in each write margin of the node (requestWriteMargin), or it is gone.
 const queryStreamWritePiece = 64 << 10
-
-// errQueryStreamBacklog ends a stream whose client reads too slowly.
-var errQueryStreamBacklog = fmt.Errorf("the stream's client is more than %d bytes behind: read faster, or query fewer calls or rounds", queryStreamBacklogMax)
 
 // errQueryStreamClientGone stops the query of a stream that can't be written any more.
 var errQueryStreamClientGone = errors.New("the stream's client went away")
@@ -96,13 +88,10 @@ func wantsQueryStream(r *http.Request) bool {
 // with the first event: a request that Query rejects before it runs gets the status and body it
 // would get without a stream. Errors after that end the stream with an end event.
 func (v2 *Handlers) streamQuery(ctx echo.Context, request simulation.QueryRequest, effort *ledgercore.Effort) error {
-	// The stream stops the query when its client is gone or too far behind.
+	// The stream stops the query when its client is gone.
 	queryCtx, stop := context.WithCancelCause(request.Context())
 	defer stop(nil)
-	q := &queryStreamQueue{ready: make(chan struct{}, 1), stop: stop}
-	if request.Limits.MaxResponseBytes == 0 {
-		q.max = queryStreamBacklogMax
-	}
+	q := &queryStreamQueue{ready: make(chan struct{}, 1)}
 	request = request.WithContext(queryCtx).WithStream(q.push)
 	var err error
 	done := make(chan struct{})
@@ -197,7 +186,7 @@ func queryErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout
-	case errors.As(err, &invalid), errors.Is(err, simulation.ErrQueryResponseTooLarge), errors.Is(err, errQueryStreamBacklog):
+	case errors.As(err, &invalid), errors.Is(err, simulation.ErrQueryResponseTooLarge):
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
@@ -206,7 +195,7 @@ func queryErrorStatus(err error) int {
 // queryStreamQueue holds a stream's events, encoded, until the handler writes them. The request's
 // workers push to it and never wait for the client. It holds what MaxAPIQueryResponseBytes bounds,
 // each log's bytes and 48 more, as base64 in events: about 4/3 of it at most. Without that limit,
-// it holds max bytes at most.
+// the request's other limits bound them: its calls, and each call's log bytes.
 type queryStreamQueue struct {
 	mu  deadlock.Mutex
 	buf []byte
@@ -216,11 +205,6 @@ type queryStreamQueue struct {
 	round basics.Round
 	call  int
 	next  int
-	// max, if not 0, is the most bytes buf may hold. An event that would not fit is dropped with
-	// every later one (over), and stop is called with errQueryStreamBacklog.
-	max  int
-	over bool
-	stop context.CancelCauseFunc
 	// ready has a value when buf has events the handler has not taken.
 	ready chan struct{}
 }
@@ -231,24 +215,19 @@ var queryStreamLogs = sync.Pool{New: func() any { return new([]byte) }}
 // push encodes e, outside the queue's lock, and adds it at the end of the queue. A log that follows
 // the one before it, of the same call, joins its event.
 func (q *queryStreamQueue) push(e simulation.QueryEvent) {
-	var ok bool
 	if e.Kind == simulation.QueryEventLog {
 		enc := queryStreamLogs.Get().(*[]byte)
 		b := append((*enc)[:0], '"')
 		b = base64.StdEncoding.AppendEncode(b, unsafe.Slice(unsafe.StringData(e.Log), len(e.Log)))
 		b = append(b, '"')
-		ok = q.add(e, b)
+		q.add(e, b)
 		// A buffer that grew large is left to the collector.
 		if cap(b) <= queryStreamWritePiece {
 			*enc = b
 			queryStreamLogs.Put(enc)
 		}
 	} else {
-		ok = q.add(e, appendQueryEvent(nil, e))
-	}
-	if !ok {
-		q.stop(errQueryStreamBacklog)
-		return
+		q.add(e, appendQueryEvent(nil, e))
 	}
 	select {
 	case q.ready <- struct{}{}:
@@ -257,19 +236,14 @@ func (q *queryStreamQueue) push(e simulation.QueryEvent) {
 }
 
 // add adds e, encoded as enc, at the end of the queue: a log as the quoted string of its event's
-// list, any other event whole. It returns false when the queue is full.
-func (q *queryStreamQueue) add(e simulation.QueryEvent, enc []byte) bool {
+// list, any other event whole.
+func (q *queryStreamQueue) add(e simulation.QueryEvent, enc []byte) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// 64 bytes more than cover the head and the end of a log event.
-	if q.over || q.max > 0 && len(q.buf)+len(enc)+64 > q.max {
-		q.over = true
-		return false
-	}
 	if e.Kind != simulation.QueryEventLog {
 		q.closeLogs()
 		q.buf = append(q.buf, enc...)
-		return true
+		return
 	}
 	if q.open && e.Round == q.round && e.Call == q.call && e.Index == q.next {
 		q.buf = append(q.buf, ',')
@@ -286,7 +260,6 @@ func (q *queryStreamQueue) add(e simulation.QueryEvent, enc []byte) bool {
 	}
 	q.buf = append(q.buf, enc...)
 	q.next = e.Index + 1
-	return true
 }
 
 // closeLogs ends the open log event, if any.

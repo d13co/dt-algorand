@@ -17,7 +17,6 @@
 package v2
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,40 +33,6 @@ import (
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/test/partitiontest"
 )
-
-// TestQueryStreamQueueBacklog: a queue with a limit never holds more; the event that would not fit
-// stops the query, and it and every later one are dropped, so what the queue holds stays whole
-// events.
-func TestQueryStreamQueueBacklog(t *testing.T) {
-	partitiontest.PartitionTest(t)
-	t.Parallel()
-
-	ctx, stop := context.WithCancelCause(context.Background())
-	q := &queryStreamQueue{ready: make(chan struct{}, 1), max: 1024, stop: stop}
-	log := strings.Repeat("x", 30) // 40 bytes of base64
-	for i := range 100 {
-		q.push(simulation.QueryEvent{Kind: simulation.QueryEventLog, Round: 7, Call: 1, Index: i, Log: log})
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	require.ErrorIs(t, context.Cause(ctx), errQueryStreamBacklog)
-	require.Equal(t, http.StatusBadRequest, queryErrorStatus(context.Cause(ctx)))
-	q.push(simulation.QueryEvent{Kind: simulation.QueryEventCall, Round: 7, Call: 1})
-	b := string(q.take())
-	require.LessOrEqual(t, len(b), 1024)
-	require.Greater(t, len(b), 900)
-	require.True(t, strings.HasPrefix(b, `event: log`+"\n"+`data: {"r":7,"c":1,"i":0,"d":["eHh4`), b)
-	require.True(t, strings.HasSuffix(b, `"]}`+"\n\n"), b)
-	require.NotContains(t, b, "event: call")
-
-	// without a limit, as when MaxAPIQueryResponseBytes bounds the events, nothing is dropped
-	q = &queryStreamQueue{ready: make(chan struct{}, 1)}
-	for i := range 100 {
-		q.push(simulation.QueryEvent{Kind: simulation.QueryEventLog, Round: 7, Call: 1, Index: i, Log: log})
-	}
-	require.Equal(t, 100, strings.Count(string(q.take()), `"eHh4`))
-}
 
 // deadlineRecorder is a response that records the write deadlines set and the writes made.
 type deadlineRecorder struct {

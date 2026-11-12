@@ -1138,7 +1138,7 @@ type QueryLimits struct {
 	// MaxCalls The most calls a request may hold (node config MaxAPIQueryCalls).
 	MaxCalls uint64 `json:"max-calls"`
 
-	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, also when its round is listed twice or fails later, and one that goes over ends with an end event of status 400. 0 means no limit, but for a stream whose client is 32 MiB of events behind, which is stopped the same way (node config MaxAPIQueryResponseBytes).
+	// MaxResponseBytes The most bytes of logs and errors a request may return, across its calls and rounds: a round listed twice counts twice, and each log counts 48 bytes more. A request that goes over fails with 400. A streamed answer counts each log once, as it is sent, also when its round is listed twice or fails later, and one that goes over ends with an end event of status 400. 0 means no limit (node config MaxAPIQueryResponseBytes).
 	MaxResponseBytes uint64 `json:"max-response-bytes"`
 
 	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
