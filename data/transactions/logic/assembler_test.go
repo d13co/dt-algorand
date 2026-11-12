@@ -601,7 +601,8 @@ func TestAssemble(t *testing.T) {
 				hasOp, err := regexp.MatchString("\\s"+regexp.QuoteMeta(spec.Name)+"\\s", nonsense[v])
 				require.NoError(t, err)
 				if !hasOp &&
-					!pseudoOp(spec.Name) && spec.Version <= v {
+					!pseudoOp(spec.Name) && spec.Version <= v &&
+					!IsTimeTravelOp(&spec) { // not in nonsense: they fail outside queries (timetravel_test.go)
 					t.Errorf("v%d nonsense test should contain op %v", v, spec.Name)
 				}
 			}

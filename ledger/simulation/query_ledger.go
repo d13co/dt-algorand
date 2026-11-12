@@ -38,6 +38,9 @@ import (
 // It also keeps the first lookup error, which is the node's failure to read the round, not the
 // call's. Errors are not cached.
 //
+// Errors at other rounds than the queried one are not kept either: a call that seeks to a past
+// round with tt_seek (query_seek.go) may read one the history lacks, which fails the call.
+//
 // Errors of the online account lookups are not kept: they read the balance round, 320 rounds
 // back, where a history may lack what online_stake or voter_params_get need for good (the online
 // stake before it was recorded, or a round before a snapshot's first). They fail the call.
@@ -87,7 +90,8 @@ func tkvBytes(kv basics.TealKeyValue) int {
 var maxQueryCacheBytes = 32 << 20
 
 // lookupFault, set only by tests, makes the lookups of a method at a round fail, as when the node
-// can't read the round: it returns their error.
+// can't read the round: it returns their error. The method "seek" is the building of the state of a
+// round a call seeks to (query_seek.go).
 var lookupFault func(method string, rnd basics.Round) error
 
 // onlineLookup reports whether method reads online accounts, at the balance round.
@@ -105,7 +109,7 @@ func (l *queryLedger) note(method string, rnd basics.Round, n int, err error) er
 		err = lookupFault(method, rnd)
 	}
 	if err != nil {
-		if l.err == nil && !onlineLookup(method) {
+		if l.err == nil && !onlineLookup(method) && rnd == l.start {
 			l.err = err
 		}
 		return err

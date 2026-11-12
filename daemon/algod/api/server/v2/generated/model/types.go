@@ -1144,8 +1144,14 @@ type QueryLimits struct {
 	// MaxRounds The most entries a request may list in rounds, duplicates included (node config MaxAPIQueryRounds).
 	MaxRounds uint64 `json:"max-rounds"`
 
+	// MaxSeekRounds The most rounds one call may move its reads to with the tt_seek opcode; a call that seeks to more fails. Each round counts 4096 bytes toward max-call-state-bytes, besides what the call reads there. 0 means time travel is off (node config MaxAPIQuerySeekRounds). Nodes built before this field have no time travel.
+	MaxSeekRounds uint64 `json:"max-seek-rounds"`
+
 	// MaxTotalCalls The most calls a request may run in all: its calls times the entries of its rounds (1 when it lists none), duplicates included. At most max-calls times max-rounds (node config MaxAPIQueryTotalCalls). Nodes built before this field have no such limit beyond max-calls times max-rounds.
 	MaxTotalCalls uint64 `json:"max-total-calls"`
+
+	// Opcodes The time-travel opcodes the node runs in query programs (non-standard, first byte 0xff; simulate and blocks refuse them): tt_seek, which moves a program's reads to a past round, when max-seek-rounds is above 0. Absent when the node runs none. Nodes built before this field have none.
+	Opcodes *[]string `json:"opcodes,omitempty"`
 
 	// Stream The streamed answers the node offers. "sse": a request that accepts text/event-stream is answered with Server-Sent Events, each log sent as the called app makes it (see POST /v2/query). Absent on nodes that only answer in full.
 	Stream *[]string `json:"stream,omitempty"`

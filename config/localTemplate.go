@@ -658,6 +658,12 @@ type Local struct {
 	// limit. Values below 1 count as 1; values above 256 count as 256. Non-standard fork feature.
 	MaxAPIQueryRounds uint64 `version[39]:"16"`
 
+	// MaxAPIQuerySeekRounds is the most rounds one call of a POST /v2/query request may move its reads to with
+	// the tt_seek opcode. A call that seeks to more fails. Each round's state counts 4096 bytes toward
+	// MaxAPIQueryCallStateBytes, besides what the call reads there. 0 turns time travel off. Clients read it
+	// from GET /v2/capabilities (max-seek-rounds). Non-standard fork feature.
+	MaxAPIQuerySeekRounds uint64 `version[39]:"64"`
+
 	// MaxAPIQueryTotalCalls is the most calls one POST /v2/query request may run in all: its calls times the
 	// rounds it lists (1 when it lists none), duplicates included, as for MaxAPIQueryRounds. A request over it
 	// fails with 400 before it takes a slot. The default allows 1024 calls at one round, or 64 calls at 16

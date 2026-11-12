@@ -21,12 +21,14 @@ package v2
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/config"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/ledger/simulation"
 )
 
@@ -60,8 +62,13 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxCallStateBytes: q.MaxCallStateBytes,
 			MaxResponseBytes:  q.MaxResponseBytes,
 			MaxRounds:         uint64(q.MaxRounds),
+			MaxSeekRounds:     uint64(q.MaxSeekRounds),
 			MaxTotalCalls:     uint64(q.MaxTotalCalls),
 			Stream:            &[]string{"sse"},
+		}
+		if q.MaxSeekRounds > 0 {
+			opcodes := slices.Clone(logic.SeekOpcodes)
+			query.Opcodes = &opcodes
 		}
 	}
 	return model.CapabilitiesResponse{

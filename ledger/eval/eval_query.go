@@ -115,6 +115,9 @@ type QueryCallOptions struct {
 	// Tracer, when set, sees the call's programs and inner transactions. There is no
 	// BeforeTxnGroup or BeforeTxn for the call itself.
 	Tracer logic.EvalTracer
+	// TimeTravel, when set, serves the time-travel opcodes of the call's programs, which move their
+	// reads to past rounds, on ledgers typically from QueryState.Fork of a state of the round.
+	TimeTravel logic.TimeTraveller
 }
 
 // ErrQueryNotAppCall is the error of a Call of a txn that is not an app call.
@@ -152,6 +155,7 @@ func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (l
 		*ep.FeeCredit = basics.MicroAlgos{Raw: math.MaxUint64}
 	}
 	ep.Tracer = opts.Tracer
+	ep.TimeTravel = opts.TimeTravel
 
 	// The call's writes go to a child that is never committed.
 	child := q.cow.child(1)
@@ -160,6 +164,21 @@ func (q *QueryState) Call(stxn transactions.SignedTxn, opts QueryCallOptions) (l
 	err = apply.ApplicationCall(txn.ApplicationCallTxnFields, txn.Header, child, &ad, 0, ep, q.cow.Counter())
 	// The program logs into its EvalParams' txn, which ApplicationCall does not clear on failure.
 	return ep.TxnGroup[0].EvalDelta.Logs, err
+}
+
+// Fork returns a new ledger on the state, for a program of another QueryState's call that moves its
+// reads to this state's round (QueryCallOptions.TimeTravel). The program's writes go to the ledger,
+// which release drops. Not while a call of the state runs.
+func (q *QueryState) Fork() (l logic.TimeTravelLedger, release func()) {
+	child := q.cow.child(1)
+	return child, child.recycle
+}
+
+// ResetCache empties the lookup cache, as Call does when it starts: before a call of another
+// QueryState first forks the state, so that the call's reads reach the ledger, and once its forks are
+// released, so that the state holds no reads between calls.
+func (q *QueryState) ResetCache() {
+	q.base.resetQueryCache()
 }
 
 // maxKeptQueryCacheLen is the most entries a cache map of a QueryState's base may have held for it to

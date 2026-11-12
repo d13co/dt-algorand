@@ -308,6 +308,12 @@ type EvalConstants struct {
 	// AllowForeignBoxReads lets an app read any other app's boxes, as if every app had set
 	// ForeignBoxReads. Only POST /v2/query sets it, never block evaluation. Non-standard fork feature.
 	AllowForeignBoxReads bool
+
+	// TimeTravel, when set, lets programs run the time-travel opcodes, which move their reads to a
+	// past round (timetravel.go). Only POST /v2/query sets it, never simulate or block evaluation, so
+	// that a program with these opcodes fails there as one with an opcode the AVM lacks. Non-standard
+	// fork feature.
+	TimeTravel TimeTraveller
 }
 
 // RuntimeEvalConstants gives a set of const params used in normal runtime of opcodes
@@ -710,6 +716,9 @@ type scratchSpace [256]stackValue
 // has done, like log messages and inner transactions.
 type EvalContext struct {
 	*EvalParams
+
+	// tt are the ledgers the program ran on before it moved to a past round (timetravel.go).
+	tt timeTravel
 
 	// determines eval mode: ModeSig or ModeApp
 	runMode RunMode
@@ -4014,7 +4023,8 @@ func (ep *EvalParams) GetApplicationAddress(app basics.AppIndex) basics.Address 
 // re-looking-up the zero-creator apps that appear in tests.
 func (cx *EvalContext) getCreatorAddress() (basics.Address, error) {
 	if cx.creatorAddr.IsZero() {
-		_, creator, err := cx.Ledger.AppParams(cx.appID)
+		// The app's creator, even after a seek to a round before the app (timetravel.go).
+		_, creator, err := cx.startLedger().AppParams(cx.appID)
 		if err != nil {
 			return basics.Address{}, fmt.Errorf("No params for current app")
 		}
@@ -6125,12 +6135,16 @@ func opItxnSubmit(cx *EvalContext) (err error) {
 // accessed. If it is, it's returned as a basics.Round. It is named by analogy
 // to the availableAsset and  availableApp helpers.
 func (cx *EvalContext) availableRound(r uint64) (basics.Round, error) {
-	firstAvail := cx.txn.Txn.LastValid - basics.Round(cx.Proto.MaxTxnLife) - 1
-	if firstAvail > cx.txn.Txn.LastValid || firstAvail == 0 { // early in chain's life
+	firstValid, lastValid := cx.txn.Txn.FirstValid, cx.txn.Txn.LastValid
+	if cx.TimeTravel != nil {
+		firstValid, lastValid = cx.timeTravelValidity()
+	}
+	firstAvail := lastValid - basics.Round(cx.Proto.MaxTxnLife) - 1
+	if firstAvail > lastValid || firstAvail == 0 { // early in chain's life
 		firstAvail = 1
 	}
-	lastAvail := cx.txn.Txn.FirstValid - 1
-	if lastAvail > cx.txn.Txn.FirstValid { // txn had a 0 in FirstValid
+	lastAvail := firstValid - 1
+	if lastAvail > firstValid { // txn had a 0 in FirstValid
 		lastAvail = 0 // So nothing will be available
 	}
 	round := basics.Round(r)
