@@ -127,6 +127,7 @@ func NewRouter(logger logging.Logger, node APINodeInterface, shutdown <-chan str
 
 	e.Listener = listener
 	e.HideBanner = true
+	e.JSONSerializer = jsonSerializer{}
 
 	useMiddleware(e, logger, node.Config().EnablePrivateNetworkAccessHeader, numConnectionsLimit)
 

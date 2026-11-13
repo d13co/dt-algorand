@@ -648,7 +648,7 @@ func TestMultipleGroupsInconsistentGroupIDs(t *testing.T) {
 	require.Contains(t, result.TxnGroups[2].FailureMessage, "incomplete group")
 }
 
-// TestMultipleGroupsPostCheckFailure checks that a failed placeholder PQ post-check, which runs
+// TestMultipleGroupsPostCheckFailure checks that a failed placeholder SaltedKeySig post-check, which runs
 // after its group is committed, stops the later sequential groups.
 func TestMultipleGroupsPostCheckFailure(t *testing.T) {
 	partitiontest.PartitionTest(t)
@@ -657,9 +657,9 @@ func TestMultipleGroupsPostCheckFailure(t *testing.T) {
 	env := simulationtesting.PrepareSimulatorTest(t)
 	defer env.Close()
 
-	pqAuthorizer, pqSig := makePlaceholderPQSigForSimulation(t, 4)
+	pqAuthorizer, pqSig := makePlaceholderSaltedKeySigForSimulation(t, protocol.SigSchemeFalcon1024, 4)
 	pqSig.Salt ^= 1
-	txgroup := makeAppThenPlaceholderPQFixSignersGroup(t, &env, pqAuthorizer, pqSig)
+	txgroup := makeAppThenPlaceholderSaltedKeySigFixSignersGroup(t, &env, pqAuthorizer, pqSig)
 
 	groups := [][]transactions.SignedTxn{txgroup}
 	for i := 2; i < 4; i++ {
@@ -678,7 +678,7 @@ func TestMultipleGroupsPostCheckFailure(t *testing.T) {
 		MaxGroups:            3,
 	})
 	require.NoError(t, err)
-	require.Contains(t, result.TxnGroups[0].FailureMessage, "pq signature authorizer mismatch")
+	require.Contains(t, result.TxnGroups[0].FailureMessage, "salted-key signature authorizer mismatch")
 	require.Equal(t, simulation.TxnPath{1}, result.TxnGroups[0].FailedAt)
 	// The failed group keeps its results.
 	require.Equal(t, pqAuthorizer, result.TxnGroups[0].Txns[1].FixedSigner)

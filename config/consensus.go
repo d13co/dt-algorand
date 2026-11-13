@@ -579,6 +579,10 @@ type ConsensusParams struct {
 	// Heartbeat support
 	Heartbeat bool
 
+	// AllowGroupedHeartbeats lets a heartbeat share a transaction group with
+	// an application call or an asset creation.
+	AllowGroupedHeartbeats bool
+
 	// EnableSha512BlockHash adds an additional SHA-512 hash to the block header.
 	EnableSha512BlockHash bool
 
@@ -603,13 +607,35 @@ type ConsensusParams struct {
 	// expressed in fraction of a basic min fee.
 	PerByteTxnSurcharge basics.Micros
 
+	// EnableSelectF128 changes the sortition algorithm to use a 128-bit software
+	// floating point binomial CDF implementation for committee selection.
+	EnableSelectF128 bool
+
 	// EnablePQSchemeFalcon1024 enables native Falcon-1024 transaction
 	// authorization for the f1 PQ scheme.
 	EnablePQSchemeFalcon1024 bool
 
-	// EnableSelectF128 changes the sortition algorithm to use a 128-bit software
-	// floating point binomial CDF implementation for committee selection.
-	EnableSelectF128 bool
+	// EnableSigSchemeFalcon512 enables native Falcon-512 transaction
+	// authorization for the f5 PQ scheme.
+	EnableSigSchemeFalcon512 bool
+
+	// EnableSigSchemeEd25519 enables Ed25519 transaction authorization for the
+	// ed scheme's salted-address profile.
+	EnableSigSchemeEd25519 bool
+
+	// EnableSigSchemeLogicSig enables transaction authorization by a LogicSig
+	// carried in a SaltedKeySig under the ls scheme, whose address commits to the
+	// program and a salt. Unlike the LogicSig in SignedTxn.Lsig, such an account
+	// can choose an address that is not an Edwards25519 point.
+	EnableSigSchemeLogicSig bool
+
+	// RequireLogicSigArgAccess requires that a LogicSig carry no argument it did
+	// not read: nothing above the highest index it read, and nothing unread
+	// below that index unless it is empty. Args are covered by no signature, and
+	// are part of neither the transaction ID nor the group hash, so without this
+	// rule a third party can append bytes to a transaction in flight, and the
+	// program has no way to detect it.
+	RequireLogicSigArgAccess bool
 
 	// CloseRequiresBaseMinBalance allows an account to be closed only if its
 	// minimum balance requirement is exactly the base MinBalance. Before this,
@@ -707,38 +733,6 @@ type BonusPlan struct {
 // MinFee simply returns the MinTxnFee as a basics.MicroAlgos
 func (proto ConsensusParams) MinFee() basics.MicroAlgos {
 	return basics.MicroAlgos{Raw: proto.MinTxnFee}
-}
-
-// PQSchemeEnabled returns whether a post-quantum signature scheme is enabled
-// under these consensus parameters.
-func (proto ConsensusParams) PQSchemeEnabled(scheme protocol.PQScheme) bool {
-	switch scheme {
-	case protocol.PQSchemeFalcon1024:
-		return proto.EnablePQSchemeFalcon1024
-	default:
-		return false
-	}
-}
-
-// PQSigEnabled returns whether a post-quantum signature scheme is enabled
-// under these consensus parameters.
-func (proto ConsensusParams) PQSigEnabled() bool {
-	return proto.EnablePQSchemeFalcon1024 // || proto.EnablePQSchemeFalcon512
-}
-
-// PQSchemeFeeContribution is the additional fee factor charged for a transaction
-// authorized with the given PQ scheme, as a fixed-point multiple of the basic
-// min fee (1e6 == one basic min fee). Making it a method (rather than exported
-// constants) leaves room to vary it by proto later without changing call sites.
-func (proto ConsensusParams) PQSchemeFeeContribution(scheme protocol.PQScheme) basics.Micros {
-	switch scheme {
-	case protocol.PQSchemeFalcon1024:
-		return 2e6
-	case protocol.PQSchemeFalcon512:
-		return 1e6 // kept below the Falcon-1024 contribution
-	default:
-		return 0
-	}
 }
 
 // TxnSizePricingEnabled reports whether transactions can exceed size limits by
@@ -1581,6 +1575,12 @@ func initConsensusProtocols() {
 	vFuture.ApprovedUpgrades = map[protocol.ConsensusVersion]uint64{}
 
 	vFuture.LogicSigVersion = 14 // When moving this to a release, put a new higher LogicSigVersion here
+	vFuture.EnableSigSchemeFalcon512 = true
+	vFuture.EnableSigSchemeEd25519 = true
+	vFuture.RequireLogicSigArgAccess = true
+	vFuture.AllowGroupedHeartbeats = true
+
+	vFuture.EnableSigSchemeLogicSig = true
 
 	Consensus[protocol.ConsensusFuture] = vFuture
 

@@ -70,8 +70,8 @@ func TestStatement(t *testing.T) {
 	id, sig, err := parseSigFile(f1)
 	require.NoError(t, err)
 	require.Equal(t, keyID(signer.PublicKey), id)
-	require.LessOrEqual(t, len(sig), crypto.FalconMaxSignatureSize)
-	v := crypto.FalconVerifier{PublicKey: signer.PublicKey}
+	require.LessOrEqual(t, len(sig), crypto.Falcon1024MaxSignatureSize)
+	v := crypto.Falcon1024Verifier{PublicKey: signer.PublicKey}
 	require.NoError(t, v.VerifyBytes(b, sig))
 
 	// a manifest signature never verifies as a statement's, nor the reverse
@@ -104,7 +104,7 @@ func TestStatementOnChain(t *testing.T) {
 	proto := config.Consensus[protocol.ConsensusCurrentVersion]
 	eval := func(stmt []byte) bool {
 		txn := transactions.SignedTxn{Lsig: transactions.LogicSig{Logic: ops.Program, Args: [][]byte{stmt, sig}}}
-		pass, err := logic.EvalSignature(0, logic.NewSigEvalParams([]transactions.SignedTxn{txn}, &proto, &logic.NoHeaderLedger{}))
+		pass, _, err := logic.EvalSignatureProgram(txn.Lsig.Logic, txn.Lsig.Args, 0, logic.NewSigEvalParams([]transactions.SignedTxn{txn}, &proto, &logic.NoHeaderLedger{}))
 		require.NoError(t, err)
 		return pass
 	}
@@ -139,7 +139,7 @@ func TestReadKeys(t *testing.T) {
 type attesterNet struct {
 	*testNet
 	dataDir string // the producer's data dir
-	a1, a2  *crypto.FalconSigner
+	a1, a2  *crypto.Falcon1024Signer
 }
 
 func newAttesterNet(t *testing.T) *attesterNet {
@@ -152,7 +152,7 @@ func newAttesterNet(t *testing.T) *attesterNet {
 	return n
 }
 
-func (n *attesterNet) attest(signer *crypto.FalconSigner, dataDir string) (string, error) {
+func (n *attesterNet) attest(signer *crypto.Falcon1024Signer, dataDir string) (string, error) {
 	return attest(attestOpts{signer: signer, dataDir: dataDir, genesis: n.genesis, base: n.srv.URL, out: n.out, workers: 2, client: http.DefaultClient, log: io.Discard})
 }
 
