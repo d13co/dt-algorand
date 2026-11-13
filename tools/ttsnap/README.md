@@ -9,7 +9,7 @@ The installer README's [From a snapshot](../../installer/dtalgorand/README.md#fr
 1. Download and install the history:
 
    ```sh
-   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d <data dir>
+   ttsnap fetch -d <data dir>
    ```
 
 2. If `config.json` sets `TimeTravelHoldersIndex`, build the asset holders index:
@@ -24,7 +24,23 @@ The installer README's [From a snapshot](../../installer/dtalgorand/README.md#fr
    ttsnap catchup -d <data dir>
    ```
 
-`https://tt-snapshots-mainnet.d13.co` serves mainnet's snapshots. Keep `EnableTimeTravel: true` and `Archival: false` (archival nodes can't catch up from a catchpoint), and set `TimeTravelDBDir` before `fetch` if the history goes on another disk. A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
+`ttsnap bootstrap` runs the three steps in one command (see [bootstrap](#bootstrap)):
+
+```sh
+ttsnap bootstrap -d <data dir>
+```
+
+`fetch` and `bootstrap` take the snapshots of the data directory's network from `https://tt-snapshots-mainnet.d13.co` for mainnet and `https://tt-snapshots-testnet.d13.co` for testnet. `-url <base URL>` takes them from another tree (a mirror), and is needed for other networks. Whatever the URL, a manifest installs only if a producer in the keys file signed it, for the genesis of the data directory. Keep `EnableTimeTravel: true` and `Archival: false` (archival nodes can't catch up from a catchpoint), and set `TimeTravelDBDir` before `fetch` if the history goes on another disk. A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
+
+### bootstrap
+
+`ttsnap bootstrap -d <data dir>` installs the latest snapshot as `fetch` does, builds the asset holders index, starts the node, waits for its API and starts the catchup as `catchup` does, then returns. Follow the catchup with `goal node status` (`dtgoal` from the packages). A rerun skips the steps already done: the download once a snapshot is installed, the index once it is complete, the install and start while algod answers, and the catchup while one runs or once the node has caught up (past half the snapshot's rounds, which only a catchup reaches). A rerun while algod is still opening its ledger fails at the index step, since algod holds the history's lock. A rerun once the node answers doesn't build a missing index (it would need the node stopped), so if the index step failed, stop the node, then rerun. It doesn't run `ttimport -dedup`: `fetch` already deletes the records `-dedup` would remove and rebuilds the box index.
+
+- `-holders-index=false` skips the asset holders index. With it on (the default), `bootstrap` refuses before downloading anything if `config.json` doesn't set `TimeTravelHoldersIndex`, since algod would delete the index at start. With it off and the option set, the node runs, warns at start, and `/v2/assets/{id}/holders` answers 503: set the option to `false` to do without the index.
+- `-start` is the shell command that starts the node, run from `/`. It defaults to `systemctl enable --now dtalgorand` for the .deb's `/var/lib/dtalgorand`, and to `brew services start dtalgorand` for Homebrew's data directory. Any other data directory needs one, such as `-start 'goal node start -d <data dir>'`, or `-start none` to start the node yourself while `bootstrap` waits.
+- `-wait` is how long it waits for the node's API (30 minutes), which comes up once algod has opened its ledger.
+- As root on a data directory that another user owns (`sudo ttsnap bootstrap` on the .deb's), it runs everything as that user, so that the files stay the node's, except the .deb's default start (`systemctl`), which runs as root. A `-start` command runs as that user too. As another user, the .deb's default start is refused: run it with `sudo`, or pass `-start none`. Homebrew's runs as you, not with `sudo`. The user is the data directory's owner: if `config.json` puts the history elsewhere (`TimeTravelDBDir`), that directory must be theirs too.
+- `-keys`, `-min-attest`, `-workers`, `-parallel` and `-max-age` are `fetch`'s; `-label` and `-snapshot-label` are `catchup`'s.
 
 ### fetch
 

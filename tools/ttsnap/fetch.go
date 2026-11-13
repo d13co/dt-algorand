@@ -26,11 +26,13 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +59,23 @@ const installedFile = "ttsnap.json"
 // stageSuffix names where fetch downloads a target before it is complete.
 const stageSuffix = ".ttsnap-partial"
 
+// snapshotURLs are the snapshot trees fetch and bootstrap use when -url is
+// not given, by genesis ID. The manifest's genesis hash and producer
+// signature are checked whatever the URL.
+var snapshotURLs = map[string]string{
+	"mainnet-v1.0": "https://tt-snapshots-mainnet.d13.co",
+	"testnet-v1.0": "https://tt-snapshots-testnet.d13.co",
+}
+
+// snapshotURL returns the default snapshot tree of the network of
+// genesisID, or an error asking for -url.
+func snapshotURL(genesisID string) (string, error) {
+	if u, ok := snapshotURLs[genesisID]; ok {
+		return u, nil
+	}
+	return "", fmt.Errorf("no default snapshot tree for %s (there are for %s): pass -url <base URL>", genesisID, strings.Join(slices.Sorted(maps.Keys(snapshotURLs)), " and "))
+}
+
 // emptySHA256 is the SHA-256 of no bytes.
 const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
@@ -79,7 +98,7 @@ type fetchOpts struct {
 func cmdFetch(args []string) error {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
 	o := fetchOpts{progressLog: os.Stderr}
-	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree")
+	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree (default: mainnet's or testnet's, by the data directory's genesis.json)")
 	fs.StringVar(&o.dataDir, "d", "", "data directory of the new node: genesis.json, and config.json with EnableTimeTravel")
 	fs.StringVar(&o.manifest, "manifest", "", "path of a manifest in the tree to install instead of the latest, e.g. snapshots/mainnet-v1.0/history-123.json")
 	fs.StringVar(&o.keys, "keys", "", "keys file with the producers' and attesters' public keys (default: the package's, "+keysPath+" beside ttsnap's directory, or "+debKeys+")")
@@ -90,11 +109,11 @@ func cmdFetch(args []string) error {
 	fs.IntVar(&o.parallel, "parallel", 4, "files downloaded at once")
 	fs.DurationVar(&o.maxAge, "max-age", 7*24*time.Hour, "refuse a latest snapshot older than this (a mirror can serve a stale latest pointer, which is not signed); 0: any age")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: ttsnap fetch -url <base URL> -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]")
+		fmt.Fprintln(fs.Output(), "usage: ttsnap fetch [-url <base URL>] -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args) // flag.ExitOnError
-	if o.base == "" || o.dataDir == "" || fs.NArg() != 0 || o.parallel < 1 || o.minAttest < 0 {
+	if o.dataDir == "" || fs.NArg() != 0 || o.parallel < 1 || o.minAttest < 0 {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -151,6 +170,12 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(o.dataDir, config.GenesisJSONFile))
 	if err != nil {
 		return nil, "", err
+	}
+	if o.base == "" {
+		if o.base, err = snapshotURL(genesis.ID()); err != nil {
+			return nil, "", err
+		}
+		fmt.Fprintf(o.progressLog, "snapshots: %s\n", o.base)
 	}
 	cfg, err := config.LoadConfigFromDisk(o.dataDir)
 	if err != nil && !os.IsNotExist(err) {

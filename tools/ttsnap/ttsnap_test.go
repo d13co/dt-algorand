@@ -582,3 +582,23 @@ func TestFetchPrunesStage(t *testing.T) {
 	_, err = os.Stat(filepath.Join(n.installedHistory(dataDir), filepath.Base(stale)))
 	require.True(t, os.IsNotExist(err))
 }
+
+func TestSnapshotURL(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	u, err := snapshotURL("mainnet-v1.0")
+	require.NoError(t, err)
+	require.Equal(t, "https://tt-snapshots-mainnet.d13.co", u)
+	u, err = snapshotURL("testnet-v1.0")
+	require.NoError(t, err)
+	require.Equal(t, "https://tt-snapshots-testnet.d13.co", u)
+	_, err = snapshotURL("betanet-v1.0")
+	require.ErrorContains(t, err, "pass -url")
+
+	// a network without a default needs -url, before anything is written
+	n := newTestNet(t)
+	dataDir := n.consumer()
+	_, err = n.fetch(dataDir, func(o *fetchOpts) { o.base = "" })
+	require.ErrorContains(t, err, "no default snapshot tree for "+n.genesis.ID())
+	_, err = os.Stat(filepath.Join(dataDir, n.genesis.ID()))
+	require.True(t, os.IsNotExist(err))
+}
