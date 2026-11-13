@@ -45,7 +45,9 @@ Attester (a node that built its history itself):
   ttsnap commitment -d <data dir> [-round R]       print the commitment of a node's history
 
 Consumer:
-  ttsnap fetch -url <base URL> -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]
+  ttsnap bootstrap [-url <base URL>] -d <data dir> [-holders-index=false] [-start <command> | -start none]
+                                                   fetch, build the holders index, start the node and catch up
+  ttsnap fetch [-url <base URL>] -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]
                                                    download, verify and install the latest snapshot
   ttsnap catchup -d <data dir> [-label <catchpoint> | -snapshot-label]
                                                    start the catchpoint catchup on the running node
@@ -69,6 +71,7 @@ func main() {
 		"publish":    cmdPublish,
 		"gc":         cmdGC,
 		"info":       cmdInfo,
+		"bootstrap":  cmdBootstrap,
 		"fetch":      cmdFetch,
 		"catchup":    cmdCatchup,
 		"verify":     cmdVerify,

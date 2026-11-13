@@ -77,18 +77,34 @@ tmutil addexclusion /Volumes/<disk>/dtalgorand
 
 [ttsnap](../../tools/ttsnap/README.md) installs another node's history, and the node then catches up from a catchpoint like any non-archival node. See ttsnap's [Trust](../../tools/ttsnap/README.md#trust) section for what is checked. The mainnet producer's history is one of three histories built without a snapshot (two `ttimport` imports of different archival nodes' blocks, one sync from genesis), and all three agreed on content.
 
+`ttsnap bootstrap` runs the four steps below in one command, and a rerun picks up where it stopped.
+
+On Linux, run it as root: it does everything as `dtalgorand`, except starting the service.
+
+```sh
+sudo ttsnap bootstrap -d /var/lib/dtalgorand
+```
+
+On macOS:
+
+```sh
+ttsnap bootstrap -d $(brew --prefix)/var/dtalgorand
+```
+
+It returns once the catchup has started: follow it as in step 4. To do without the holders index, set `TimeTravelHoldersIndex` to `false` as in step 2 and add `-holders-index=false`. See ttsnap's [bootstrap](../../tools/ttsnap/README.md#bootstrap) for the details. The steps, one at a time:
+
 1. Download and install the latest snapshot. It needs a data directory whose node has never started (see [Starting over](#starting-over) otherwise). The download resumes when rerun.
 
    On Linux:
 
    ```sh
-   sudo -u dtalgorand ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d /var/lib/dtalgorand
+   sudo -u dtalgorand ttsnap fetch -d /var/lib/dtalgorand
    ```
 
    On macOS:
 
    ```sh
-   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d $(brew --prefix)/var/dtalgorand
+   ttsnap fetch -d $(brew --prefix)/var/dtalgorand
    ```
 
    The producer keeps its last two snapshots, so a download has between about 8 and 15 hours, depending on when it starts, before its snapshot is deleted. One that takes longer fails: rerun `fetch` to move to the latest snapshot, which keeps the files the two share.
