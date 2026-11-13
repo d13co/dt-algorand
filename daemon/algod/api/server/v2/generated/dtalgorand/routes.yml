@@ -1,7 +1,6 @@
 package: dtalgorand
 generate:
   echo-server: true
-  embedded-spec: true
 output-options:
   include-tags:
   - dtalgorand

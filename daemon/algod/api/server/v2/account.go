@@ -171,9 +171,11 @@ func convertTKVToGenerated(tkv *basics.TealKeyValue) *model.TealKeyValueStore {
 		return nil
 	}
 
-	// in the order of the raw keys
+	keys := slices.AppendSeq(make([]string, 0, len(*tkv)), maps.Keys(*tkv))
+	slices.Sort(keys)
+
 	converted := make(model.TealKeyValueStore, 0, len(*tkv))
-	for _, k := range slices.Sorted(maps.Keys(*tkv)) {
+	for _, k := range keys {
 		v := (*tkv)[k]
 		converted = append(converted, model.TealKeyValue{
 			Key: base64.StdEncoding.EncodeToString([]byte(k)),

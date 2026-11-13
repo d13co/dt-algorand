@@ -283,6 +283,8 @@ var semanticParams = []string{
 	"EnablePrecheckECDSACurve", "EnableBareBudgetError", "AppForbidLowResources", "EnableBoxRefNameError",
 	"Payouts", "Heartbeat", "AppSizeUpdates", "AllowZeroLocalAppRef",
 	"PerByteTxnSurcharge", "EnablePQSchemeFalcon1024", "CloseRequiresBaseMinBalance",
+	"AllowGroupedHeartbeats", "EnableSigSchemeFalcon512", "EnableSigSchemeEd25519", "EnableSigSchemeLogicSig",
+	"RequireLogicSigArgAccess",
 }
 
 // ignoredParams are the ConsensusParams fields of agreement, upgrades, block format, state proofs

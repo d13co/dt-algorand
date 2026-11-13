@@ -230,7 +230,7 @@ func cmdAttest(args []string) error {
 }
 
 type attestOpts struct {
-	signer   *crypto.FalconSigner
+	signer   *crypto.Falcon1024Signer
 	dataDir  string
 	genesis  bookkeeping.Genesis
 	base     string // snapshot tree; empty: attest round
