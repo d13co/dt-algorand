@@ -46,6 +46,7 @@ var defaultLocal = Local{
 	CatchupHTTPBlockFetchTimeoutSec:            4,
 	CatchupLedgerDownloadRetryAttempts:         50,
 	CatchupParallelBlocks:                      16,
+	CertificateRetentionRounds:                 0,
 	ColdDataDir:                                "",
 	ConnectionsRateLimitingCount:               60,
 	ConnectionsRateLimitingWindowSeconds:       1,

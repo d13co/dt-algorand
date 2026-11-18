@@ -49,6 +49,17 @@ type Local struct {
 	// Archival nodes retain a full copy of the block history. Non-Archival nodes will delete old blocks and only retain what's need to properly validate blockchain messages (the precise number of recent blocks depends on the consensus parameters. Currently the last 1321 blocks are required). This means that non-Archival nodes require significantly less storage than Archival nodes.  If setting this to true for the first time, the existing ledger may need to be deleted to get the historical values stored as the setting only affects current blocks forward. To do this, shutdown the node and delete all .sqlite files within the data/testnet-version directory, except the crash.sqlite file. Restart the node and wait for the node to sync.
 	Archival bool `version[0]:"false"`
 
+	// CertificateRetentionRounds, when non-zero, discards the agreement certificate of every block more than this
+	// many rounds behind the latest committed round; the blocks themselves are kept. On an existing archive it
+	// strips the older certificates in the background (bottom up, in small transactions), then one per round. A
+	// discarded certificate cannot be restored, and turning this off does not bring certificates back. Rounds without
+	// a certificate answer 404 to peers (and the node stops advertising the P2P archival capability), while REST
+	// /v2/blocks/{round}?format=msgpack returns them with an empty certificate. Values below 25000 (or twice the
+	// CatchpointInterval plus the catchpoint lookback, if more) are rejected, so that peers doing a catchpoint catchup
+	// still find the certificates they need. The freed space stays in the block database for new blocks; see
+	// tools/certstrip to compact it. Only meaningful with Archival. Non-standard fork feature.
+	CertificateRetentionRounds uint64 `version[39]:"0"`
+
 	// GossipFanout sets the maximum number of peers the node will connect to with outgoing connections. If the list of peers is less than this setting, fewer connections will be made. The node will not connect to the same peer multiple times (with outgoing connections).
 	GossipFanout int `version[0]:"4"`
 
@@ -1251,6 +1262,32 @@ func (cfg *Local) StoresCatchpoints() bool {
 		return true
 	}
 	return false
+}
+
+// MinCertificateRetentionRounds is the lowest non-zero CertificateRetentionRounds accepted with the default
+// CatchpointInterval: two catchpoint intervals of 10,000 rounds plus their lookback, rounded up.
+const MinCertificateRetentionRounds = 25_000
+
+// ErrCertificateRetentionTooLow is returned by ValidateCertificateRetention.
+var ErrCertificateRetentionTooLow = errors.New("CertificateRetentionRounds is below its minimum")
+
+// CertificateRetentionFloor returns the lowest non-zero CertificateRetentionRounds the config accepts: enough rounds
+// to keep the certificates of the newest two catchpoints and their lookback, which catchpoint catchup asks peers for.
+func (cfg Local) CertificateRetentionFloor() uint64 {
+	proto := Consensus[protocol.ConsensusCurrentVersion]
+	lookback := proto.MaxBalLookback + proto.MaxTxnLife + proto.DeeperBlockHeaderHistory
+	return max(MinCertificateRetentionRounds, 2*cfg.CatchpointInterval+lookback)
+}
+
+// ValidateCertificateRetention checks CertificateRetentionRounds against CertificateRetentionFloor.
+func (cfg Local) ValidateCertificateRetention() error {
+	if cfg.CertificateRetentionRounds == 0 {
+		return nil
+	}
+	if floor := cfg.CertificateRetentionFloor(); cfg.CertificateRetentionRounds < floor {
+		return fmt.Errorf("%w: %d < %d", ErrCertificateRetentionTooLow, cfg.CertificateRetentionRounds, floor)
+	}
+	return nil
 }
 
 // TracksCatchpoints returns true if the node is configured to track catchpoints
