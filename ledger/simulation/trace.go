@@ -291,7 +291,8 @@ type StateOperation struct {
 	// AppState is one of logic.AppStateEnum, standing for one of global/local/box.
 	AppState logic.AppStateEnum
 
-	// AppID is the current app's ID.
+	// AppID is the ID of the app whose state the operation changes: the current
+	// app, or another app for the foreign box opcodes (app_box_*).
 	AppID basics.AppIndex
 
 	// Key is the app state kv-pair's key, directly casting byte slice to string.

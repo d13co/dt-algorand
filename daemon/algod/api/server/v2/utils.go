@@ -497,6 +497,7 @@ func convertApplicationStateChange(stateChange simulation.StateOperation) model.
 		Operation:    convertApplicationStateOperation(stateChange.AppStateOp),
 		AppStateType: convertApplicationState(stateChange.AppState),
 		Account:      addrOrNil(stateChange.Account),
+		AppId:        omitEmpty(stateChange.AppID),
 	}
 }
 

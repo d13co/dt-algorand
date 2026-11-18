@@ -5698,6 +5698,12 @@
           "description": "For local state changes, the address of the account associated with the local state.",
           "type": "string",
           "x-algorand-format": "Address"
+        },
+        "app-id": {
+          "description": "The application whose state the operation changed. It differs from the running application for the foreign box opcodes (app_box_*). Non-standard fork feature.",
+          "type": "integer",
+          "x-go-type": "basics.AppIndex",
+          "x-algorand-format": "uint64"
         }
       }
     },
@@ -5761,7 +5767,7 @@
           }
         },
         "state-changes": {
-          "description": "The operations against the current application's states.",
+          "description": "The operations against application states: the current application's, or another application's boxes for the foreign box opcodes (app_box_*); each operation's app-id names the application.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/ApplicationStateOperation"
