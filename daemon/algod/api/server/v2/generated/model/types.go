@@ -725,6 +725,9 @@ type ApplicationStateOperation struct {
 	// Account For local state changes, the address of the account associated with the local state.
 	Account *string `json:"account,omitempty"`
 
+	// AppId The application whose state the operation changed. It differs from the running application for the foreign box opcodes (app_box_*). Non-standard fork feature.
+	AppId *basics.AppIndex `json:"app-id,omitempty"`
+
 	// AppStateType Type of application state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
 	AppStateType string `json:"app-state-type"`
 
@@ -1627,7 +1630,7 @@ type SimulationOpcodeTraceUnit struct {
 	// StackPopCount The number of deleted stack values by this opcode.
 	StackPopCount *int `json:"stack-pop-count,omitempty"`
 
-	// StateChanges The operations against the current application's states.
+	// StateChanges The operations against application states: the current application's, or another application's boxes for the foreign box opcodes (app_box_*); each operation's app-id names the application.
 	StateChanges *[]ApplicationStateOperation `json:"state-changes,omitempty"`
 }
 

@@ -2215,6 +2215,12 @@
             "type": "string",
             "x-algorand-format": "Address"
           },
+          "app-id": {
+            "description": "The application whose state the operation changed. It differs from the running application for the foreign box opcodes (app_box_*). Non-standard fork feature.",
+            "type": "integer",
+            "x-algorand-format": "uint64",
+            "x-go-type": "basics.AppIndex"
+          },
           "app-state-type": {
             "description": "Type of application state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.",
             "type": "string"
@@ -3999,7 +4005,7 @@
             "type": "integer"
           },
           "state-changes": {
-            "description": "The operations against the current application's states.",
+            "description": "The operations against application states: the current application's, or another application's boxes for the foreign box opcodes (app_box_*); each operation's app-id names the application.",
             "items": {
               "$ref": "#/components/schemas/ApplicationStateOperation"
             },
