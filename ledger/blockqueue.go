@@ -50,6 +50,9 @@ type blockQueue struct {
 	cond    *sync.Cond
 	running bool
 	closed  chan struct{}
+
+	// stripper discards old certificates (config.Local.CertificateRetentionRounds); nil when that is off.
+	stripper *certStripper
 }
 
 func newBlockQueue(l *Ledger) (*blockQueue, error) {
@@ -89,8 +92,20 @@ func (bq *blockQueue) start() error {
 		return err
 	}
 
+	if retention := bq.l.cfg.CertificateRetentionRounds; retention > 0 {
+		bq.stripper = newCertStripper(bq.l.log, bq.l.blockDBs, retention, bq.committedRound)
+		bq.stripper.start()
+	}
+
 	go bq.syncer()
 	return nil
+}
+
+// committedRound returns the latest round written to the block database.
+func (bq *blockQueue) committedRound() basics.Round {
+	bq.mu.Lock()
+	defer bq.mu.Unlock()
+	return bq.lastCommitted
 }
 
 func (bq *blockQueue) stop() {
@@ -108,6 +123,15 @@ func (bq *blockQueue) stop() {
 	// call which might be blocked inside one of the trackers.
 	if closechan != nil {
 		<-closechan
+	}
+
+	// the syncer, which wakes the stripper, has exited
+	bq.mu.Lock()
+	stripper := bq.stripper
+	bq.stripper = nil
+	bq.mu.Unlock()
+	if stripper != nil {
+		stripper.close()
 	}
 }
 
@@ -162,8 +186,13 @@ func (bq *blockQueue) syncer() {
 			}
 
 			committed := bq.lastCommitted
+			stripper := bq.stripper
 			bq.cond.Broadcast()
 			bq.mu.Unlock()
+
+			if stripper != nil {
+				stripper.notify()
+			}
 
 			minToSave := bq.l.notifyCommit(committed)
 			var earliest basics.Round

@@ -763,9 +763,10 @@ func (v2 *Handlers) GetBlock(ctx echo.Context, round basics.Round, params model.
 		return v2.getBlockHeader(ctx, round, handle, contentType)
 	}
 
-	// msgpack format uses 'RawBlockBytes' and attaches a custom header.
+	// msgpack format uses 'RawBlockBytesAnyCert' and attaches a custom header. A block whose certificate was
+	// discarded (CertificateRetentionRounds) comes with an empty certificate.
 	if handle == protocol.CodecHandle {
-		blockbytes, blockErr := rpcs.RawBlockBytes(v2.Node.LedgerForAPI(), round)
+		blockbytes, blockErr := rpcs.RawBlockBytesAnyCert(v2.Node.LedgerForAPI(), round)
 		if blockErr != nil {
 			switch blockErr.(type) {
 			case ledgercore.ErrNoEntry:

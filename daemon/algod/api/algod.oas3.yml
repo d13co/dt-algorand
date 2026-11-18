@@ -7146,6 +7146,7 @@
     },
     "/v2/blocks/{round}": {
       "get": {
+        "description": "With format=msgpack the response also holds the block's agreement certificate. A node that discards old certificates (node config CertificateRetentionRounds) returns the blocks of those rounds with an empty certificate.",
         "operationId": "GetBlock",
         "parameters": [
           {

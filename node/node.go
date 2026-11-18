@@ -473,7 +473,9 @@ func (node *AlgorandFullNode) Start() error {
 // Capabilities returns the node's capabilities for advertising to other nodes.
 func (node *AlgorandFullNode) Capabilities() []p2p.Capability {
 	var caps []p2p.Capability
-	if node.config.Archival && node.config.IsListenServer() {
+	// a node discarding old certificates (CertificateRetentionRounds) can't serve full history: peers looking for an
+	// archiver must not find it
+	if node.config.Archival && node.config.CertificateRetentionRounds == 0 && node.config.IsListenServer() {
 		caps = append(caps, p2p.Archival)
 	}
 	if node.config.StoresCatchpoints() && node.config.IsListenServer() {

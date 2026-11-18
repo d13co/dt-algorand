@@ -131,6 +131,15 @@ func OpenLedger[T string | DirsAndPrefix](
 		tracer = eval.MakeTxnGroupDeltaTracer(cfg.MaxAcctLookback)
 	}
 
+	if !skipCertRetentionFloor.Load() {
+		if err = cfg.ValidateCertificateRetention(); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.CertificateRetentionRounds > 0 && !cfg.Archival {
+		log.Warnf("CertificateRetentionRounds is set without Archival: a non-archival node keeps only recent blocks, so it has few certificates to discard")
+	}
+
 	var dirs DirsAndPrefix
 	// if only a string path has been supplied for the ledger, use it for all resources
 	// don't set the prefix, only tests provide a string for the path, and they manage paths explicitly

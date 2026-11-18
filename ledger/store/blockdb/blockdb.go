@@ -17,6 +17,7 @@
 package blockdb
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -252,6 +253,46 @@ func BlockForgetBefore(tx *sql.Tx, rnd basics.Round) error {
 
 	_, err = tx.Exec("DELETE FROM blocks WHERE rnd<?", rnd)
 	return err
+}
+
+// certStrippedExpr is true for a row whose certificate was discarded. typeof() reads only the record header, which
+// is on the row's first page; certdata IS NULL would load the certificate, overflow pages and all.
+const certStrippedExpr = "typeof(certdata)='null'"
+
+// BlockCertStripped reports whether the certificate of round rnd was discarded (certdata is NULL). It returns
+// ledgercore.ErrNoEntry if the block is not in the database.
+func BlockCertStripped(tx *sql.Tx, rnd basics.Round) (bool, error) {
+	var stripped bool
+	err := tx.QueryRow("SELECT "+certStrippedExpr+" FROM blocks WHERE rnd=?", rnd).Scan(&stripped)
+	if err == sql.ErrNoRows {
+		return false, ledgercore.ErrNoEntry{Round: rnd}
+	}
+	return stripped, err
+}
+
+// BlockStripCerts discards the certificates of the blocks in rounds [lo, hi], keeping the blocks. Rows already
+// stripped are left alone, since SQLite rewrites the whole row on any update. It returns the number of rows changed.
+func BlockStripCerts(ctx context.Context, tx *sql.Tx, lo, hi basics.Round) (int64, error) {
+	res, err := tx.ExecContext(ctx, "UPDATE blocks SET certdata=NULL WHERE rnd>=? AND rnd<=? AND NOT "+certStrippedExpr, lo, hi)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// BlockFirstCertFrom returns the lowest round at or above rnd whose block still has its certificate, and false if
+// there is none. It reads the leaf page of every row from rnd up to the answer, so it can scan most of the table on
+// an archival node.
+func BlockFirstCertFrom(ctx context.Context, tx *sql.Tx, rnd basics.Round) (basics.Round, bool, error) {
+	var first basics.Round
+	err := tx.QueryRowContext(ctx, "SELECT rnd FROM blocks WHERE rnd>=? AND NOT "+certStrippedExpr+" ORDER BY rnd LIMIT 1", rnd).Scan(&first)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return first, true, nil
 }
 
 // BlockStartCatchupStaging initializes catchup for catchpoint
