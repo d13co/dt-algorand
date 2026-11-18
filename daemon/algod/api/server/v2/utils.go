@@ -36,6 +36,7 @@ import (
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
+	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/logging"
@@ -430,6 +431,63 @@ func convertApplicationStateOperation(opEnum logic.AppStateOpEnum) string {
 	default:
 		return ""
 	}
+}
+
+func convertStateChangeValue(v *basics.TealValue) *model.StateChangeValue {
+	if v == nil {
+		return nil
+	}
+	return &model.StateChangeValue{
+		Type:  uint64(v.Type),
+		Bytes: []byte(v.Bytes),
+		Uint:  v.Uint,
+	}
+}
+
+func convertAppStateChange(c ledger.StateChange) model.AppStateChange {
+	var acct *string
+	if c.Type == logic.LocalState {
+		acct = addrOrNil(c.Account)
+	}
+	return model.AppStateChange{
+		AppId:        c.App,
+		AppStateType: model.AppStateChangeAppStateType(convertApplicationState(c.Type)),
+		Account:      acct,
+		Key:          []byte(c.Key),
+		Before:       convertStateChangeValue(c.Before),
+		After:        convertStateChangeValue(c.After),
+	}
+}
+
+func convertTxnStateChanges(tx ledger.TxnStateChanges) model.TxnStateChanges {
+	out := model.TxnStateChanges{
+		Path:    tx.Path,
+		Changes: util.Map(tx.Changes, convertAppStateChange),
+	}
+	if tx.TxID != (transactions.Txid{}) {
+		txid := tx.TxID.String()
+		out.Txid = &txid
+	}
+	return out
+}
+
+// convertStateChanges converts the state changes of a round to the REST model, with its groups
+// and fee sink when they were asked for. The fee sink is there even when there are no groups (and
+// the codec leaves out the empty list), so that a client can tell the answer from one of a node
+// that ignored include.
+func convertStateChanges(sc ledger.StateChanges, groups bool) model.TxnStateChangesResponse {
+	txns := util.Map(sc.Txns, convertTxnStateChanges)
+	if txns == nil {
+		txns = []model.TxnStateChanges{} // required
+	}
+	out := model.TxnStateChangesResponse{Round: sc.Round, Txns: txns}
+	if groups {
+		groups := convertGroupStateChanges(sc)
+		out.Groups = &groups
+		feeSink := sc.FeeSink.String()
+		out.FeeSink = &feeSink
+	}
+	return out
 }
 
 func convertApplicationStateChange(stateChange simulation.StateOperation) model.ApplicationStateOperation {

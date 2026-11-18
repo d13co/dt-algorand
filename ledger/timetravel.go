@@ -36,6 +36,7 @@ import (
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/ledger/eval"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 	"github.com/algorand/go-algorand/ledger/store/trackerdb"
@@ -1061,20 +1062,31 @@ func (l *Ledger) GetStateDeltaForRoundContext(ctx context.Context, rnd basics.Ro
 	return sd, err
 }
 
-// reevalDelta rebuilds the state delta of round rnd by evaluating its block
+// reevalDelta rebuilds the state delta of round rnd: reevalBlock without a
+// tracer.
+func (l *Ledger) reevalDelta(ctx context.Context, rnd basics.Round, wait time.Duration) (ledgercore.StateDelta, error) {
+	return l.reevalBlock(ctx, rnd, nil, wait, nil, nil)
+}
+
+// reevalBlock rebuilds the state delta of round rnd by evaluating its block
 // against the history at rnd-1 the way AddBlock did (no validation: the block
 // is certified), then checks the result against the round's stored changes.
 // Where the history did not record the online stake (online_stake opcode),
 // the evaluation uses an upper bound and can diverge; the check turns that
-// into an error.
+// into an error. A non-nil tracer follows the evaluation; trust what it saw
+// only when no error is returned. A non-nil then runs after the check, still
+// in the slot, and its error is returned. blk is block rnd, or nil to load it.
 //
 // It runs in one of the reeval slots. With a positive wait, it returns
 // ErrReevalBusy when no slot is free within wait; otherwise it waits as long
 // as ctx allows. ctx also stops the evaluation between transaction groups.
-func (l *Ledger) reevalDelta(ctx context.Context, rnd basics.Round, wait time.Duration) (ledgercore.StateDelta, error) {
-	blk, err := l.Block(rnd)
-	if err != nil {
-		return ledgercore.StateDelta{}, fmt.Errorf("round %d is older than the in-memory deltas and its block is not stored: %w", rnd, err)
+func (l *Ledger) reevalBlock(ctx context.Context, rnd basics.Round, blk *bookkeeping.Block, wait time.Duration, tracer logic.EvalTracer, then func() error) (ledgercore.StateDelta, error) {
+	if blk == nil {
+		b, err := l.Block(rnd)
+		if err != nil {
+			return ledgercore.StateDelta{}, fmt.Errorf("round %d is older than the in-memory deltas and its block is not stored: %w", rnd, err)
+		}
+		blk = &b
 	}
 	var timeout <-chan time.Time
 	if wait > 0 {
@@ -1090,17 +1102,23 @@ func (l *Ledger) reevalDelta(ctx context.Context, rnd basics.Round, wait time.Du
 		return ledgercore.StateDelta{}, ErrReevalBusy
 	}
 	defer func() { <-l.history.reeval }()
-	sd, err := eval.Eval(ctx, pastLedger{l.Counted(ledgercore.EffortFromContext(ctx)), rnd - 1}, blk, false, nil, nil, nil)
+	sd, err := eval.Eval(ctx, pastLedger{l.Counted(ledgercore.EffortFromContext(ctx)), rnd - 1}, *blk, false, nil, nil, tracer)
 	if err != nil {
 		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
 	}
-	h := l.historyAt(rnd)
+	// under trackerMu: every round up to Latest() is in the view
+	h := l.historyNow(rnd, nil)
 	if h == nil {
 		// marked untrusted since the caller found the round in the history
 		return ledgercore.StateDelta{}, fmt.Errorf("%w: round %d: the history is not served", ErrDeltaReevaluation, rnd)
 	}
 	if err := verifyDelta(h, rnd, &sd); err != nil {
 		return ledgercore.StateDelta{}, err
+	}
+	if then != nil {
+		if err := then(); err != nil {
+			return ledgercore.StateDelta{}, err
+		}
 	}
 	return sd, nil
 }

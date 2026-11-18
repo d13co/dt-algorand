@@ -666,6 +666,12 @@ type Local struct {
 	// Non-standard fork feature.
 	MaxAPIQueryTotalCalls uint64 `version[39]:"1024"`
 
+	// MaxAPIStateChangesResponseBytes is the most bytes the answer of GET /v2/deltas/{round}/txn/state-changes
+	// may take, encoded; a larger answer fails with 400, which suggests the app and txid filters. The log of
+	// writes the evaluation keeps is bounded at four times it, with the same answer. 0 means no limit, for
+	// both. Clients read it from GET /v2/capabilities (state-changes). Non-standard fork feature.
+	MaxAPIStateChangesResponseBytes uint64 `version[39]:"16777216"`
+
 	// QueryParallelism is the most workers that run the calls of one POST /v2/query request at once. The
 	// first runs in the request's slot of SimulateParallelism, the limit of the whole node; each other worker
 	// takes a free slot before each piece of work, gives it back after, and stops when none is free, never
