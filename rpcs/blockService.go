@@ -90,6 +90,9 @@ var httpBlockMessagesDroppedCounter = metrics.MakeCounter(
 // LedgerForBlockService describes the Ledger methods used by BlockService.
 type LedgerForBlockService interface {
 	EncodedBlockCert(rnd basics.Round) (blk []byte, cert []byte, err error)
+	// Latest is the latest round, which tells a peer asking for a block stored without its certificate that this
+	// node is not behind.
+	Latest() basics.Round
 }
 
 // BlockService represents the Block RPC API
@@ -450,7 +453,7 @@ func (bs *BlockService) rawBlockBytes(round basics.Round) ([]byte, error) {
 }
 
 func topicBlockBytes(log logging.Logger, dataLedger LedgerForBlockService, round basics.Round, requestType string) (network.Topics, uint64) {
-	blk, cert, err := dataLedger.EncodedBlockCert(round)
+	blk, cert, err := encodedBlockWithCert(dataLedger, round)
 	if err != nil {
 		switch lerr := err.(type) {
 		case ledgercore.ErrNoEntry:
@@ -478,15 +481,48 @@ func topicBlockBytes(log logging.Logger, dataLedger LedgerForBlockService, round
 	}
 }
 
-// RawBlockBytes return the msgpack bytes for a block
+// encodedBlockWithCert returns the encoded block and certificate of a round, or ledgercore.ErrNoEntry if the block
+// is stored without its certificate (config.Local.CertificateRetentionRounds). Peers fetching blocks need the
+// certificate to verify the block, so to them such a round is missing: they ask another peer, as for a round past
+// the tip, rather than ranking this node as one that sent a bad block.
+func encodedBlockWithCert(l LedgerForBlockService, round basics.Round) (blk []byte, cert []byte, err error) {
+	blk, cert, err = l.EncodedBlockCert(round)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(cert) == 0 {
+		return nil, nil, ledgercore.ErrNoEntry{Round: round, Latest: l.Latest()}
+	}
+	return blk, cert, nil
+}
+
+// RawBlockBytes return the msgpack bytes for a block and its certificate, for peers fetching blocks. A block stored
+// without its certificate is ledgercore.ErrNoEntry.
 func RawBlockBytes(l LedgerForBlockService, round basics.Round) ([]byte, error) {
-	blk, cert, err := l.EncodedBlockCert(round)
+	blk, cert, err := encodedBlockWithCert(l, round)
 	if err != nil {
 		return nil, err
 	}
 
+	return protocol.EncodeReflect(PreEncodedBlockCert{
+		Block:       blk,
+		Certificate: cert,
+	}), nil
+}
+
+// emptyCertEncoding is the encoding of agreement.Certificate{}.
+var emptyCertEncoding = protocol.Encode(&agreement.Certificate{})
+
+// RawBlockBytesAnyCert is RawBlockBytes for the REST API: a block stored without its certificate
+// (config.Local.CertificateRetentionRounds) comes with an empty certificate instead of ErrNoEntry, since API clients
+// read the block, not the certificate.
+func RawBlockBytesAnyCert(l LedgerForBlockService, round basics.Round) ([]byte, error) {
+	blk, cert, err := l.EncodedBlockCert(round)
+	if err != nil {
+		return nil, err
+	}
 	if len(cert) == 0 {
-		return nil, ledgercore.ErrNoEntry{Round: round}
+		cert = emptyCertEncoding
 	}
 
 	return protocol.EncodeReflect(PreEncodedBlockCert{
