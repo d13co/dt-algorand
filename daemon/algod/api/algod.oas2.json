@@ -1781,6 +1781,102 @@
         }
       }
     },
+    "/v2/deltas/{round}/txn/state-changes": {
+      "get": {
+        "description": "Get the app state changes of each transaction of a round: globals, local states and boxes, each with its app id and its value before and after the transaction. The node re-evaluates the round's block against the state at the round before, as it does for GET /v2/deltas/{round}, and checks the result against the stored changes of the round. Requires EnableTimeTravel: a node without it does not serve the route (404), unlike the other /v2/deltas routes. Non-standard fork feature.\n\nThe answer lists the transactions that changed app state, top-level and inner, in execution order. A transaction's changes are the net over it and its inner transactions: `before` is the key's value before the transaction's first change, `after` its value after the last. A key whose value ends as it began is left out, so a write of the same value is not listed. Clearing a local state (CloseOut, ClearState) and deleting an app (its globals; its boxes stay) are listed as one change per key, without `after`. A ClearState program that fails changes nothing, and its inner transactions are not listed. A box's value is the whole box.\n\nWith `include`, the answer also lists, per top-level group, what the group changed besides app state (accounts, asset holdings and params, app params and local state opt-ins), each with its value before and after the group. The app, txid and txids filters shrink the answer, not the evaluation. An answer larger than node config MaxAPIStateChangesResponseBytes (state-changes in GET /v2/capabilities) fails with 400, as does an evaluation whose log of writes passes four times that.",
+        "tags": ["timetravel"],
+        "produces": ["application/json", "application/msgpack"],
+        "schemes": ["http"],
+        "summary": "Get the app state changes of each transaction of a round",
+        "operationId": "GetTxnStateChangesForRound",
+        "parameters": [
+          {
+            "$ref": "#/parameters/round"
+          },
+          {
+            "$ref": "#/parameters/format"
+          },
+          {
+            "type": "integer",
+            "x-go-type": "basics.AppIndex",
+            "description": "Only the changes to this app's state.",
+            "name": "app",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "Only this top-level transaction and its inner transactions. A transaction that is not in the round is a 404. Combines with `txids`.",
+            "name": "txid",
+            "in": "query"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "collectionFormat": "csv",
+            "description": "Only these top-level transactions and their inner transactions, such as the transactions of a group, listed in execution order whatever their order here. Comma-separated, without spaces, in a single `txids` parameter (a repeated `txids` is a 400). Repeats are ignored; an empty list or a malformed txid is a 400, and a transaction that is not in the round is a 404. Combines with `txid`.",
+            "name": "txids",
+            "in": "query"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["accounts", "assets", "apps"]
+            },
+            "collectionFormat": "csv",
+            "description": "Also return `groups`: what each top-level group changed besides app state, with values before and after the group. `accounts`: account fields such as the balance; `assets`: asset holdings and asset params; `apps`: app params and local state opt-ins and opt-outs. Comma-separated, without spaces, in a single `include` parameter; an empty list, an unknown value or a repeated `include` is a 400. A node that does not list these in `state-changes.include` of GET /v2/capabilities ignores the parameter.",
+            "name": "include",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/responses/TxnStateChangesResponse"
+          },
+          "400": {
+            "description": "Bad Request: a malformed parameter, or an answer larger than MaxAPIStateChangesResponseBytes",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "401": {
+            "description": "Invalid API Token",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "404": {
+            "description": "The round's block is not stored, the round is 0 or not reached yet, or a txid is not in the round",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Internal Error, such as a re-evaluation that does not reproduce the round's stored changes",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "503": {
+            "description": "Service Temporarily Unavailable: every slot for re-evaluating an old round stayed busy (with Retry-After)",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "504": {
+            "description": "The request reached the node's time limit, which follows from RestWriteTimeoutSeconds (time-limit-seconds in GET /v2/capabilities)",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "default": {
+            "description": "Unknown Error"
+          }
+        }
+      }
+    },
     "/v2/deltas/txn/group/{id}": {
       "get": {
         "description": "Get a ledger delta for a given transaction group.",
@@ -5025,6 +5121,362 @@
         }
       }
     },
+    "TxnStateChanges": {
+      "description": "The app state changes of a transaction, net over it and its inner transactions. Non-standard fork feature.",
+      "type": "object",
+      "required": ["path", "changes"],
+      "properties": {
+        "path": {
+          "description": "The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level. Inner indexes run on across all of a parent's itxn_submit calls, as in the apply data's inner-txns.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "x-go-type": "uint64"
+          }
+        },
+        "txid": {
+          "description": "The transaction id, for a top-level transaction.",
+          "type": "string"
+        },
+        "changes": {
+          "description": "The keys the transaction changed, in the order it first changed them.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AppStateChange"
+          }
+        }
+      }
+    },
+    "AppStateChange": {
+      "description": "An app state key a transaction changed, with its values before and after. A missing before: the key did not exist. A missing after: the key was deleted, or its local state cleared or its app deleted. Non-standard fork feature.",
+      "type": "object",
+      "required": ["app-id", "app-state-type", "key"],
+      "properties": {
+        "app-id": {
+          "description": "The app whose state changed.",
+          "type": "integer",
+          "x-go-type": "basics.AppIndex"
+        },
+        "app-state-type": {
+          "description": "Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.",
+          "type": "string",
+          "enum": ["g", "l", "b"]
+        },
+        "account": {
+          "description": "For local state changes, the address of the account whose local state changed.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "key": {
+          "description": "The key of the global or local state, or the box name.",
+          "type": "string",
+          "format": "byte"
+        },
+        "before": {
+          "$ref": "#/definitions/StateChangeValue"
+        },
+        "after": {
+          "$ref": "#/definitions/StateChangeValue"
+        }
+      }
+    },
+    "StateChangeValue": {
+      "description": "An app state value: a TealValue whose bytes are bytes (base64 in JSON, bin in msgpack). Non-standard fork feature.",
+      "type": "object",
+      "required": ["type", "uint", "bytes"],
+      "properties": {
+        "type": {
+          "description": "Value type: `1` is **bytes**, `2` is **uint**.",
+          "type": "integer",
+          "x-go-type": "uint64"
+        },
+        "bytes": {
+          "description": "The bytes value.",
+          "type": "string",
+          "format": "byte"
+        },
+        "uint": {
+          "description": "The uint value.",
+          "type": "integer",
+          "format": "uint64",
+          "x-algorand-format": "uint64"
+        }
+      }
+    },
+    "GroupStateChanges": {
+      "description": "What a top-level transaction group changed besides app state (which is per transaction, in `txns`), each with its value right before and right after the group. Only what changed is listed. A missing before: it did not exist before the group (a new account, an opt-in, a created asset or app). A missing after: the group removed it (a closed account, an opt-out, a destroyed asset, a deleted app). Each list is sorted by address, then id (assets and apps by id). What the block changes outside its groups (the proposer payout from the fee sink, the rewards pool) is in no group, so the last after of the fee sink or the proposer can differ from the account at the round. Non-standard fork feature.",
+      "type": "object",
+      "required": ["first", "count", "txids"],
+      "properties": {
+        "first": {
+          "description": "The payset index of the group's first top-level transaction (`path[0]` in `txns`).",
+          "type": "integer",
+          "x-go-type": "uint64"
+        },
+        "count": {
+          "description": "The number of top-level transactions in the group: payset indexes `first` to `first+count-1`.",
+          "type": "integer",
+          "x-go-type": "uint64"
+        },
+        "group-id": {
+          "description": "The group id; absent for a transaction outside a group.",
+          "type": "string",
+          "format": "byte"
+        },
+        "txids": {
+          "description": "The ids of the group's top-level transactions, in payset order.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "accounts": {
+          "description": "The accounts whose fields changed (with include=accounts). The fee sink is among them whenever the group paid fees.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AccountStateChange"
+          }
+        },
+        "holdings": {
+          "description": "The asset holdings that changed, opt-ins and opt-outs included (with include=assets).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AssetHoldingChange"
+          }
+        },
+        "assets": {
+          "description": "The asset params that changed: created, reconfigured or destroyed assets (with include=assets).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AssetParamsChange"
+          }
+        },
+        "apps": {
+          "description": "The app params that changed other than global state: created, updated or deleted apps (with include=apps).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AppParamsChange"
+          }
+        },
+        "local-states": {
+          "description": "The local states opted into or out of (with include=apps). Their keys are in `txns`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LocalStateChange"
+          }
+        }
+      }
+    },
+    "AccountStateChange": {
+      "description": "An account changed by a group. Non-standard fork feature.",
+      "type": "object",
+      "required": ["address"],
+      "properties": {
+        "address": {
+          "description": "The account.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "before": {
+          "$ref": "#/definitions/AccountState"
+        },
+        "after": {
+          "$ref": "#/definitions/AccountState"
+        }
+      }
+    },
+    "AccountState": {
+      "description": "An account's own fields at a point within a round: those of Account, under the same names, without its assets, apps and rewards to come. Non-standard fork feature.",
+      "type": "object",
+      "required": ["amount", "min-balance", "status", "total-apps-opted-in", "total-assets-opted-in", "total-created-apps", "total-created-assets"],
+      "properties": {
+        "amount": {
+          "description": "\\[algo\\] MicroAlgos, as recorded: rewards earned until the account was last touched are included, none after.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "min-balance": {
+          "description": "MicroAlgo balance required by the account, under the round's consensus parameters.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "status": {
+          "description": "\\[onl\\] `Offline`, `Online` or `Not Participating`, as in Account.",
+          "type": "string"
+        },
+        "auth-addr": {
+          "description": "\\[spend\\] the address against which signing is checked; absent when it is the account itself.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "incentive-eligible": {
+          "description": "Whether the account can receive block incentives.",
+          "type": "boolean"
+        },
+        "participation": {
+          "$ref": "#/definitions/AccountParticipation"
+        },
+        "total-apps-opted-in": {
+          "description": "The number of apps opted into.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "total-assets-opted-in": {
+          "description": "The number of asset holdings.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "total-created-apps": {
+          "description": "The number of apps created.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "total-created-assets": {
+          "description": "The number of assets created.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "apps-total-schema": {
+          "$ref": "#/definitions/ApplicationStateSchema"
+        },
+        "apps-total-extra-pages": {
+          "description": "\\[teap\\] the sum of the extra program pages of the apps created.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "total-boxes": {
+          "description": "\\[tbx\\] The number of boxes of the account's app.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "total-box-bytes": {
+          "description": "\\[tbxb\\] The bytes of the account's app's box names and values.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "reward-base": {
+          "description": "\\[ebase\\] used as part of the rewards computation.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "rewards": {
+          "description": "\\[ern\\] total rewards of MicroAlgos the account has received.",
+          "type": "integer",
+          "format": "uint64"
+        },
+        "last-proposed": {
+          "description": "The round in which this account last proposed the block.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        },
+        "last-heartbeat": {
+          "description": "The round in which this account last went online, or renewed its online status.",
+          "type": "integer",
+          "x-go-type": "basics.Round"
+        }
+      }
+    },
+    "AssetHoldingChange": {
+      "description": "An asset holding changed by a group. Non-standard fork feature.",
+      "type": "object",
+      "required": ["address", "asset-id"],
+      "properties": {
+        "address": {
+          "description": "The holder.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "asset-id": {
+          "description": "The asset.",
+          "type": "integer",
+          "x-go-type": "basics.AssetIndex"
+        },
+        "before": {
+          "$ref": "#/definitions/AssetHolding"
+        },
+        "after": {
+          "$ref": "#/definitions/AssetHolding"
+        }
+      }
+    },
+    "AssetParamsChange": {
+      "description": "An asset's params changed by a group. Non-standard fork feature.",
+      "type": "object",
+      "required": ["asset-id"],
+      "properties": {
+        "asset-id": {
+          "description": "The asset.",
+          "type": "integer",
+          "x-go-type": "basics.AssetIndex"
+        },
+        "before": {
+          "$ref": "#/definitions/AssetParams"
+        },
+        "after": {
+          "$ref": "#/definitions/AssetParams"
+        }
+      }
+    },
+    "AppParamsChange": {
+      "description": "An app's params changed by a group, other than its global state. Non-standard fork feature.",
+      "type": "object",
+      "required": ["app-id"],
+      "properties": {
+        "app-id": {
+          "description": "The app.",
+          "type": "integer",
+          "x-go-type": "basics.AppIndex"
+        },
+        "before": {
+          "$ref": "#/definitions/ApplicationParams"
+        },
+        "after": {
+          "$ref": "#/definitions/ApplicationParams"
+        }
+      }
+    },
+    "LocalStateChange": {
+      "description": "A local state opted into (no before) or out of (no after) by a group; before and after are the local state without its key-value (its keys are in `txns`). Non-standard fork feature.",
+      "type": "object",
+      "required": ["address", "app-id"],
+      "properties": {
+        "address": {
+          "description": "The account.",
+          "type": "string",
+          "x-algorand-format": "Address"
+        },
+        "app-id": {
+          "description": "The app.",
+          "type": "integer",
+          "x-go-type": "basics.AppIndex"
+        },
+        "before": {
+          "$ref": "#/definitions/ApplicationLocalState"
+        },
+        "after": {
+          "$ref": "#/definitions/ApplicationLocalState"
+        }
+      }
+    },
+    "StateChangesLimits": {
+      "description": "The limit of GET /v2/deltas/{round}/txn/state-changes on this node. Present when the node serves it (node config EnableTimeTravel). Non-standard fork feature.",
+      "type": "object",
+      "required": ["max-response-bytes"],
+      "properties": {
+        "max-response-bytes": {
+          "description": "The most bytes an answer may take, encoded; a larger one fails with 400. 0 means no limit (node config MaxAPIStateChangesResponseBytes).",
+          "type": "integer",
+          "x-go-type": "uint64"
+        },
+        "include": {
+          "description": "The values the `include` parameter takes. A node without this field ignores `include`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "QueryLimits": {
       "description": "The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.",
       "type": "object",
@@ -6418,6 +6870,39 @@
         }
       }
     },
+    "TxnStateChangesResponse": {
+      "description": "The app state changes of each transaction of a round. Non-standard fork feature.",
+      "schema": {
+        "type": "object",
+        "required": ["round", "txns"],
+        "properties": {
+          "round": {
+            "description": "The round.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "txns": {
+            "description": "The transactions that changed app state, top-level and inner, in execution order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/TxnStateChanges"
+            }
+          },
+          "groups": {
+            "description": "With `include`: each top-level group (of the txids' groups, with `txids`), in block order, with what it changed besides app state. `app` does not narrow it. Left out when there are none, as in an empty block.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/GroupStateChanges"
+            }
+          },
+          "fee-sink": {
+            "description": "With `include`, always: the round's fee sink, which every group that pays fees changes. The proposer payout comes out of it after the groups, in none of them. Its absence means the node ignored `include`.",
+            "type": "string",
+            "x-algorand-format": "Address"
+          }
+        }
+      }
+    },
     "CapabilitiesResponse": {
       "description": "The fork features and request limits of this node. Non-standard fork feature.",
       "schema": {
@@ -6434,7 +6919,7 @@
             "type": "boolean"
           },
           "time-limit-seconds": {
-            "description": "The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
+            "description": "The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and /v2/deltas/{round}/txn/state-changes, and the versions endpoints. One that reaches it fails with 504. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).",
             "type": "integer",
             "x-go-type": "uint64"
           },
@@ -6443,6 +6928,9 @@
           },
           "query": {
             "$ref": "#/definitions/QueryLimits"
+          },
+          "state-changes": {
+            "$ref": "#/definitions/StateChangesLimits"
           }
         }
       }
