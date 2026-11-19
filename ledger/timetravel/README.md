@@ -54,7 +54,7 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 
 `GET /v2/deltas/{R}` works for any round whose block is still stored (every round with `Archival: true`, otherwise the last ~1,000, more with `MaxBlockHistoryLookback`): rounds older than the trackers' in-memory deltas are re-evaluated (see [Node integration](#node-integration)).
 
-`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. Such a node can't catch up from a catchpoint (stock algod refuses catchpoints on archival nodes), so it builds its history by syncing from genesis or with `ttimport`, not from a snapshot. The cost is the archival block DB (~3.5 TB) plus the history (about 70 GB, of which about 11.5 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
+`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. Such a node can't catch up from a catchpoint (stock algod refuses catchpoints on archival nodes). It either syncs from genesis with `Archival` on from the first start, or starts as a non-archival node (from a snapshot or `ttimport`) that then takes over an archival node's block DB, with `Archival` turned on while it is stopped: see [Making the node archival](../../installer/dtalgorand/README.md#making-the-node-archival). The cost is the archival block DB (~3.5 TB) plus the history (about 70 GB, of which about 11.5 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
 
 ### Extra opcode budget limit in simulation
 
