@@ -207,9 +207,10 @@ Make both changes before the next start. Either one alone loses blocks:
 
 - With `Archival: true` and its own block DB, which doesn't start at round 0, the node drops its blocks and resets the block DB to genesis, then refuses to start because the account DB is ahead of it. Swapping in the archive recovers from this. Don't delete the account DB, as the error suggests: that means a sync from genesis.
 - With the archive's block DB and `Archival: false`, the node prunes the archive down to its last ~1,000 blocks.
-- An archive that doesn't start at round 0 is reset as well, so check it first (step 2).
 
-The steps below use the stock `algorand` package's archive in `/var/lib/algorand` on Linux. On macOS they use `ARCHIVE` for the archival node's data directory: set it first, as in `ARCHIVE=/path/to/archival/data`. They assume the node's block DB is in its data directory, with `BlockDBDir` and `ColdDataDir` unset (to put the archive elsewhere, see below). The archival node gives up its block DB: it can't run afterwards unless it syncs again.
+An archive that doesn't start at round 0 is reset as well, so check it first (step 2).
+
+The steps below use the stock `algorand` package's archive in `/var/lib/algorand/mainnet-v1.0` on Linux. On macOS they use `ARCHIVE` for the directory that holds the archive's `mainnet-v1.0`: set it first, as in `ARCHIVE=/path/to/archival/data`. The archive is in the archival node's data directory unless the node's `config.json` sets `BlockDBDir`, or `ColdDataDir` without it. Then the archive is in that directory's `mainnet-v1.0`: use it in steps 2 and 4 (on Linux, `grep -E 'BlockDBDir|ColdDataDir' /var/lib/algorand/config.json` shows both settings). The steps assume dtalgorand's block DB is in its data directory, with `BlockDBDir` and `ColdDataDir` unset (to put the archive elsewhere, see [Leaving the archive on its disk](#leaving-the-archive-on-its-disk)). The archival node gives up its block DB: it can't run afterwards unless it syncs again.
 
 1. Stop dtalgorand, then the archival node, so that the archive reaches at least the node's round. Keep dtalgorand from starting until step 5: a start between steps 3 and 4 loses its own blocks, and a start with the archive in place and `Archival` off prunes the archive.
 
@@ -220,7 +221,7 @@ The steps below use the stock `algorand` package's archive in `/var/lib/algorand
    sudo systemctl disable --now algorand
    ```
 
-   On macOS, `brew services stop` also keeps the node from starting at login. Stop the archival node the way it was started, after:
+   On macOS, stop dtalgorand (`brew services stop` also keeps it from starting at login), then stop the archival node however it was started:
 
    ```sh
    brew services stop dtalgorand
@@ -258,21 +259,25 @@ The steps below use the stock `algorand` package's archive in `/var/lib/algorand
    dtalgocfg get -d $(brew --prefix)/var/dtalgorand -p Archival
    ```
 
-4. Move the node's own block DB into a new `own-blocks` directory, and the archive's in its place, with their `-wal` and `-shm` files if any. `mv` renames the archive on the same disk, and copies it from another one (~3.5 TB on mainnet).
+4. Move the node's own block DB into a new `own-blocks` directory, and the archive's in its place, with their `-wal` and `-shm` files if any. On the same disk, `mv` renames the archive at once. From another disk it copies it: the node's disk needs room for the whole archive (~3.5 TB on mainnet), and the copy takes hours. To skip the copy, [leave the archive on its disk](#leaving-the-archive-on-its-disk) instead.
 
    On Linux, as root, since the node's genesis directory is the `dtalgorand` user's alone:
 
    ```sh
    sudo -u dtalgorand mkdir /var/lib/dtalgorand/mainnet-v1.0/own-blocks
-   sudo sh -c 'cd /var/lib/dtalgorand/mainnet-v1.0 && mv ledger.block.sqlite* own-blocks/ && mv /var/lib/algorand/mainnet-v1.0/ledger.block.sqlite* . && chown dtalgorand:dtalgorand ledger.block.sqlite*'
+   sudo sh -c 'mv /var/lib/dtalgorand/mainnet-v1.0/ledger.block.sqlite* /var/lib/dtalgorand/mainnet-v1.0/own-blocks/'
+   sudo sh -c 'mv /var/lib/algorand/mainnet-v1.0/ledger.block.sqlite* /var/lib/dtalgorand/mainnet-v1.0/ && chown dtalgorand:dtalgorand /var/lib/dtalgorand/mainnet-v1.0/ledger.block.sqlite*'
    ```
 
-   On macOS, once the archive's files belong to you:
+   On macOS, the archive's files may belong to another user, so they move as root and then become yours:
 
    ```sh
    mkdir $(brew --prefix)/var/dtalgorand/mainnet-v1.0/own-blocks
-   cd $(brew --prefix)/var/dtalgorand/mainnet-v1.0 && mv ledger.block.sqlite* own-blocks/ && mv "$ARCHIVE"/mainnet-v1.0/ledger.block.sqlite* .
+   mv $(brew --prefix)/var/dtalgorand/mainnet-v1.0/ledger.block.sqlite* $(brew --prefix)/var/dtalgorand/mainnet-v1.0/own-blocks/
+   sudo sh -c "mv '$ARCHIVE'/mainnet-v1.0/ledger.block.sqlite* '$(brew --prefix)'/var/dtalgorand/mainnet-v1.0/ && chown $(id -un) '$(brew --prefix)'/var/dtalgorand/mainnet-v1.0/ledger.block.sqlite*"
    ```
+
+   If a copy from another disk is interrupted, run only the last command again: the one before it would move the partial copy into `own-blocks`, over the node's own block DB. `mv` removes each of the archive's files only once it is copied, so the archive still holds what wasn't copied, and the new copy replaces the partial one.
 
 5. Start the node.
 
@@ -290,7 +295,11 @@ The steps below use the stock `algorand` package's archive in `/var/lib/algorand
 
 If the archive was ahead, the node replays its extra rounds on start, writing their history as it goes, then syncs from the network. Once it does, `GET /v2/blocks/1` answers, and the archival node's other files and `own-blocks` can be deleted.
 
-**To leave the archive on its disk**, give it a directory of its own there, outside the archival node's data directory, and point `BlockDBDir` at it in step 3. The history's location follows `BlockDBDir` unless `TimeTravelDBDir` is set, so if you haven't set `TimeTravelDBDir`, set it to the node's data directory, where the history is now. In step 4, move the archive into that directory's `mainnet-v1.0` instead of the node's. On Linux, with the archive's disk at `/mnt/archive`, outside `/home` (the unit's `ProtectHome` hides `/home`, `/root` and `/run/user`):
+#### Leaving the archive on its disk
+
+Instead of moving the archive to the node's disk, give it a directory of its own on its disk, outside the archival node's data directory, and point `BlockDBDir` at it in step 3. The history's location follows `BlockDBDir` unless `TimeTravelDBDir` is set, so if you haven't set `TimeTravelDBDir`, set it to the node's data directory, where the history is now. In step 4, move the archive into that directory's `mainnet-v1.0` instead of the node's: a rename on the same disk.
+
+On Linux, the archive's disk must be outside `/home` (the unit's `ProtectHome` hides `/home`, `/root` and `/run/user`). The commands below take it at `/mnt/archive`, with the archive in `/mnt/archive/algorand/mainnet-v1.0`. In step 3, after turning `Archival` on:
 
 ```sh
 sudo install -d -o dtalgorand -g dtalgorand /mnt/archive/dtalgorand/mainnet-v1.0
@@ -298,7 +307,33 @@ sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p BlockDBDir -v /mnt/ar
 sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p TimeTravelDBDir -v /var/lib/dtalgorand
 ```
 
-**To rebuild the node later**, keep the archive out of the way first: [Starting over](#starting-over) deletes the genesis directories, the block DB's included, and ttsnap and ttimport refuse a config with `Archival` on. Stop the node, move `ledger.block.sqlite*` out of the block DB's genesis directory, set `Archival` to `false`, start over, then repeat the swap. ttimport can import from the moved archive with `-blocks`.
+In step 4, instead of its commands:
+
+```sh
+sudo -u dtalgorand mkdir /var/lib/dtalgorand/mainnet-v1.0/own-blocks
+sudo sh -c 'mv /var/lib/dtalgorand/mainnet-v1.0/ledger.block.sqlite* /var/lib/dtalgorand/mainnet-v1.0/own-blocks/'
+sudo sh -c 'mv /mnt/archive/algorand/mainnet-v1.0/ledger.block.sqlite* /mnt/archive/dtalgorand/mainnet-v1.0/ && chown dtalgorand:dtalgorand /mnt/archive/dtalgorand/mainnet-v1.0/ledger.block.sqlite*'
+```
+
+On macOS, the commands below take the archive's disk at `/Volumes/Archive`, with `ARCHIVE` on it as above. In step 3, after turning `Archival` on:
+
+```sh
+mkdir -p /Volumes/Archive/dtalgorand/mainnet-v1.0
+dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p BlockDBDir -v /Volumes/Archive/dtalgorand
+dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p TimeTravelDBDir -v $(brew --prefix)/var/dtalgorand
+```
+
+In step 4, instead of its commands:
+
+```sh
+mkdir $(brew --prefix)/var/dtalgorand/mainnet-v1.0/own-blocks
+mv $(brew --prefix)/var/dtalgorand/mainnet-v1.0/ledger.block.sqlite* $(brew --prefix)/var/dtalgorand/mainnet-v1.0/own-blocks/
+sudo sh -c "mv '$ARCHIVE'/mainnet-v1.0/ledger.block.sqlite* /Volumes/Archive/dtalgorand/mainnet-v1.0/ && chown $(id -un) /Volumes/Archive/dtalgorand/mainnet-v1.0/ledger.block.sqlite*"
+```
+
+#### Rebuilding the node later
+
+Keep the archive out of the way first: [Starting over](#starting-over) deletes the genesis directories, the block DB's included, and ttsnap and ttimport refuse a config with `Archival` on. Stop the node, move `ledger.block.sqlite*` out of the block DB's genesis directory, set `Archival` to `false`, start over, then repeat the swap. ttimport can import from the moved archive with `-blocks`.
 
 ### Checking the node
 
@@ -333,7 +368,7 @@ curl -H "X-Algo-API-Token: $(cat $D/algod.token)" "http://$(cat $D/algod.net)/v2
 
 ### Starting over
 
-On an [archival node](#making-the-node-archival), the block DB is the archive, and the steps below delete it: move it away first, as that section says.
+On an [archival node](#making-the-node-archival), the block DB is the archive, and the steps below delete it: move it away first, as [Rebuilding the node later](#rebuilding-the-node-later) says.
 
 `ttsnap fetch` refuses a data directory whose node has started once (`ledger.timetravel already exists`). An interrupted `fetch` or import doesn't need this: rerun it to resume. To start from scratch, keep `config.json` and `genesis.json` and delete the ledger, which throws away whatever was downloaded or synced:
 
