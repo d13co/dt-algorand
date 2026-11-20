@@ -1,8 +1,10 @@
 ## This file is provided by the dtalgorand package to configure
 ## unattended upgrades from apt.d13.co.
 
+// beta only matches if the beta suite is in your apt sources
 Unattended-Upgrade::Origins-Pattern {
   "site=apt.d13.co,a=stable";
+  "site=apt.d13.co,a=beta";
 };
 
 Dpkg::Options {
