@@ -34,5 +34,5 @@ type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
 
-// lockDir: Windows has no directory locks; nothing is locked.
-func lockDir(string) (io.Closer, error) { return nopCloser{}, nil }
+// lockFile: not on Windows; nothing is locked.
+func lockFile(string) (io.Closer, error) { return nopCloser{}, nil }

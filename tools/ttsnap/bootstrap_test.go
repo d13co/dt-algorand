@@ -319,15 +319,19 @@ func TestFetchLocked(t *testing.T) {
 	n.publish()
 	a := newFakeAlgod(t, n.genesis)
 	o, dataDir := bootstrapNode(t, n, a, `{"EnableTimeTravel": true}`)
-	stage := n.installedHistory(dataDir) + stageSuffix
-	require.NoError(t, os.MkdirAll(stage, 0o755))
-	l, err := lockDir(stage)
+	lock := n.installedHistory(dataDir) + installLockSuffix
+	require.NoError(t, os.MkdirAll(filepath.Dir(lock), 0o755))
+	l, err := lockFile(lock)
 	require.NoError(t, err)
 	_, _, err = fetch(o.fetch)
 	require.ErrorContains(t, err, "another ttsnap is installing")
+	_, err = os.Stat(n.installedHistory(dataDir) + stageSuffix)
+	require.True(t, os.IsNotExist(err), "no stage left behind")
 	require.NoError(t, l.Close())
 	_, _, err = fetch(o.fetch)
 	require.NoError(t, err)
+	_, err = os.Stat(lock)
+	require.True(t, os.IsNotExist(err), "the lock file goes with the lock")
 }
 
 func TestSystemdUnit(t *testing.T) {
@@ -465,6 +469,8 @@ func TestDefaultStart(t *testing.T) {
 	require.True(t, root)
 	_, _, err = defaultStart("/var/lib/dtalgorand_testnet", "linux", "someone", []string{units}, noBrew)
 	require.ErrorContains(t, err, "-start", "another user's directory")
+	_, _, err = defaultStart("/home/dtalgorand/node", "linux", debUser, []string{units}, noBrew)
+	require.ErrorContains(t, err, "-start", "hidden from the unit by ProtectHome")
 	require.Equal(t, `dtalgorand@-srv-my\x2dnode-.testnet-a\x20b`, templateInstance("/srv/my-node/.testnet/a b"))
 
 	prefix := t.TempDir()
@@ -528,8 +534,8 @@ func TestBootstrapAsRoot(t *testing.T) {
 		o := bootstrapOpts{
 			fetch: fetchOpts{dataDir: dataDir, base: n.srv.URL, keys: keys, progressLog: io.Discard},
 			// what the started algod would write, as the owner
-			// and leaves a process holding its output, as a daemon may
-			start:       fmt.Sprintf("echo %s > %s/algod.net && echo %d > %s/algod.pid && chown %d %s/algod.net %s/algod.pid && echo x >> %s/started && id -u > %s/start-uid && (sleep 60 &)", host, dataDir, os.Getpid(), dataDir, uid, dataDir, dataDir, dataDir, dataDir),
+			// and leaves a process that writes to its output later, as a daemon may
+			start:       fmt.Sprintf("echo %s > %s/algod.net && echo %d > %s/algod.pid && chown %d %s/algod.net %s/algod.pid && echo x >> %s/started && id -u > %s/start-uid && (sleep 3 && echo late && touch %s/late-write) &", host, dataDir, os.Getpid(), dataDir, uid, dataDir, dataDir, dataDir, dataDir, dataDir),
 			startAsRoot: asRoot,
 			wait:        10 * time.Second, pollEvery: 10 * time.Millisecond, log: io.Discard,
 		}
@@ -537,6 +543,9 @@ func TestBootstrapAsRoot(t *testing.T) {
 		began := time.Now()
 		require.NoError(t, o.bootstrap(args))
 		require.Less(t, time.Since(began), 30*time.Second, "waited for the start's leftover process")
+		// which, like an algod the start leaves running, outlives a write
+		// to its output once bootstrap is done
+		require.Eventually(t, func() bool { return exists(filepath.Join(dataDir, "late-write")) }, 20*time.Second, 100*time.Millisecond, "the leftover process died writing")
 
 		require.Equal(t, 1, startCount(t, dataDir))
 		u, err := os.ReadFile(filepath.Join(dataDir, "start-uid"))

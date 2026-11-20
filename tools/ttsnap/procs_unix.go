@@ -68,19 +68,37 @@ func processAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// lockDir locks the directory dir against another lockDir until the lock is
-// closed or the process exits.
-func lockDir(dir string) (io.Closer, error) {
-	f, err := os.Open(dir)
-	if err != nil {
-		return nil, err
-	}
-	if err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		f.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, errLocked
+// lockFile creates and locks the file path against another lockFile until
+// the lock is closed, which deletes the file, or the process exits.
+func lockFile(path string) (io.Closer, error) {
+	for {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		if err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			f.Close()
+			if errors.Is(err, unix.EWOULDBLOCK) {
+				return nil, errLocked
+			}
+			return nil, err
+		}
+		// the file a holder deleted as it let go is no lock
+		fi, ferr := f.Stat()
+		pi, perr := os.Stat(path)
+		if ferr == nil && perr == nil && os.SameFile(fi, pi) {
+			return &lockedFile{f}, nil
+		}
+		f.Close()
+		if ferr != nil {
+			return nil, ferr
+		}
 	}
-	return f, nil
+}
+
+type lockedFile struct{ *os.File }
+
+func (l *lockedFile) Close() error {
+	_ = os.Remove(l.Name())
+	return l.File.Close()
 }

@@ -21,6 +21,6 @@ package main
 import "syscall"
 
 // dieWithParent: no parent death signal here. A phase left running holds the
-// history's stage directory locked (lockDir), so a rerun refuses to download
+// install locked (lockFile), so a rerun refuses to download
 // alongside it.
 func dieWithParent(*syscall.SysProcAttr) (done func()) { return func() {} }

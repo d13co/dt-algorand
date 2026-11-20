@@ -59,6 +59,9 @@ const installedFile = "ttsnap.json"
 // stageSuffix names where fetch downloads a target before it is complete.
 const stageSuffix = ".ttsnap-partial"
 
+// installLockSuffix names the file an install of the history locks, beside it.
+const installLockSuffix = ".ttsnap-lock"
+
 // snapshotURLs are the snapshot trees fetch and bootstrap use when -url is
 // not given, by genesis ID. The manifest's genesis hash and producer
 // signature are checked whatever the URL.
@@ -288,12 +291,9 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 			}
 		}
 	}
-	if err = ensureDir(histStage); err != nil {
-		return nil, "", err
-	}
 	// one install at a time: a bootstrap phase left running may download
 	// into the same files (only Linux stops it with bootstrap)
-	unlock, err := lockDir(histStage)
+	unlock, err := lockFile(histFinal + installLockSuffix)
 	if errors.Is(err, errLocked) {
 		return nil, "", fmt.Errorf("another ttsnap is installing a snapshot into %s: wait for it to finish, or stop it", dirs.TimeTravelGenesisDir)
 	} else if err != nil {
@@ -302,6 +302,9 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	defer unlock.Close()
 	if _, err = os.Lstat(histFinal); err == nil {
 		return nil, "", fmt.Errorf("another ttsnap installed a snapshot into %s meanwhile: rerun", dirs.TimeTravelGenesisDir)
+	}
+	if err = ensureDir(histStage); err != nil {
+		return nil, "", err
 	}
 	// what an earlier run left of another snapshot (the latest one changes
 	// while a download runs for hours) must not end up in the store

@@ -29,7 +29,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
 // phaseOwner returns the user to run the install and catchup phases as: the
@@ -80,7 +79,9 @@ func runPhase(u *phaseUser, phase string, args, env []string) (running bool, err
 	}
 	fmt.Printf("running the %s as %s\n", phase, u.name)
 	cmd := exec.Command(exe, append([]string{"bootstrap"}, args...)...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	// not *os.File, so exec copies through a pipe: a process of u's can't
+	// get root's terminal through it
+	cmd.Stdout, cmd.Stderr = struct{ io.Writer }{os.Stdout}, struct{ io.Writer }{os.Stderr}
 	cmd.Env = append(append(os.Environ(), bootstrapPhaseEnv+"="+phase), env...)
 	err = runAs(cmd, u)
 	var ee *exec.ExitError
@@ -96,9 +97,9 @@ func runPhase(u *phaseUser, phase string, args, env []string) (running bool, err
 	return false, fmt.Errorf("running the %s as %s: %w", phase, u.name, err)
 }
 
-// runAs runs cmd as u, in a session of its own, without stdin and with
-// pipes for its output: a process of u's can't reach root's terminal through
-// it, even one that outlives cmd. The signals that stop bootstrap are passed
+// runAs runs cmd as u, in a session of its own and without stdin; its
+// output must not be root's terminal, which a process of u's could then
+// reach, even one that outlives cmd. The signals that stop bootstrap are passed
 // on, as the terminal no longer sends them, but those it started ignoring
 // (nohup); on Linux, cmd is killed if bootstrap dies another way.
 func runAs(cmd *exec.Cmd, u *phaseUser) error {
@@ -116,15 +117,6 @@ func runAs(cmd *exec.Cmd, u *phaseUser) error {
 	cmd.Env = append(env, "HOME="+u.home, "USER="+u.name, "LOGNAME="+u.name)
 	cmd.Dir = "/"
 	cmd.Stdin = nil
-	// not *os.File, so exec copies through a pipe; WaitDelay ends the copy
-	// once cmd exits, should a process it left hold the pipe
-	if cmd.Stdout != nil {
-		cmd.Stdout = struct{ io.Writer }{cmd.Stdout}
-	}
-	if cmd.Stderr != nil {
-		cmd.Stderr = struct{ io.Writer }{cmd.Stderr}
-	}
-	cmd.WaitDelay = 2 * time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: &syscall.Credential{Uid: u.uid, Gid: u.gid, Groups: u.groups}}
 	defer dieWithParent(cmd.SysProcAttr)()
 	var forward []os.Signal
@@ -155,12 +147,7 @@ func runAs(cmd *exec.Cmd, u *phaseUser) error {
 			}
 		}
 	}()
-	err := cmd.Wait()
-	if errors.Is(err, exec.ErrWaitDelay) {
-		fmt.Fprintf(os.Stderr, "%q exited, leaving a process that holds its output, which no longer goes anywhere: start algod with a command that sends its output elsewhere (%s node start does)\n", strings.Join(cmd.Args, " "), goalCommand())
-		err = nil
-	}
-	return err
+	return cmd.Wait()
 }
 
 func shellCommand(command string) *exec.Cmd {
