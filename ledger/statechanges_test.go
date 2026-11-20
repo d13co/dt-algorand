@@ -477,6 +477,34 @@ func TestStateChangesForRound(t *testing.T) {
 
 	checkAgainstRounds(t, l, r, sc)
 
+	// budget: every program run, failed ClearState programs included (their
+	// inner calls fail before their programs run); scriptApp reads no app state
+	dev, err := l.StateChangesForRound(ctx, r, StateChangesFilter{Include: IncludeBudget | IncludeReads})
+	require.NoError(t, err)
+	require.Equal(t, sc.Txns, dev.Txns)
+	require.Empty(t, dev.Reads)
+	runs := make(map[string]ProgramBudget)
+	var order []string
+	for _, b := range dev.Budget {
+		path := fmt.Sprint(b.Path)
+		require.NotContains(t, runs, path)
+		require.Positive(t, b.Cost, path)
+		require.Equal(t, len(b.Path) == 1, b.TxID != (transactions.Txid{}), path)
+		runs[path] = b
+		order = append(order, path)
+	}
+	require.Equal(t, []string{"[0]", "[1]", "[2]", "[3]", "[4]", "[4 0]", "[5]", "[5 0]", "[5 1]", "[5 2]",
+		"[6]", "[7]", "[8]", "[8 0]", "[9]", "[10]", "[11]", "[12]"}, order)
+	for path, b := range runs {
+		clear := path == "[7]" || path == "[8 0]"
+		require.Equal(t, clear, b.Kind == ProgramClearState, path)
+		require.Equal(t, clear, b.Failed, path)
+	}
+	require.Equal(t, p4, runs["[11]"].App)
+	require.Equal(t, p2, runs["[8 0]"].App)
+	// unpooled budgets would not carry over; each lone txn starts with its own
+	require.Equal(t, runs["[4]"].BudgetBefore, runs["[0]"].BudgetBefore)
+
 	// the evaluation is /v2/deltas', and each frame's own writes are its apply data's
 	tr := newStateChangeTracer(StateChangesFilter{})
 	sd, err := l.reevalBlock(ctx, r, nil, 0, tr, nil)

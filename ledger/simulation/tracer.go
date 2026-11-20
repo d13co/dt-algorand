@@ -433,7 +433,9 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 		}
 		if tracer.result.ReturnStateChange() {
 			latestOpcodeTraceUnit.appendStateOperations(cx)
-			tracer.result.InitialStates.increment(cx)
+			if tracer.result.InitialStates != nil { // nil for a GroupExecTracer
+				tracer.result.InitialStates.increment(cx)
+			}
 		}
 	}
 }
@@ -582,7 +584,7 @@ func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {
 		if tracer.result.ReturnStateChange() {
 			// If we are recording state changes, including initial states,
 			// then we should exclude initial states of created app during simulation.
-			if cx.TxnGroup[groupIndex].SignedTxn.Txn.ApplicationID == 0 {
+			if cx.TxnGroup[groupIndex].SignedTxn.Txn.ApplicationID == 0 && tracer.result.InitialStates != nil {
 				tracer.result.InitialStates.CreatedApp.Add(cx.AppID())
 			}
 		}

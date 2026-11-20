@@ -23,23 +23,33 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/config"
+	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
+	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/ledger"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
+	"github.com/algorand/go-algorand/ledger/simulation"
 	"github.com/algorand/go-algorand/util"
 )
 
 // errStateChangesTooLarge is the message of an answer over MaxAPIStateChangesResponseBytes.
-const errStateChangesTooLarge = "the state changes take more than MaxAPIStateChangesResponseBytes (%d bytes): narrow them with the app, txid or txids parameters"
+const errStateChangesTooLarge = "the state changes take more than MaxAPIStateChangesResponseBytes (%d bytes): narrow them with the app, txid or txids parameters, or include less"
 
 // errFailedParsingIncludeOption is the message of a bad include parameter.
-const errFailedParsingIncludeOption = "include takes accounts, assets and apps, comma-separated"
+const errFailedParsingIncludeOption = "include takes accounts, assets, apps, budget, reads and trace, comma-separated"
+
+// errTraceNeedsDeveloperAPI is the message of include=trace on a node without EnableDeveloperAPI.
+const errTraceNeedsDeveloperAPI = "include=trace needs node config EnableDeveloperAPI, as simulate's execution traces do"
+
+// errTraceNeedsOneTxn is the message of include=trace without exactly one transaction.
+const errTraceNeedsOneTxn = "include=trace needs exactly one transaction, in txid or txids"
 
 // stateChangesIncludes are the values of the include parameter, as listed in
 // GET /v2/capabilities.
@@ -47,15 +57,31 @@ var stateChangesIncludes = map[string]ledger.StateChangesInclude{
 	string(model.GetTxnStateChangesForRoundParamsIncludeAccounts): ledger.IncludeAccounts,
 	string(model.GetTxnStateChangesForRoundParamsIncludeAssets):   ledger.IncludeAssets,
 	string(model.GetTxnStateChangesForRoundParamsIncludeApps):     ledger.IncludeApps,
+	string(model.GetTxnStateChangesForRoundParamsIncludeBudget):   ledger.IncludeBudget,
+	string(model.GetTxnStateChangesForRoundParamsIncludeReads):    ledger.IncludeReads,
+	string(model.GetTxnStateChangesForRoundParamsIncludeTrace):    ledger.IncludeTrace,
 }
 
-// StateChangesIncludeValues lists the values of the include parameter, in a fixed order.
-func StateChangesIncludeValues() []string {
-	return []string{
+// stateChangesIncludeGroups are the includes that return groups.
+const stateChangesIncludeGroups = ledger.IncludeAccounts | ledger.IncludeAssets | ledger.IncludeApps
+
+// stateChangesTraceConfig is what include=trace records: everything simulate can.
+var stateChangesTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true, StateAppID: true}
+
+// StateChangesIncludeValues lists the values of the include parameter this node takes, in a fixed
+// order: trace only with EnableDeveloperAPI, as simulate's execution traces.
+func StateChangesIncludeValues(developerAPI bool) []string {
+	values := []string{
 		string(model.GetTxnStateChangesForRoundParamsIncludeAccounts),
 		string(model.GetTxnStateChangesForRoundParamsIncludeAssets),
 		string(model.GetTxnStateChangesForRoundParamsIncludeApps),
+		string(model.GetTxnStateChangesForRoundParamsIncludeBudget),
+		string(model.GetTxnStateChangesForRoundParamsIncludeReads),
 	}
+	if developerAPI {
+		values = append(values, string(model.GetTxnStateChangesForRoundParamsIncludeTrace))
+	}
+	return values
 }
 
 // GetTxnStateChangesForRound returns the app state changes of each transaction of a round, from its
@@ -100,6 +126,19 @@ func (v2 *Handlers) GetTxnStateChangesForRound(ctx echo.Context, round basics.Ro
 		}
 		f.TxIDs = append(f.TxIDs, txid)
 	}
+	var trace *simulation.GroupExecTracer
+	if f.Include&ledger.IncludeTrace != 0 {
+		if !v2.Node.Config().EnableDeveloperAPI {
+			return badRequest(ctx, errors.New("trace without EnableDeveloperAPI"), errTraceNeedsDeveloperAPI, v2.Log)
+		}
+		if len(util.MakeSet(f.TxIDs...)) != 1 {
+			return badRequest(ctx, ledger.ErrTraceNeedsOneTxn, errTraceNeedsOneTxn, v2.Log)
+		}
+		f.Trace = func(group []transactions.SignedTxnWithAD) logic.EvalTracer {
+			trace = simulation.NewGroupExecTracer(round, group, stateChangesTraceConfig)
+			return trace
+		}
+	}
 	sc, answered, err := v2.stateChangesForRound(ctx, round, f)
 	if answered {
 		return err
@@ -108,12 +147,28 @@ func (v2 *Handlers) GetTxnStateChangesForRound(ctx echo.Context, round basics.Ro
 	case err == nil:
 	case errors.Is(err, ledger.ErrStateChangesTooLarge):
 		return badRequest(ctx, err, fmt.Sprintf(errStateChangesTooLarge, maxBytes), v2.Log)
+	case errors.Is(err, ledger.ErrTraceNeedsOneTxn):
+		return badRequest(ctx, err, errTraceNeedsOneTxn, v2.Log)
 	case errors.Is(err, ledger.ErrDeltaReevaluation):
 		return internalError(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
 	default:
 		return notFound(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
 	}
-	data, err := encode(handle, convertStateChanges(sc, f.Include != 0))
+	out := convertStateChanges(sc, f.Include&stateChangesIncludeGroups != 0)
+	if f.Include&ledger.IncludeBudget != 0 {
+		out.Budget = sliceOrNil(util.Map(sc.Budget, convertProgramBudget))
+	}
+	if f.Include&ledger.IncludeReads != 0 {
+		out.Reads = sliceOrNil(util.Map(sc.Reads, convertTxnStateReads))
+	}
+	if trace != nil {
+		if sc.Trace == nil {
+			err = errors.New("the trace is missing")
+			return internalError(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
+		}
+		out.Traces, out.Programs = convertGroupTrace(sc.Trace, trace.Traces())
+	}
+	data, err := encode(handle, out)
 	if err != nil {
 		return internalError(ctx, err, errFailedToEncodeResponse, v2.Log)
 	}
@@ -246,4 +301,122 @@ func convertGroupStateChanges(sc ledger.StateChanges) []model.GroupStateChanges 
 		out[i] = m
 	}
 	return out
+}
+
+var programKinds = map[ledger.ProgramKind]model.ProgramBudgetKind{
+	ledger.ProgramApproval:   model.ProgramBudgetKindApproval,
+	ledger.ProgramClearState: model.ProgramBudgetKindClear,
+	ledger.ProgramLogicSig:   model.ProgramBudgetKindLogicSig,
+}
+
+func txidOrNil(txid transactions.Txid) *string {
+	if txid == (transactions.Txid{}) {
+		return nil
+	}
+	s := txid.String()
+	return &s
+}
+
+func convertProgramBudget(b ledger.ProgramBudget) model.ProgramBudget {
+	return model.ProgramBudget{
+		Path:         b.Path,
+		Txid:         txidOrNil(b.TxID),
+		Kind:         programKinds[b.Kind],
+		AppId:        omitEmpty(b.App),
+		Cost:         uint64(b.Cost),
+		BudgetBefore: b.BudgetBefore,
+		BudgetAfter:  b.BudgetAfter,
+		Failed:       omitEmpty(b.Failed),
+	}
+}
+
+func convertTxnStateReads(r ledger.TxnStateReads) model.TxnStateReads {
+	reads := util.Map(r.Reads, func(sr ledger.StateRead) model.AppStateRead {
+		m := model.AppStateRead{
+			AppId:        sr.App,
+			AppStateType: model.AppStateReadAppStateType(convertApplicationState(sr.Type)),
+			Key:          []byte(sr.Key),
+			Exists:       sr.Exists,
+		}
+		if sr.Type == logic.LocalState {
+			m.Account = addrOrNil(sr.Account)
+		}
+		if sr.Exists {
+			if sr.Type == logic.BoxState {
+				n := uint64(sr.Length)
+				m.Length = &n
+			} else {
+				m.Value = convertStateChangeValue(&sr.Value)
+			}
+		}
+		return m
+	})
+	return model.TxnStateReads{Path: r.Path, Txid: txidOrNil(r.TxID), Reads: reads}
+}
+
+// convertGroupTrace converts the traced group's execution traces, and the
+// disassembly of the programs they ran, in the order the traces first ran them.
+func convertGroupTrace(g *ledger.GroupTrace, traces []*simulation.TransactionTrace) (*[]model.TxnExecTrace, *[]model.ProgramDisassembly) {
+	out := make([]model.TxnExecTrace, 0, len(traces))
+	var order []crypto.Digest
+	seen := make(map[crypto.Digest]bool)
+	var visit func(t *simulation.TransactionTrace)
+	visit = func(t *simulation.TransactionTrace) {
+		for _, h := range []crypto.Digest{t.LogicSigHash, t.ApprovalProgramHash, t.ClearStateProgramHash} {
+			if !h.IsZero() && !seen[h] {
+				seen[h] = true
+				order = append(order, h)
+			}
+		}
+		for i := range t.InnerTraces {
+			visit(&t.InnerTraces[i])
+		}
+	}
+	for i, t := range traces {
+		if i >= len(g.TxIDs) {
+			break
+		}
+		if t == nil {
+			t = &simulation.TransactionTrace{}
+		}
+		visit(t)
+		out = append(out, model.TxnExecTrace{Txid: g.TxIDs[i].String(), ExecTrace: *convertTxnTrace(t, true)})
+	}
+	programs := make([]model.ProgramDisassembly, 0, len(order))
+	for _, h := range order {
+		program, ok := g.Programs[h]
+		if !ok {
+			continue
+		}
+		programs = append(programs, model.ProgramDisassembly{Hash: slices.Clone(h[:]), Lines: disassemblyLines(program)})
+	}
+	return &out, &programs
+}
+
+// disassemblyLines splits a program's disassembly into lines, each with the pc
+// of the opcode it holds.
+func disassemblyLines(program []byte) []model.DisassemblyLine {
+	text, offsets, err := logic.DisassembleWithOffsets(program)
+	if err != nil && text == "" {
+		return []model.DisassemblyLine{{Text: "// " + err.Error()}}
+	}
+	pcAt := make(map[int]uint64, len(offsets))
+	for _, o := range offsets {
+		pcAt[o.Offset] = uint64(o.PC)
+	}
+	lines := make([]model.DisassemblyLine, 0, len(offsets)+2)
+	start := 0
+	for start < len(text) {
+		end := strings.IndexByte(text[start:], '\n')
+		if end < 0 {
+			end = len(text) - start
+		}
+		line := model.DisassemblyLine{Text: text[start : start+end]}
+		if pc, ok := pcAt[start]; ok {
+			line.Pc = &pc
+		}
+		lines = append(lines, line)
+		start += end + 1
+	}
+	return lines
 }
