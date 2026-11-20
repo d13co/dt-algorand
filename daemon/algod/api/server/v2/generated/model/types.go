@@ -1462,7 +1462,7 @@ type SimulateInitialStates struct {
 
 // SimulateLimits The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
 type SimulateLimits struct {
-	// ExecTraceConfig The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. A node without this list takes none of them.
+	// ExecTraceConfig The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. Listed only with developer-api, without which the node refuses any execution trace. A node without this list takes none of them.
 	ExecTraceConfig *[]string `json:"exec-trace-config,omitempty"`
 
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).

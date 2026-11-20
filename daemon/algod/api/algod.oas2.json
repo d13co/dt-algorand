@@ -5124,7 +5124,7 @@
           "x-go-type": "uint64"
         },
         "exec-trace-config": {
-          "description": "The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. A node without this list takes none of them.",
+          "description": "The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. Listed only with developer-api, without which the node refuses any execution trace. A node without this list takes none of them.",
           "type": "array",
           "items": {
             "type": "string"

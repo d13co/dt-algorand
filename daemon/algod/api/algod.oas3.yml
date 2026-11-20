@@ -3700,7 +3700,7 @@
         "description": "The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.",
         "properties": {
           "exec-trace-config": {
-            "description": "The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. A node without this list takes none of them.",
+            "description": "The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. Listed only with developer-api, without which the node refuses any execution trace. A node without this list takes none of them.",
             "items": {
               "type": "string"
             },

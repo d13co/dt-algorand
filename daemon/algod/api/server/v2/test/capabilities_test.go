@@ -72,7 +72,7 @@ func TestCapabilitiesJSON(t *testing.T) {
 
 	require.JSONEq(t, `{
 		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
-		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000, "exec-trace-config": ["state-change-app-id"]},
+		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000},
 		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024}
 	}`, string(capabilitiesJSON(t, capabilitiesRouter(t, config.GetDefaultLocal()))))
 }
@@ -179,8 +179,10 @@ func TestCapabilities(t *testing.T) {
 			t.Parallel()
 			cfg := config.GetDefaultLocal()
 			tc.configure(&cfg)
-			// whatever the config
-			tc.want.Simulate.ExecTraceConfig = &execTraceOptions
+			// with the developer API, which every trace needs
+			if cfg.EnableDeveloperAPI {
+				tc.want.Simulate.ExecTraceConfig = &execTraceOptions
+			}
 			require.Equal(t, tc.want, getCapabilities(t, capabilitiesRouter(t, cfg)))
 		})
 	}

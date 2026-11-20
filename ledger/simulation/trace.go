@@ -251,6 +251,13 @@ func validateSimulateRequest(request Request, developerAPI bool) error {
 				},
 			}
 		}
+		if request.TraceConfig.StateAppID {
+			return InvalidRequestError{
+				SimulatorError{
+					err: fmt.Errorf("basic trace must be enabled when enabling state-change-app-id"),
+				},
+			}
+		}
 	}
 	if request.TraceConfig.StateAppID && !request.TraceConfig.State {
 		return InvalidRequestError{
