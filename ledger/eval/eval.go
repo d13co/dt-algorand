@@ -1541,15 +1541,16 @@ func (eval *BlockEvaluator) transaction(txn transactions.SignedTxn, evalParams *
 
 	// While generating, refuse a transaction that looked up a resource as
 	// the creatable type it is not. The base collects it and it is checked
-	// after apply. Like checkCloseMinBalance, it runs only while generating.
-	if eval.generate {
+	// after apply. Like checkCloseMinBalance, it runs only while generating, and not for simulate
+	// at a past round (newBlockPolicies).
+	if eval.newBlockPolicies() {
 		eval.base.watchCrossTypes()
 	}
 
 	// Apply the transaction, updating the cow balances
 	applyData, err := eval.applyTransaction(txn.Txn, cow, evalParams, gi, cow.Counter())
 	var crossType error
-	if eval.generate {
+	if eval.newBlockPolicies() {
 		crossType = eval.base.stopWatchingCrossTypes()
 	}
 	if err != nil {
