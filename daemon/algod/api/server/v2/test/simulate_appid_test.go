@@ -142,8 +142,10 @@ int 1`,
 				require.Nil(t, changes[0].AppId, name)
 				require.Nil(t, changes[1].AppId, name)
 				require.Equal(t, []string{"<nil>", "<nil>"}, stateChangeAppIDs(raw), name)
+				require.Equal(t, []string{"enable", "state-change"}, execTraceConfigKeys(raw), name)
 				continue
 			}
+			require.Equal(t, []string{"enable", "state-change", "state-change-app-id"}, execTraceConfigKeys(raw), name)
 			require.Equal(t, &writer, changes[0].AppId, "%s: own global", name)
 			require.Equal(t, &owner, changes[1].AppId, "%s: the foreign box's owner, not the running app", name)
 			// the wire field is app-id, in either format
@@ -159,6 +161,34 @@ int 1`,
 	rec := postSimulate(t, router, encodeSimulateRequest(t, bad, "json"), "json")
 	require.Equal(t, 400, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), "app state change tracing must be enabled when enabling state-change-app-id")
+}
+
+// execTraceConfigKeys returns the keys of the exec-trace-config a decoded response echoes, sorted.
+func execTraceConfigKeys(v any) []string {
+	var cfg any
+	switch x := v.(type) {
+	case map[string]any:
+		cfg = x["exec-trace-config"]
+	case map[any]any:
+		for k, e := range x {
+			if fmt.Sprint(k) == "exec-trace-config" {
+				cfg = e
+			}
+		}
+	}
+	var keys []string
+	switch c := cfg.(type) {
+	case map[string]any:
+		for k := range c {
+			keys = append(keys, k)
+		}
+	case map[any]any:
+		for k := range c {
+			keys = append(keys, fmt.Sprint(k))
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // stateChangeAppIDs returns the app-id field of each state change in a decoded response, in order.

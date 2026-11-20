@@ -501,7 +501,9 @@ func convertApplicationStateChange(stateChange simulation.StateOperation, appID 
 		Account:      addrOrNil(stateChange.Account),
 	}
 	if appID {
-		op.AppId = omitEmpty(stateChange.AppID)
+		// even 0, the app argument of a failed app_box_* opcode
+		id := stateChange.AppID
+		op.AppId = &id
 	}
 	return op
 }

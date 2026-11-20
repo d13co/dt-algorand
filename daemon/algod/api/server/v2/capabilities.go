@@ -38,7 +38,7 @@ func (v2 *Handlers) GetCapabilities(ctx echo.Context) error {
 }
 
 // ExecTraceConfigOptions lists the fork's simulate exec-trace-config options, the ones stock algod
-// lacks.
+// lacks. A node lists them only with EnableDeveloperAPI, without which it refuses any trace.
 func ExecTraceConfigOptions() []string {
 	return []string{"state-change-app-id"}
 }
@@ -74,7 +74,11 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 		include := StateChangesIncludeValues()
 		stateChanges = &model.StateChangesLimits{MaxResponseBytes: cfg.MaxAPIStateChangesResponseBytes, Include: &include}
 	}
-	execTraceOptions := ExecTraceConfigOptions()
+	var execTraceOptions *[]string
+	if cfg.EnableDeveloperAPI {
+		options := ExecTraceConfigOptions()
+		execTraceOptions = &options
+	}
 	return model.CapabilitiesResponse{
 		TimeTravel:       cfg.EnableTimeTravel,
 		DeveloperApi:     cfg.EnableDeveloperAPI,
@@ -82,7 +86,7 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 		Simulate: model.SimulateLimits{
 			MaxTxnGroups:         uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
 			MaxExtraOpcodeBudget: uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
-			ExecTraceConfig:      &execTraceOptions,
+			ExecTraceConfig:      execTraceOptions,
 		},
 		Query:        query,
 		StateChanges: stateChanges,

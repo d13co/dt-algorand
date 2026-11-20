@@ -1018,6 +1018,7 @@ func TestRequestValidate(t *testing.T) {
 		{"stack without trace", simulation.Request{TxnGroups: groups(1), TraceConfig: simulation.ExecTraceConfig{Stack: true}}, true, "basic trace must be enabled when enabling stack tracing"},
 		{"scratch without trace", simulation.Request{TxnGroups: groups(1), TraceConfig: simulation.ExecTraceConfig{Scratch: true}}, true, "basic trace must be enabled when enabling scratch slot change tracing"},
 		{"state without trace", simulation.Request{TxnGroups: groups(1), TraceConfig: simulation.ExecTraceConfig{State: true}}, true, "basic trace must be enabled when enabling app state change tracing"},
+		{"state app id without trace", simulation.Request{TxnGroups: groups(1), TraceConfig: simulation.ExecTraceConfig{StateAppID: true}}, true, "basic trace must be enabled when enabling state-change-app-id"},
 		{"state app id without state", simulation.Request{TxnGroups: groups(1), TraceConfig: simulation.ExecTraceConfig{Enable: true, StateAppID: true}}, true, "app state change tracing must be enabled when enabling state-change-app-id"},
 		{"state app id", simulation.Request{TxnGroups: groups(1), TraceConfig: simulation.ExecTraceConfig{Enable: true, State: true, StateAppID: true}}, true, ""},
 	} {
