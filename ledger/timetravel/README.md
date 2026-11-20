@@ -1,6 +1,6 @@
 # Time travel (non-standard fork)
 
-`EnableTimeTravel` turns a node into a *state-history* node: it keeps the value of every ledger object (accounts, asset holdings and params, app local states and params, boxes, totals) at every round since genesis, plus every block header, and serves lookups, the REST API and simulation **at any past round**. It is meant to replace an archival node for state queries: with `Archival: false` the old block bodies and certificates (≈3.5 TB on mainnet) are pruned, and the history costs about 70 GB (65.5 GiB measured on a synced mainnet node in October 2026, both indexes included; see [Mainnet estimates](#mainnet-estimates)).
+`EnableTimeTravel` turns a node into a *state-history* node: it keeps the value of every ledger object (accounts, asset holdings and params, app local states and params, boxes, totals) at every round since genesis, plus every block header, and serves lookups, the REST API and simulation **at any past round**. It is meant to replace an archival node for state queries: with `Archival: false` the old block bodies and certificates (≈3.5 TB on mainnet) are pruned, and the history costs about 70 GB (67.3 GiB measured on a mainnet node in November 2026, both indexes included, 785 GiB uncompressed; see [Mainnet estimates](#mainnet-estimates)).
 
 This is a non-compliant fork feature: it changes no consensus rule, but the node answers questions a standard node cannot, and some historical answers are approximations (see [Limitations](#limitations)).
 
@@ -389,27 +389,29 @@ Bigger blocks keep compressing better (adjacent versions of the same object shar
 
 #### Measured on mainnet
 
-A synced mainnet node (`ttdump info` on 2026-10-30, rounds 0..66,475,729, holders index on): 65.48 GiB on disk, against the estimates below.
+A mainnet node on 2026-11-20 (`ttdump info`, rounds 0..67,147,267, holders index on), whose history was installed from the snapshot of round 66,255,793 and synced since: 67.32 GiB on disk, against the estimates below. The uncompressed column sums the keys and values of every entry in the sstables, each key with Pebble's 8-byte trailer, and agrees with the sstables' own raw-size properties.
 
-| keyspace | contents | measured | estimate (full history) |
-|---|---|---|---|
-| `c` P | app params | 17.76 GiB (19.1 GB) | 17.1 GB (16.2–17.8) |
-| `c` a | accounts | 11.58 GiB (12.4 GB) | 13.7 GB (11.5–14.9) |
-| `c` h | holdings | 9.59 GiB (10.3 GB) | 10.3 GB (8.9–11.7) |
-| `c` l | local states | 3.65 GiB (3.9 GB) | 3.4 GB (3.3–3.5) |
-| `c` A | asset params | 2.40 GiB (2.6 GB) | 3.0 GB (2.5–3.7) |
-| `c` k | boxes | 2.33 GiB (2.5 GB) | 1.8 GB (1.8–2.1) |
-| `c` T | totals | 0.91 GiB (1.0 GB) | 1.1 GB |
-| `c` C | creator index | 0.57 GiB (0.6 GB) | 0.6 GB (0.5–0.8) |
-| | **state** | **48.8 GiB (52.4 GB)** | **51 GB (45–57)** |
-| `H` | headers and digests | 10.68 GiB (11.5 GB) | 12.05 GB (11.0–13.3) |
-| `E` | expired stake | 0.22 GiB (0.2 GB) | 0.2 GB |
-| `b` | box index | 2.06 GiB (2.2 GB) | 1–3 GB ([Box index](#box-index)) |
-| `a` | asset holders index | 3.60 GiB (3.9 GB) | 3.9 GB (3.59 GiB, measured on a copy; [Holders index](#holders-index)) |
-| | WAL, manifest and other files | 0.13 GiB (0.1 GB) | |
-| | **directory on disk** | **65.48 GiB (70.3 GB)** | |
+| keyspace | contents | measured | uncompressed | ratio | estimate (full history) |
+|---|---|---|---|---|---|
+| `c` P | app params | 18.07 GiB (19.4 GB) | 535.6 GiB | 29.6× | 17.1 GB (16.2–17.8) |
+| `c` a | accounts | 11.69 GiB (12.6 GB) | 76.1 GiB | 6.5× | 13.7 GB (11.5–14.9) |
+| `c` h | holdings | 9.69 GiB (10.4 GB) | 50.7 GiB | 5.2× | 10.3 GB (8.9–11.7) |
+| `c` l | local states | 3.68 GiB (4.0 GB) | 38.8 GiB | 10.5× | 3.4 GB (3.3–3.5) |
+| `c` A | asset params | 2.42 GiB (2.6 GB) | 9.4 GiB | 3.9× | 3.0 GB (2.5–3.7) |
+| `c` k | boxes | 2.34 GiB (2.5 GB) | 16.5 GiB | 7.0× | 1.8 GB (1.8–2.1) |
+| `c` T | totals | 0.93 GiB (1.0 GB) | 7.1 GiB | 7.7× | 1.1 GB |
+| `c` C | creator index | 0.59 GiB (0.6 GB) | 3.6 GiB | 6.1× | 0.6 GB (0.5–0.8) |
+| | **state** | **49.4 GiB (53.0 GB)** | **737.7 GiB** | **14.9×** | **51 GB (45–57)** |
+| `H` | headers and digests | 10.88 GiB (11.7 GB) | 32.9 GiB | 3.0× | 12.05 GB (11.0–13.3) |
+| `E` | expired stake | 0.22 GiB (0.2 GB) | 0.65 GiB | 2.9× | 0.2 GB |
+| `b` | box index | 3.08 GiB (3.3 GB) | 7.8 GiB | 2.5× | 1–3 GB ([Box index](#box-index)) |
+| `a` | asset holders index | 3.62 GiB (3.9 GB) | 5.9 GiB | 1.6× | 3.9 GB (3.59 GiB, measured on a copy; [Holders index](#holders-index)) |
+| | WAL, manifest and other files | 0.12 GiB (0.1 GB) | | | |
+| | **directory on disk** | **67.32 GiB (72.3 GB)** | **784.9 GiB (842.8 GB)** | **11.7×** | |
 
-The keyspace rows are Pebble's estimates (sstables only); the last row is the directory's size. Without the two indexes the store is 59.8 GiB (64.2 GB), against the estimate of 65 GB (57–73) for a live store. A history installed from a snapshot is a few GB larger: the snapshot of round 66,469,709 was 65.4 GiB before its holders index was built.
+The measured keyspace rows are Pebble's estimates (sstables only); the directory row is the directory's size, and its ratio is that of the sstables. Without the two indexes the store is 60.6 GiB (65.1 GB), against the estimate of 65 GB (57–73) for a live store; the estimates are for 65.8 M rounds. Uncompressed, the store holds 2.84 B entries: 109.8 GiB of keys, 21.2 GiB of trailers and 654.0 GiB of values, 621.3 GiB of them state values (667 GB, against the 0.60 TB sampled in [What history is made of](#what-history-is-made-of)). App params are 68% of the uncompressed store (73% of the state) and compress 30×, since every global-state write stores the whole params again; the holders index, mostly 32-byte addresses, compresses least.
+
+A node that built its own history measured 65.48 GiB (70.3 GB) on 2026-10-30, at rounds 0..66,475,729, with a 2.06 GiB box index. Apart from its box index (1.02 GiB larger), the node above is 0.82 GiB larger, about what the 0.67 M rounds in between add at the 2026 run's ~1.25 KB per round (940 B of state, ~315 B of headers). A freshly installed snapshot is a few GB larger than a history built in place: the snapshot of round 66,469,709 was 65.4 GiB before its holders index was built.
 
 #### Estimates
 
