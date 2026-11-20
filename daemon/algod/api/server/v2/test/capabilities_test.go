@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -83,7 +84,8 @@ func TestCapabilities(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	stateChangesIncludes := []string{"accounts", "assets", "apps"}
+	stateChangesIncludes := []string{"accounts", "assets", "apps", "budget", "reads"}
+	withTrace := append(slices.Clone(stateChangesIncludes), "trace") // with EnableDeveloperAPI
 
 	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
 	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024}
@@ -152,7 +154,7 @@ func TestCapabilities(t *testing.T) {
 			TimeTravel: true, DeveloperApi: true, TimeLimitSeconds: 58,
 			Simulate:     model.SimulateLimits{MaxTxnGroups: 3, MaxExtraOpcodeBudget: 1_000},
 			Query:        defaultQuery,
-			StateChanges: &model.StateChangesLimits{MaxResponseBytes: 16 << 20, Include: &stateChangesIncludes},
+			StateChanges: &model.StateChangesLimits{MaxResponseBytes: 16 << 20, Include: &withTrace},
 		}},
 		{"state changes without a limit", func(c *config.Local) {
 			c.EnableTimeTravel = true

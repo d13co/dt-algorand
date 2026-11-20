@@ -39,20 +39,30 @@ import (
 	"github.com/algorand/go-algorand/ledger/ledgercore"
 )
 
-// StateChangesInclude selects what StateChangesForRound reports per group,
-// besides app state.
+// StateChangesInclude selects what StateChangesForRound reports besides app
+// state changes.
 //
 //msgp:ignore StateChangesInclude
 type StateChangesInclude uint8
 
 const (
-	// IncludeAccounts reports accounts' own fields (balance, status, counts).
+	// IncludeAccounts reports, per group, accounts' own fields (balance, status, counts).
 	IncludeAccounts StateChangesInclude = 1 << iota
-	// IncludeAssets reports asset holdings and asset params.
+	// IncludeAssets reports, per group, asset holdings and asset params.
 	IncludeAssets
-	// IncludeApps reports app params (not global state) and local state opt-ins and opt-outs.
+	// IncludeApps reports, per group, app params (not global state) and local state opt-ins and opt-outs.
 	IncludeApps
+	// IncludeBudget reports the opcode budget of each program run (statechanges_dev.go).
+	IncludeBudget
+	// IncludeReads reports the app state each transaction read.
+	IncludeReads
+	// IncludeTrace reports the execution traces of the group of the one txid,
+	// recorded by StateChangesFilter.Trace.
+	IncludeTrace
 )
+
+// includeGroups are the includes reported per group.
+const includeGroups = IncludeAccounts | IncludeAssets | IncludeApps
 
 // AccountChange is an account a group changed. A nil Before: it did not exist
 // before the group; a nil After: the group closed it.
@@ -174,10 +184,10 @@ func (t *stateChangeTracer) BeforeBlock(hdr *bookkeeping.BlockHeader) {
 	t.proto = hdr.CurrentProtocol
 }
 
-// AfterTxnGroup records the values a top-level group left. Inner groups have no
+// groupDelta records the values a top-level group left. Inner groups have no
 // delta of their own.
-func (t *stateChangeTracer) AfterTxnGroup(ep *logic.EvalParams, deltas *ledgercore.StateDelta, evalError error) {
-	if t.include == 0 || deltas == nil || evalError != nil || t.tooLarge {
+func (t *stateChangeTracer) groupDelta(ep *logic.EvalParams, deltas *ledgercore.StateDelta, evalError error) {
+	if t.include&includeGroups == 0 || deltas == nil || evalError != nil || t.tooLarge {
 		return
 	}
 	n := len(ep.TxnGroup)

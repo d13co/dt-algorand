@@ -55,10 +55,15 @@ type stateChangesLedger struct {
 	slow bool
 	got  *ledger.StateChangesFilter
 	rnd  *basics.Round
+	// traced is the group whose tracer, with include=trace, it makes
+	traced []transactions.SignedTxnWithAD
 }
 
 func (l stateChangesLedger) StateChangesForRound(ctx context.Context, rnd basics.Round, f ledger.StateChangesFilter) (ledger.StateChanges, error) {
 	*l.got, *l.rnd = f, rnd
+	if f.Trace != nil && l.traced != nil {
+		f.Trace(l.traced)
+	}
 	if l.slow {
 		<-ctx.Done()
 		return ledger.StateChanges{}, fmt.Errorf("%w: round %d: %w", ledger.ErrDeltaReevaluation, rnd, context.Cause(ctx))
@@ -275,7 +280,13 @@ func TestTxnStateChangesRoute(t *testing.T) {
 	rec = get(h)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, ledger.IncludeAccounts|ledger.IncludeAssets, f.Include)
-	for _, q := range []string{"include=", "include=accounts,", "include=accounts&include=apps", "include=boxes"} {
+	query = "include=reads,budget&txid=" + a.String()
+	rec = get(h)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, ledger.IncludeBudget|ledger.IncludeReads, f.Include)
+	require.Nil(t, f.Trace)
+	for _, q := range []string{"include=", "include=accounts,", "include=accounts&include=apps", "include=boxes",
+		"include=trace&txid=" + a.String()} { // trace needs EnableDeveloperAPI
 		f, query = ledger.StateChangesFilter{App: 99}, q
 		rec = get(h)
 		require.Equal(t, http.StatusBadRequest, rec.Code, "%s: %s", q, rec.Body.String())
@@ -284,7 +295,7 @@ func TestTxnStateChangesRoute(t *testing.T) {
 	query = "app=12"
 	var caps map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(capabilitiesJSON(t, h), &caps))
-	require.JSONEq(t, `{"max-response-bytes": 16777216, "include": ["accounts", "assets", "apps"]}`, string(caps["state-changes"]))
+	require.JSONEq(t, `{"max-response-bytes": 16777216, "include": ["accounts", "assets", "apps", "budget", "reads"]}`, string(caps["state-changes"]))
 
 	h = router(false)
 	rec = get(h)
@@ -379,4 +390,100 @@ func TestGetTxnStateChangesGroups(t *testing.T) {
 	l.sc = ledger.StateChanges{Round: 9, FeeSink: sink}
 	h.Node = makeMockNodeWithConfig(l, t.Name(), nil, cannedStatusReportGolden, false, cfg)
 	require.JSONEq(t, fmt.Sprintf(`{"round": 9, "txns": [], "fee-sink": %q}`, sink.String()), string(get("json")))
+}
+
+// TestGetTxnStateChangesDev checks include=budget, reads and trace of GET
+// /v2/deltas/{round}/txn/state-changes: how they are encoded, and that trace
+// needs EnableDeveloperAPI and exactly one transaction.
+func TestGetTxnStateChangesDev(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	acct := ledgertesting.RandomAddress()
+	a, b := transactions.Txid{1}, transactions.Txid{2}
+	sc := ledger.StateChanges{Round: 9,
+		Budget: []ledger.ProgramBudget{
+			{Path: []uint64{3}, TxID: a, Kind: ledger.ProgramLogicSig, Cost: 4, BudgetBefore: 40_000, BudgetAfter: 39_996},
+			{Path: []uint64{4}, TxID: b, Kind: ledger.ProgramApproval, App: 5, Cost: 10, BudgetBefore: 700, BudgetAfter: 1_389},
+			{Path: []uint64{4, 0}, Kind: ledger.ProgramClearState, App: 6, Cost: 701, BudgetBefore: 1_390, BudgetAfter: -1, Failed: true},
+		},
+		Reads: []ledger.TxnStateReads{{Path: []uint64{4, 0}, Reads: []ledger.StateRead{
+			{App: 6, Type: logic.GlobalState, Key: "g", Exists: true, Value: basics.TealValue{Type: basics.TealUintType, Uint: 3}},
+			{App: 6, Type: logic.LocalState, Account: acct, Key: "l"},
+			{App: 6, Type: logic.BoxState, Key: "b", Exists: true, Length: 4},
+			{App: 6, Type: logic.BoxState, Key: "e", Exists: true},
+		}}},
+		Trace: &ledger.GroupTrace{First: 3, TxIDs: []transactions.Txid{a, b}},
+	}
+	group := []transactions.SignedTxnWithAD{{}, {}}
+	type result struct {
+		rec *httptest.ResponseRecorder
+		f   ledger.StateChangesFilter
+	}
+	get := func(params model.GetTxnStateChangesForRoundParams, developerAPI bool) result {
+		cfg := config.GetDefaultLocal()
+		cfg.EnableTimeTravel = true
+		cfg.EnableDeveloperAPI = developerAPI
+		var res result
+		var rnd basics.Round
+		l := stateChangesLedger{mockLedger: &mockLedger{latest: 10}, sc: sc, got: &res.f, rnd: &rnd, traced: group}
+		h := v2.Handlers{Node: makeMockNodeWithConfig(l, t.Name(), nil, cannedStatusReportGolden, false, cfg), Log: logging.TestingLog(t), Shutdown: make(chan struct{})}
+		res.rec = httptest.NewRecorder()
+		require.NoError(t, h.GetTxnStateChangesForRound(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), res.rec), 9, params))
+		return res
+	}
+	inc := func(values ...model.GetTxnStateChangesForRoundParamsInclude) *[]model.GetTxnStateChangesForRoundParamsInclude {
+		return &values
+	}
+
+	// an empty box's length (0) is left out, as every zero value
+	res := get(model.GetTxnStateChangesForRoundParams{Include: inc("budget", "reads")}, false)
+	require.Equal(t, http.StatusOK, res.rec.Code, res.rec.Body.String())
+	require.Equal(t, ledger.IncludeBudget|ledger.IncludeReads, res.f.Include)
+	require.JSONEq(t, fmt.Sprintf(`{"round": 9, "txns": [],
+		"budget": [
+			{"path": [3], "txid": %q, "kind": "logic-sig", "cost": 4, "budget-before": 40000, "budget-after": 39996},
+			{"path": [4], "txid": %q, "kind": "approval", "app-id": 5, "cost": 10, "budget-before": 700, "budget-after": 1389},
+			{"path": [4, 0], "kind": "clear", "app-id": 6, "cost": 701, "budget-before": 1390, "budget-after": -1, "failed": true}
+		],
+		"reads": [{"path": [4, 0], "reads": [
+			{"app-id": 6, "app-state-type": "g", "key": "Zw==", "exists": true, "value": {"type": 2, "uint": 3, "bytes": ""}},
+			{"app-id": 6, "app-state-type": "l", "account": %q, "key": "bA==", "exists": false},
+			{"app-id": 6, "app-state-type": "b", "key": "Yg==", "exists": true, "length": 4},
+			{"app-id": 6, "app-state-type": "b", "key": "ZQ==", "exists": true}
+		]}]}`, a.String(), b.String(), acct.String()), res.rec.Body.String())
+
+	// without include, the ledger's budget and reads are not given; trace not without a tracer
+	res = get(model.GetTxnStateChangesForRoundParams{}, false)
+	require.Equal(t, http.StatusOK, res.rec.Code, res.rec.Body.String())
+	require.JSONEq(t, `{"round": 9, "txns": []}`, res.rec.Body.String())
+
+	// trace
+	one, two := a.String(), []string{a.String(), b.String()}
+	res = get(model.GetTxnStateChangesForRoundParams{Include: inc("trace"), Txid: &one}, false)
+	require.Equal(t, http.StatusBadRequest, res.rec.Code, res.rec.Body.String())
+	require.Contains(t, res.rec.Body.String(), "EnableDeveloperAPI")
+	require.Zero(t, res.f.Include, "it reached the ledger")
+	for _, params := range []model.GetTxnStateChangesForRoundParams{
+		{Include: inc("trace")},
+		{Include: inc("trace"), Txids: &two},
+		{Include: inc("trace"), Txid: &one, Txids: &[]string{b.String()}},
+	} {
+		res = get(params, true)
+		require.Equal(t, http.StatusBadRequest, res.rec.Code, res.rec.Body.String())
+		require.Contains(t, res.rec.Body.String(), "exactly one transaction")
+		require.Zero(t, res.f.Include, "it reached the ledger")
+	}
+	for _, params := range []model.GetTxnStateChangesForRoundParams{
+		{Include: inc("trace"), Txid: &one},
+		{Include: inc("trace"), Txid: &one, Txids: &[]string{a.String(), a.String()}},
+	} {
+		res = get(params, true)
+		require.Equal(t, http.StatusOK, res.rec.Code, res.rec.Body.String())
+		require.Equal(t, ledger.IncludeTrace, res.f.Include)
+		require.NotNil(t, res.f.Trace)
+		// the tracer saw nothing: an empty trace per transaction, no programs
+		require.JSONEq(t, fmt.Sprintf(`{"round": 9, "txns": [], "traces": [
+			{"txid": %q, "exec-trace": {}}, {"txid": %q, "exec-trace": {}}]}`, a.String(), b.String()), res.rec.Body.String())
+	}
 }
