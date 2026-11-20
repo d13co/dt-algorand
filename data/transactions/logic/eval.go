@@ -1669,6 +1669,12 @@ func (cx *EvalContext) Cost() int {
 	return cx.cost
 }
 
+// RemainingBudget returns the opcode budget the program can still spend: the pooled budget where
+// it is pooled, less what it spent otherwise.
+func (cx *EvalContext) RemainingBudget() int {
+	return cx.remainingBudget()
+}
+
 // AppID returns the ID of the currently executing app. For LogicSigs it returns 0.
 func (cx *EvalContext) AppID() basics.AppIndex {
 	return cx.appID
