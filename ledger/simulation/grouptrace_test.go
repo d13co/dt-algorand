@@ -148,7 +148,7 @@ done: int 1`,
 		TxIDs:   []transactions.Txid{group[1].ID()},
 		Trace: func(g []transactions.SignedTxnWithAD) logic.EvalTracer {
 			require.Len(t, g, 3)
-			tracer = simulation.NewGroupExecTracer(r, g, simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true})
+			tracer = simulation.NewGroupExecTracer(r-1, g, simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true}, simulation.GroupExecOptions{})
 			return tracer
 		},
 	}

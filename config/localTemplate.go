@@ -692,6 +692,22 @@ type Local struct {
 	// removes it before answering clients. Non-standard fork feature.
 	EnableEffortHeader bool `version[39]:"false"`
 
+	// EnableFailureCapture keeps failed simulations for a while, so that they can be fetched and replayed
+	// against the round they ran on (GET /v2/failures): a simulate request with a failed group, or one the
+	// simulator refused, is stored as received, and its answer carries an X-Algod-Failure-Id header. Records
+	// hold signed transactions, readable by anyone with the API token: don't enable it on a node others can
+	// reach. They are kept in failures.sqlite in the node's genesis directory. Non-standard fork feature.
+	EnableFailureCapture bool `version[39]:"false"`
+
+	// FailureCaptureRetentionSeconds is how long EnableFailureCapture keeps a failure. 0 keeps failures
+	// until FailureCaptureMaxBytes drops them. Non-standard fork feature.
+	FailureCaptureRetentionSeconds uint64 `version[39]:"86400"`
+
+	// FailureCaptureMaxBytes bounds what the failures kept by EnableFailureCapture take: the oldest are
+	// dropped beyond it, and a failure larger than it is not kept. 0 means no limit. Non-standard fork
+	// feature.
+	FailureCaptureMaxBytes uint64 `version[39]:"2147483648"`
+
 	// DisableLedgerLRUCache disables LRU caches in ledger.
 	// Setting it to TRUE might result in significant performance degradation
 	// and SHOULD NOT be used for other reasons than testing.

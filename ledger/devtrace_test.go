@@ -33,7 +33,7 @@ func TestStateChangesDiscardInners(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	tr := newStateChangeTracer(StateChangesFilter{Include: IncludeBudget | IncludeReads})
+	tr := NewDevTracer(DevConfig{Include: IncludeBudget | IncludeReads})
 	addReads := func(path ...int) {
 		r := &scReads{TxnStateReads: TxnStateReads{Path: uint64Path(path)}, key: pathKey(path, len(path))}
 		tr.reads = append(tr.reads, r)
@@ -44,7 +44,7 @@ func TestStateChangesDiscardInners(t *testing.T) {
 	}
 	tr.budget = []ProgramBudget{{Path: []uint64{3}}}
 	addReads(3)
-	f := scFrame{path: []int{5}, budgetMark: len(tr.budget), readsMark: len(tr.reads)}
+	f := devFrame{path: []int{5}, budgetMark: len(tr.budget), readsMark: len(tr.reads)}
 	tr.budget = append(tr.budget,
 		ProgramBudget{Path: []uint64{5}, Kind: ProgramClearState, Failed: true},
 		ProgramBudget{Path: []uint64{5, 0}},
@@ -89,30 +89,30 @@ func (g *guardTestTracer) Bytes() int64 { return g.bytes }
 
 // TestStateChangesTraceGuard checks that a panic in the trace tracer fails the
 // answer and stops the calls to it, and that the bytes it holds count against
-// the log's limit.
+// the limit.
 func TestStateChangesTraceGuard(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
-	tr := newStateChangeTracer(StateChangesFilter{MaxBytes: 100})
+	lim := &evalLimit{maxBytes: 400}
 	inner := &guardTestTracer{bytes: 50}
-	g := &scTraceGuard{t: tr, inner: inner}
+	g := &traceGuard{lim: lim, inner: inner}
 	g.BeforeOpcode(nil)
-	require.EqualValues(t, 50, tr.bytes)
+	require.EqualValues(t, 50, lim.bytes)
 	inner.bytes = 120
 	g.AfterOpcode(nil, nil)
-	require.EqualValues(t, 120, tr.bytes, "only what it added since")
-	require.False(t, tr.tooLarge)
+	require.EqualValues(t, 120, lim.bytes, "only what it added since")
+	require.False(t, lim.tooLarge)
 	inner.bytes = 401
 	g.AfterOpcode(nil, nil)
-	require.True(t, tr.tooLarge, "four times MaxBytes")
+	require.True(t, lim.tooLarge)
 
-	tr = newStateChangeTracer(StateChangesFilter{})
+	lim = &evalLimit{}
 	inner = &guardTestTracer{}
-	g = &scTraceGuard{t: tr, inner: inner}
+	g = &traceGuard{lim: lim, inner: inner}
 	g.BeforeOpcode(nil)
 	g.BeforeOpcode(nil) // panics
-	require.ErrorContains(t, tr.err, "tracing: boom")
+	require.ErrorContains(t, lim.err, "tracing: boom")
 	require.False(t, g.DetailedEvalErrors())
 	g.AfterOpcode(nil, nil)
 	require.Equal(t, 2, inner.calls, "not called after its failure")

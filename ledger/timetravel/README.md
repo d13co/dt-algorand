@@ -229,6 +229,7 @@ The simulate responses were decoded into algosdk's `SimulateResponse`, the query
 | `simulate.max-extra-opcode-budget` | `MaxAPISimulateExtraOpcodeBudget` | most `extra-opcode-budget`; a config of 0 counts as 320,000 |
 | `query` | `MaxAPIQueryCalls` and the other `MaxAPIQuery*` | the limits of [POST /v2/query](#read-only-queries-post-v2query): `max-calls`, `max-call-budget` (a config of 0 counts as 1), `max-call-log-bytes` (in up to 2048 logs; 0: the protocol's 1024 bytes in 32 logs), `max-call-state-bytes` (0: no limit), `max-response-bytes` (0: no limit; the answer is built in memory while the request holds its slot, so a running request can take two to three times this much), `max-rounds` (a config of 0 counts as 1) and `max-total-calls` (`MaxAPIQueryTotalCalls`, default 1024: the calls times the `rounds` entries, so 1024 calls at one round or 64 at 16; at most `max-calls` times `max-rounds`, which a config of 0 means; `max-calls` is never more than it); absent when `MaxAPIQueryCalls` is 0, which disables the endpoint: it then answers 400 (a stock algod answers 404) |
 | `state-changes` | `EnableTimeTravel`, `MaxAPIStateChangesResponseBytes` | present when the node serves `GET /v2/deltas/{round}/txn/state-changes`; `max-response-bytes` is the most bytes its answer may take, encoded (0: no limit); `include` the values its `include` parameter takes (`trace` only with `EnableDeveloperAPI`) |
+| `failures` | `EnableFailureCapture`, `FailureCaptureRetentionSeconds`, `FailureCaptureMaxBytes` | present when the node keeps failed simulations (not on a follower, nor when the store failed to open) ([Failed simulations kept for replay](#failed-simulations-kept-for-replay-get-v2failures)): `retention-seconds` and `max-bytes`, how long and how much it keeps (0: no limit) |
 
 The response holds the values after these rules, so `time-limit-seconds` and three of `query`'s are the only numbers that can be 0. The extra budget is added once to each top-level group that has an app call, to the group's pooled app budget: a group of only LogicSigs and payments gets nothing from it, since it never raises a LogicSig's budget.
 
@@ -238,6 +239,18 @@ Two simulate limits are not in the response, because they don't come from the no
 - Groups simulated in order share one block, so together they may take at most the protocol's `MaxTxnBytesPerBlock`, counting what they produce (logs, inner transactions) as well as what was sent. A group that doesn't fit fails with `block does not have space for transaction`, without a `failed-at`, and the later groups still run; a smaller one may still fit.
 
 A stock algod answers 404, which tells a client it can't use any of the fork's features. `QueryParallelism` and `SimulateParallelism` are left out: they limit how fast a request runs, not what it may ask.
+
+### Failed simulations kept for replay (GET /v2/failures)
+
+With `EnableFailureCapture` (default off), the node keeps each simulate request that has a failed group, or that the simulator refused (400; not one refused for the node's limits, such as too many groups, which never runs), as it was received, with the round it ran on, so that it can be fetched and replayed later against the same state. A time travel node rebuilds the state of any round, so a record holds only the request: a few KB. The answer that failed carries an `X-Algod-Failure-Id` header (readable by browsers on other origins), which names the record:
+
+- `GET /v2/failures/{id}` returns it: `round`, the round whose state it ran on (the simulated block is the one after), the failed `groups` with simulate's `failure-message` and `failed-at`, or `error` for a refused request, the `request` itself (base64, in `request-format`: `json` or `msgpack`), the `consensus-version` of the simulated block and the `node-version`.
+- `GET /v2/failures` lists the records newest first, without their requests, `limit` (default 100, at most 1000) at a time, with `next-token` for the next page; `kind=simulate` narrows it.
+- To replay one, simulate its request with `round` set to its `round`, adding `exec-trace-config` for traces. Simulate at a past round applies only the consensus rules, not the node's policies for new blocks: a request that failed at the latest round on such a policy can pass on replay (see [REST](#rest)).
+
+Records go after `FailureCaptureRetentionSeconds` (default 86400, a day; 0: no limit) and, oldest first, once they take more than `FailureCaptureMaxBytes` (default 2 GiB; 0: no limit); a record larger than that is not kept. Capture never slows the request: a background writer stores the records in `failures.sqlite` in the genesis directory, and drops them when it falls behind (more than 256 records, or 32 MB of requests, waiting). Without `EnableFailureCapture` both endpoints answer 400; with it, on a node that keeps no failures (a follower, or one whose store failed to open, which the node logs), 503, and `GET /v2/capabilities` leaves `failures` out.
+
+The records hold signed transactions, which anyone with the node's API token can read, and resubmit while they are valid. Don't enable it on a node others can reach.
 
 ## Design
 

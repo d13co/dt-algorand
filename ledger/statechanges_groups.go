@@ -277,15 +277,7 @@ func (t *stateChangeTracer) groupDelta(ep *logic.EvalParams, deltas *ledgercore.
 // groupReported reports whether the group at payset indexes first to
 // first+n-1 is in the answer.
 func (t *stateChangeTracer) groupReported(first, n int) bool {
-	if t.only == nil {
-		return true
-	}
-	for i := first; i < first+n; i++ {
-		if t.only[i] {
-			return true
-		}
-	}
-	return false
+	return groupReported(t.only, first, n)
 }
 
 // withoutGlobals returns params without their global state; the programs are

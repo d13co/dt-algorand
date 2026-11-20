@@ -60,7 +60,7 @@ const (
 
 // exposedHeaders are the response headers cross-origin scripts may read:
 // browsers hide the others.
-var exposedHeaders = []string{"Retry-After", v2.EffortHeader, v2.TTRoundHeader}
+var exposedHeaders = []string{"Retry-After", v2.EffortHeader, v2.TTRoundHeader, v2.FailureIDHeader}
 
 // wrapCtx passes a common context to each request without a global variable.
 func wrapCtx(ctx lib.ReqContext, handler func(lib.ReqContext, echo.Context)) echo.HandlerFunc {

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -912,6 +913,7 @@ func TestStateChangesTracerFrames(t *testing.T) {
 	ep1 := &logic.EvalParams{TxnGroup: make([]transactions.SignedTxnWithAD, 2)}
 	ep2 := &logic.EvalParams{TxnGroup: make([]transactions.SignedTxnWithAD, 1)}
 	tr := newStateChangeTracer(StateChangesFilter{})
+	tr.BeforeTxnGroup(ep1)
 	tr.BeforeTxn(ep1, 0)
 	tr.BeforeTxn(ep2, 0)
 	tr.AfterTxn(ep2, 0, transactions.ApplyData{}, nil)
@@ -926,6 +928,7 @@ func TestStateChangesTracerFrames(t *testing.T) {
 
 	// a truncation forgets the keys it dropped, and their bytes
 	tr = newStateChangeTracer(StateChangesFilter{})
+	tr.BeforeTxnGroup(ep1)
 	tr.BeforeTxn(ep1, 0)
 	mark := len(tr.log)
 	for _, k := range []string{"a", "b", "a"} {
@@ -937,6 +940,48 @@ func TestStateChangesTracerFrames(t *testing.T) {
 	require.Empty(t, tr.log)
 	require.Empty(t, tr.lastIdx)
 	require.Zero(t, tr.bytes)
+}
+
+// TestStateChangesTracerFailedGroup checks that a top-level group that failed,
+// which a replay evaluates and no block holds, leaves no change, its
+// transactions keep their indexes, and the next group's follow them.
+func TestStateChangesTracerFailedGroup(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	ep1 := &logic.EvalParams{TxnGroup: make([]transactions.SignedTxnWithAD, 3)}
+	ep2 := &logic.EvalParams{TxnGroup: make([]transactions.SignedTxnWithAD, 1)}
+	tr := newStateChangeTracer(StateChangesFilter{})
+	write := func(key string) {
+		tr.add(scEvent{path: tr.frames[len(tr.frames)-1].path, typ: logic.GlobalState, app: 1, key: key, exists: true})
+	}
+	tr.BeforeTxnGroup(ep2)
+	tr.BeforeTxn(ep2, 0)
+	write("kept")
+	tr.AfterTxn(ep2, 0, transactions.ApplyData{}, nil)
+	tr.AfterTxnGroup(ep2, nil, nil)
+	kept := tr.bytes
+
+	tr.BeforeTxnGroup(ep1)
+	tr.BeforeTxn(ep1, 0)
+	require.Equal(t, []int{1}, tr.frames[0].path)
+	write("a")
+	tr.AfterTxn(ep1, 0, transactions.ApplyData{}, nil)
+	tr.BeforeTxn(ep1, 1)
+	write("b")
+	tr.AfterTxn(ep1, 1, transactions.ApplyData{}, errors.New("rejected"))
+	// the third never begins
+	tr.AfterTxnGroup(ep1, nil, errors.New("rejected"))
+	require.Len(t, tr.log, 1, "the failed group's writes are gone, its first transaction's too")
+	require.Equal(t, "kept", tr.log[0].key)
+	require.Equal(t, kept, tr.bytes)
+	require.Empty(t, tr.frames)
+
+	tr.BeforeTxnGroup(ep2)
+	tr.BeforeTxn(ep2, 0)
+	require.Equal(t, []int{4}, tr.frames[0].path, "after the failed group's three")
+	require.Len(t, tr.tops, 5)
+	require.NoError(t, tr.err)
 }
 
 // scBase is a stateChangesBase over fixed state.
