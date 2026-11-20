@@ -65,8 +65,9 @@ class Dtalgorand < Formula
       the node stopped (about 5 minutes on mainnet).
 
       To run dtgoal, dtalgocfg, dtalgod, dtalgoh and dtdiagcfg without -d (ttsnap and ttimport
-      always need it), add the data directory to your shell, then open a new terminal:
-        echo "export DTALGORAND_DATA=#{var}/dtalgorand" >> ~/.zshrc
+      always need it), add the data directory to your shell (~/.bash_profile with bash), then
+      open a new terminal:
+        grep -qs DTALGORAND_DATA ~/.zshrc || echo "export DTALGORAND_DATA=#{var}/dtalgorand" >> ~/.zshrc
 
       Start the node, and have it start at login:
         brew services start dtalgorand
