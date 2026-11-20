@@ -69,7 +69,7 @@ func cmdPublish(args []string) error {
 }
 
 type publishOpts struct {
-	signer     *crypto.FalconSigner
+	signer     *crypto.Falcon1024Signer
 	full       bool
 	catchpoint string
 	workers    int
@@ -323,7 +323,7 @@ func checkSHA256(path, want string) error {
 // writeSigned writes the manifest b to path and its signature to path.sig,
 // replacing both atomically, the signature first so that a reader never gets
 // a manifest with an older signature.
-func writeSigned(path string, b []byte, signer *crypto.FalconSigner) error {
+func writeSigned(path string, b []byte, signer *crypto.Falcon1024Signer) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

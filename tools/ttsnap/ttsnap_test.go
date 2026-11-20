@@ -54,7 +54,7 @@ type testNet struct {
 	genesis  bookkeeping.Genesis
 	genBlock bookkeeping.Block
 	producer string // genesis dir, in a data dir with the genesis file
-	signer   *crypto.FalconSigner
+	signer   *crypto.Falcon1024Signer
 	keys     string // keys file: the producer's key
 	out      string
 	srv      *httptest.Server
@@ -67,7 +67,7 @@ type testNet struct {
 }
 
 // newKey makes a key file and returns its signer.
-func newKey(t *testing.T) (string, *crypto.FalconSigner) {
+func newKey(t *testing.T) (string, *crypto.Falcon1024Signer) {
 	p := filepath.Join(t.TempDir(), "key")
 	var seed crypto.FalconSeed
 	crypto.RandBytes(seed[:])

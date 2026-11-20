@@ -279,7 +279,7 @@ func (t *stateChangeTracer) DetailedEvalErrors() bool {
 func (t *stateChangeTracer) runLogicSigs(ep *logic.EvalParams, first int, traced bool) {
 	var group []transactions.SignedTxn
 	for i := range ep.TxnGroup {
-		if ep.TxnGroup[i].Lsig.HasProgram() {
+		if hasSigProgram(ep.TxnGroup[i].SignedTxn) {
 			group = make([]transactions.SignedTxn, len(ep.TxnGroup))
 			break
 		}
@@ -301,10 +301,15 @@ func (t *stateChangeTracer) runLogicSigs(ep *logic.EvalParams, first int, traced
 	}
 	sep.Tracer = st
 	for gi := range group {
-		if !group[gi].Lsig.HasProgram() {
+		if !hasSigProgram(group[gi]) {
 			continue
 		}
-		pass, _, err := logic.EvalSignatureFull(gi, sep)
+		lsig, err := sigProgram(group[gi])
+		if err != nil {
+			t.fail(fmt.Errorf("the logic sig of payset transaction %d: %w", first+gi, err))
+			return
+		}
+		pass, _, err := logic.EvalSignatureProgram(lsig.Logic, lsig.Args, gi, sep)
 		if err == nil && !pass {
 			err = errors.New("rejected")
 		}
@@ -313,6 +318,21 @@ func (t *stateChangeTracer) runLogicSigs(ep *logic.EvalParams, first int, traced
 			return
 		}
 	}
+}
+
+// hasSigProgram reports whether stxn is authorized by evaluating a program: its Lsig's, or the one
+// an ls-scheme SaltedKeySig carries.
+func hasSigProgram(stxn transactions.SignedTxn) bool {
+	return stxn.SKsig.IsLogicSig() || stxn.Lsig.HasProgram()
+}
+
+// sigProgram returns the logic sig that authorizes stxn, as the node's verifier picks it: an
+// ls-scheme SaltedKeySig's before the Lsig.
+func sigProgram(stxn transactions.SignedTxn) (transactions.LogicSig, error) {
+	if stxn.SKsig.IsLogicSig() {
+		return stxn.SKsig.Lsig()
+	}
+	return stxn.Lsig, nil
 }
 
 // startBudget adds a budget entry for the program cx begins, and returns its index.
