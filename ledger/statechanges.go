@@ -136,14 +136,12 @@ func (l *Ledger) StateChangesForRound(ctx context.Context, rnd basics.Round, f S
 		return StateChanges{}, fmt.Errorf("round %d is not in the history", rnd)
 	}
 	t := newStateChangeTracer(f)
-	if f.Include&(IncludeBudget|IncludeTrace) != 0 { // the logic sigs run
-		t.sigLedger = pastLedger{l.Counted(ledgercore.EffortFromContext(ctx)), rnd - 1}
-	}
 	var blk *bookkeeping.Block // loaded for the txids, else by reevalBlock
+	var payset []transactions.SignedTxnWithAD
 	if len(f.TxIDs) > 0 {
 		// an unknown txid costs no evaluation
 		var err error
-		blk, t.only, err = l.paysetIndexes(rnd, f.TxIDs)
+		blk, payset, t.only, err = l.paysetIndexes(rnd, f.TxIDs)
 		if err != nil {
 			return StateChanges{}, err
 		}
@@ -151,25 +149,44 @@ func (l *Ledger) StateChangesForRound(ctx context.Context, rnd basics.Round, f S
 			t.lastTop = max(t.lastTop, i)
 		}
 	}
+	var dev *DevTracer
 	var trace *GroupTrace
-	if f.Include&IncludeTrace != 0 {
-		if len(t.only) != 1 || f.Trace == nil {
-			return StateChanges{}, ErrTraceNeedsOneTxn
+	if f.Include&devIncludes != 0 {
+		cfg := DevConfig{Include: f.Include, Only: t.only}
+		if f.Include&(IncludeBudget|IncludeTrace) != 0 {
+			// the re-evaluation doesn't run the logic sigs: the tracer does
+			cfg.SigLedger = pastLedger{l.Counted(ledgercore.EffortFromContext(ctx)), rnd - 1}
 		}
-		var err error
-		trace, err = t.startTrace(blk, rnd, f.Trace)
-		if err != nil {
-			return StateChanges{}, err
+		if f.Include&IncludeTrace != 0 {
+			if len(t.only) != 1 || f.Trace == nil {
+				return StateChanges{}, ErrTraceNeedsOneTxn
+			}
+			var top int
+			for i := range t.only {
+				top = i
+			}
+			first, end := groupBounds(payset, top)
+			trace = &GroupTrace{First: first, TxIDs: make([]transactions.Txid, end-first)}
+			group := make([]transactions.SignedTxnWithAD, end-first)
+			for i := range group {
+				group[i] = payset[first+i]
+				trace.TxIDs[i] = group[i].ID()
+			}
+			cfg.TraceFirst, cfg.Trace = first, f.Trace(group)
 		}
+		dev = newDevTracer(cfg, t.evalLimit)
 	}
 	evalCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	t.cancel = cancel // stops the evaluation once the log is too large, or on a failure
+	// dev first: past the byte limit, its trace tracer sees an opcode begin before the
+	// programs abort
+	tracer := MuxTracer(dev, t)
 	var sc StateChanges
 	// The post-pass runs in the reeval slot too: its reads of rnd-1 can reach
 	// the history on disk. No trackerMu here: reevalBlock and the post-pass's
 	// lookups take it.
-	_, err := l.reevalBlock(evalCtx, rnd, blk, ReevalAdmissionWait, t, func() error {
+	_, err := l.reevalBlock(evalCtx, rnd, blk, ReevalAdmissionWait, tracer, func() error {
 		if t.tooLarge {
 			return ErrStateChangesTooLarge
 		}
@@ -181,9 +198,12 @@ func (l *Ledger) StateChangesForRound(ctx context.Context, rnd basics.Round, f S
 		if err != nil && ctx.Err() == nil && !errors.Is(err, ErrStateChangesTooLarge) {
 			err = fmt.Errorf("%w: round %d: reading the state before the round: %w", ErrDeltaReevaluation, rnd, err)
 		}
-		if err == nil && trace != nil {
-			trace.Programs = t.programs
-			sc.Trace = trace
+		if err == nil && dev != nil {
+			sc.Budget, sc.Reads = dev.Budget(), dev.Reads()
+			if trace != nil {
+				trace.Programs = dev.Programs()
+				sc.Trace = trace
+			}
 		}
 		return err
 	})
@@ -196,16 +216,16 @@ func (l *Ledger) StateChangesForRound(ctx context.Context, rnd basics.Round, f S
 	return sc, err
 }
 
-// paysetIndexes returns block rnd and the set of payset indexes of its
-// top-level transactions txids, which may repeat.
-func (l *Ledger) paysetIndexes(rnd basics.Round, txids []transactions.Txid) (*bookkeeping.Block, map[int]bool, error) {
+// paysetIndexes returns block rnd, its payset and the set of payset indexes of
+// its top-level transactions txids, which may repeat.
+func (l *Ledger) paysetIndexes(rnd basics.Round, txids []transactions.Txid) (*bookkeeping.Block, []transactions.SignedTxnWithAD, map[int]bool, error) {
 	blk, err := l.Block(rnd)
 	if err != nil {
-		return nil, nil, fmt.Errorf("round %d: its block is not stored: %w", rnd, err)
+		return nil, nil, nil, fmt.Errorf("round %d: its block is not stored: %w", rnd, err)
 	}
 	payset, err := blk.DecodePaysetFlat()
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
+		return nil, nil, nil, fmt.Errorf("%w: round %d: %w", ErrDeltaReevaluation, rnd, err)
 	}
 	want := make(map[transactions.Txid]bool, len(txids))
 	for _, txid := range txids {
@@ -220,10 +240,10 @@ func (l *Ledger) paysetIndexes(rnd basics.Round, txids []transactions.Txid) (*bo
 	}
 	for _, txid := range txids { // the first missing one, in the request's order
 		if want[txid] {
-			return nil, nil, fmt.Errorf("%w: %s, round %d", ErrTxnNotInRound, txid.String(), rnd)
+			return nil, nil, nil, fmt.Errorf("%w: %s, round %d", ErrTxnNotInRound, txid.String(), rnd)
 		}
 	}
-	return &blk, tops, nil
+	return &blk, payset, tops, nil
 }
 
 // scKind is the kind of a stateChangeTracer event.
@@ -256,8 +276,6 @@ type scFrame struct {
 	path   []int
 	mark   int // len(log) when it began
 	inners int // inner transactions it has spawned
-
-	budgetMark, readsMark int // len(budget) and len(reads) when it began
 }
 
 // scPending is the state an opcode is about to write.
@@ -279,26 +297,23 @@ type scPending struct {
 type stateChangeTracer struct {
 	logic.NullEvalTracer
 
+	*evalLimit // the log's bytes, as eventBytes counts them, shared with a DevTracer's
+
 	frames     []scFrame
-	tops       []*transactions.Transaction // top-level transactions, in payset order
+	tops       []*transactions.Transaction // top-level transactions of the groups begun, in payset order
+	groupMark  int                         // len(log) when the current top-level group began
 	log        []scEvent
 	pending    scPending
 	hasPending bool
-	err        error // the first inconsistency or lookup error
 
 	app     basics.AppIndex // log only this app's changes (0: all)
 	only    map[int]bool    // the payset indexes of StateChangesFilter.TxIDs (nil: every transaction)
 	lastTop int             // log nothing after this top-level transaction (-1: no limit)
 
-	lastIdx  map[scKey]int // the last write event of each key
-	barrier  int           // events before it are of an earlier stretch: never rewritten
-	bytes    int64         // what the log holds, as eventBytes counts it
-	maxBytes int64         // 0: no limit
-	tooLarge bool          // the log passed maxBytes: it stopped, cancel was called, and programs abort
-	cancel   context.CancelFunc
+	lastIdx map[scKey]int // the last write event of each key
+	barrier int           // events before it are of an earlier stretch: never rewritten
 
 	include StateChangesInclude
-	devState
 	latest  map[gKey]gVal // each record's value after the latest group that changed it
 	groups  []*scGroup    // the reported groups, in block order
 	feeSink basics.Address
@@ -306,16 +321,20 @@ type stateChangeTracer struct {
 }
 
 func newStateChangeTracer(f StateChangesFilter) *stateChangeTracer {
-	return &stateChangeTracer{
-		app:      f.App,
-		lastTop:  -1,
-		lastIdx:  make(map[scKey]int),
-		include:  f.Include,
-		latest:   make(map[gKey]gVal),
-		devState: devState{traceFirst: -1},
-		maxBytes: int64(min(f.MaxBytes, math.MaxInt64/stateChangesLogFactor)) * stateChangesLogFactor,
+	t := &stateChangeTracer{
+		evalLimit: &evalLimit{maxBytes: int64(min(f.MaxBytes, math.MaxInt64/stateChangesLogFactor)) * stateChangesLogFactor},
+		app:       f.App,
+		lastTop:   -1,
+		lastIdx:   make(map[scKey]int),
+		include:   f.Include,
+		latest:    make(map[gKey]gVal),
 	}
+	t.onFull = append(t.onFull, func() { t.log, t.lastIdx = nil, nil })
+	return t
 }
+
+// devIncludes are the includes a DevTracer records.
+const devIncludes = IncludeBudget | IncludeReads | IncludeTrace
 
 // scEventSize is the in-memory size of an scEvent, without what it points to.
 const scEventSize = int64(unsafe.Sizeof(scEvent{}))
@@ -326,35 +345,12 @@ func eventBytes(ev *scEvent) int64 {
 	return scEventSize + int64(len(ev.key)+len(ev.val.Bytes))
 }
 
-// fail fails the answer with err, and stops the evaluation.
-func (t *stateChangeTracer) fail(err error) {
-	if t.err == nil {
-		t.err = err
-		if t.cancel != nil {
-			t.cancel()
-		}
-	}
-}
-
 // logs reports whether a change of app by the current transaction belongs in the log.
 func (t *stateChangeTracer) logs(app basics.AppIndex) bool {
 	if t.tooLarge || (t.app != 0 && app != t.app) || len(t.frames) == 0 {
 		return false
 	}
 	return t.lastTop < 0 || t.frames[0].path[0] <= t.lastTop
-}
-
-// grow adds d to the log's bytes, and stops the log and the evaluation once
-// they pass maxBytes.
-func (t *stateChangeTracer) grow(d int64) {
-	t.bytes += d
-	if t.maxBytes > 0 && t.bytes > t.maxBytes {
-		t.tooLarge = true
-		t.log, t.lastIdx = nil, nil
-		if t.cancel != nil {
-			t.cancel()
-		}
-	}
 }
 
 // add appends ev to the log, or rewrites the key's event of the current stretch.
@@ -403,33 +399,53 @@ func (t *stateChangeTracer) frameOf(ep *logic.EvalParams, gi int) int {
 	return -1
 }
 
+// BeforeTxnGroup counts a top-level group's transactions, in payset order,
+// before any of them begins: one that fails leaves the later ones unbegun.
+func (t *stateChangeTracer) BeforeTxnGroup(ep *logic.EvalParams) {
+	if ep.GetCaller() != nil {
+		return
+	}
+	t.frames = t.frames[:0]
+	t.groupMark = len(t.log)
+	t.barrier = len(t.log)
+	for i := range ep.TxnGroup {
+		t.tops = append(t.tops, &ep.TxnGroup[i].Txn)
+	}
+}
+
+// AfterTxnGroup records the values a top-level group left. A top-level group
+// that failed, which no block holds (a replay), leaves nothing: the evaluator
+// discards all of it. One that panicked arrives without its error (the
+// evaluator recovers after this call), but with transactions left open.
+func (t *stateChangeTracer) AfterTxnGroup(ep *logic.EvalParams, deltas *ledgercore.StateDelta, evalError error) {
+	if ep.GetCaller() == nil && (evalError != nil || len(t.frames) != 0) {
+		t.truncate(t.groupMark)
+		t.frames = t.frames[:0]
+		return
+	}
+	t.groupDelta(ep, deltas, evalError)
+}
+
 // BeforeTxn starts a frame: a top-level transaction is at its payset index, an
 // inner one at the next index of its parent's inner transactions.
 func (t *stateChangeTracer) BeforeTxn(ep *logic.EvalParams, groupIndex int) {
 	var path []int
 	if n := len(t.frames); n == 0 {
-		path = []int{len(t.tops)}
-		t.tops = append(t.tops, &ep.TxnGroup[groupIndex].Txn)
+		// the group's transactions are the last ones counted
+		path = []int{len(t.tops) - len(ep.TxnGroup) + groupIndex}
 	} else {
 		parent := &t.frames[n-1]
 		path = append(slices.Clip(parent.path), parent.inners)
 		parent.inners++
 	}
-	t.frames = append(t.frames, scFrame{ep: ep, gi: groupIndex, path: path, mark: len(t.log),
-		budgetMark: len(t.budget), readsMark: len(t.reads)})
+	t.frames = append(t.frames, scFrame{ep: ep, gi: groupIndex, path: path, mark: len(t.log)})
 	t.barrier = len(t.log)
-	if t.tracing {
-		t.trace.BeforeTxn(ep, groupIndex)
-	}
 }
 
 // AfterTxn ends the frame. A local state cleared by CloseOut or ClearState,
 // and the globals of a deleted app, are cleared after the approval program's
 // writes, as apply.ApplicationCall does.
 func (t *stateChangeTracer) AfterTxn(ep *logic.EvalParams, groupIndex int, ad transactions.ApplyData, evalError error) {
-	if t.tracing {
-		t.trace.AfterTxn(ep, groupIndex, ad, evalError)
-	}
 	i := t.frameOf(ep, groupIndex)
 	if i < 0 {
 		t.fail(fmt.Errorf("transaction %d of a group ended without starting", groupIndex))
@@ -461,13 +477,9 @@ func (t *stateChangeTracer) AfterTxn(ep *logic.EvalParams, groupIndex int, ad tr
 	t.frames = t.frames[:i]
 }
 
-// BeforeOpcode remembers the state a write or delete opcode targets (and a read
-// one, with IncludeReads). It reads no value: a read before the op could change
-// what the evaluator caches.
+// BeforeOpcode remembers the state a write or delete opcode targets. It reads
+// no value: a read before the op could change what the evaluator caches.
 func (t *stateChangeTracer) BeforeOpcode(cx *logic.EvalContext) {
-	if t.tracing {
-		t.trace.BeforeOpcode(cx)
-	}
 	if t.tooLarge {
 		// Stop the program, and so the evaluation, at once. A ClearState
 		// program swallows the abort (EvalContract makes it an EvalError) and
@@ -475,48 +487,23 @@ func (t *stateChangeTracer) BeforeOpcode(cx *logic.EvalContext) {
 		// not this abort, are what keep a partial answer out.
 		panic(logic.EvalAborted{Cause: ErrStateChangesTooLarge})
 	}
-	if cx.RunMode() != logic.ModeApp {
-		return
+	p, ok, err := explainStateOp(cx)
+	if err != nil {
+		t.fail(err)
 	}
-	spec := cx.GetOpSpec()
-	if spec.AppStateExplain == nil {
-		return
+	if ok && (p.op == logic.AppStateWrite || p.op == logic.AppStateDelete) {
+		t.pending, t.hasPending = p, true
 	}
-	// The op fails on a short stack (possible in a ClearState program, whose
-	// failure the block keeps); explain must not panic first, which would
-	// change how the program fails.
-	if len(cx.Stack) < len(spec.Arg.Types) {
-		return
-	}
-	defer func() {
-		if x := recover(); x != nil {
-			t.hasPending = false
-			t.fail(fmt.Errorf("explaining %s: %v", spec.Name, x))
-		}
-	}()
-	typ, op, app, acct, key := spec.AppStateExplain(cx)
-	if op != logic.AppStateWrite && op != logic.AppStateDelete && (op != logic.AppStateRead || t.include&IncludeReads == 0) {
-		return
-	}
-	t.pending = scPending{typ: typ, op: op, app: app, acct: acct, key: key}
-	t.hasPending = true
 }
 
 // AfterOpcode logs the value the opcode left, read from the evaluation's ledger.
 func (t *stateChangeTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
-	if t.tracing {
-		t.trace.AfterOpcode(cx, evalError)
-	}
 	if !t.hasPending {
 		return
 	}
 	p := t.pending
 	t.hasPending = false
 	if evalError != nil {
-		return
-	}
-	if p.op == logic.AppStateRead {
-		t.readOpcode(cx, p)
 		return
 	}
 	n := len(t.frames)
@@ -546,7 +533,6 @@ func (t *stateChangeTracer) AfterOpcode(cx *logic.EvalContext, evalError error) 
 // transactions included: the evaluator discards it and the block has none of
 // it. The clear itself still happens (AfterTxn).
 func (t *stateChangeTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalError error) {
-	t.endProgram(cx, pass, evalError)
 	if pass && evalError == nil {
 		return
 	}
@@ -563,7 +549,6 @@ func (t *stateChangeTracer) AfterProgram(cx *logic.EvalContext, pass bool, evalE
 	t.frames = t.frames[:i+1]
 	f := &t.frames[i]
 	t.truncate(f.mark)
-	t.discardInners(f)
 	f.inners = 0
 }
 
@@ -890,7 +875,6 @@ func (t *stateChangeTracer) changes(ctx context.Context, base stateChangesBase, 
 		}
 		out.Txns = append(out.Txns, e)
 	}
-	out.Budget, out.Reads = t.devResults()
 	if t.include&includeGroups != 0 {
 		groups, err := t.groupChanges(ctx, r, f, &size)
 		if err != nil {

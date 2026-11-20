@@ -123,6 +123,10 @@ type evalTracer struct {
 	abortState
 
 	hooks *testHooks
+
+	// passive leaves the evaluation as it is: no extra budget, eval constants or unnamed
+	// resource policy (GroupExecTracer, grouptrace.go).
+	passive bool
 }
 
 func makeEvalTracer(lastRound basics.Round, groups [][]transactions.SignedTxnWithAD, request Request) *evalTracer {
@@ -238,12 +242,12 @@ func (tracer *evalTracer) BeforeTxnGroup(ep *logic.EvalParams) {
 	// Each top-level group gets the extra budget, as a lone group does. Inner groups share their
 	// top-level group's pool, so granting the extra again for each of them would hand out a
 	// multiple of what was asked for (upstream #6708).
-	if ep.PooledApplicationBudget != nil && ep.GetCaller() == nil {
+	if ep.PooledApplicationBudget != nil && ep.GetCaller() == nil && !tracer.passive {
 		tracer.currentGroup().AppBudgetAdded += tracer.result.EvalOverrides.ExtraOpcodeBudget
 		*ep.PooledApplicationBudget += tracer.result.EvalOverrides.ExtraOpcodeBudget
 	}
 
-	if ep.GetCaller() == nil {
+	if ep.GetCaller() == nil && !tracer.passive {
 		// Override runtime related constraints against ep, before entering txn group
 		ep.EvalConstants = tracer.result.EvalOverrides.LogicEvalConstants()
 		if tracer.result.EvalOverrides.AllowUnnamedResources {

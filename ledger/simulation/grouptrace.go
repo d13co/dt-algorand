@@ -27,31 +27,45 @@ import (
 	"github.com/algorand/go-algorand/data/transactions/logic"
 )
 
-// GroupExecTracer records the execution traces of one top-level group of a block being
-// re-evaluated, as simulate records them. It must see only that group's events: its logic sig
-// runs first, then the group, from its BeforeTxnGroup to its AfterTxnGroup. It changes nothing
-// in the evaluation: a request without overrides leaves the evaluation constants and budgets as
-// they are, and it never aborts. Unlike simulate, it reads no state before an opcode: it
-// records no initial states.
+// GroupExecTracer records the execution traces of one top-level group of an evaluation, as
+// simulate records them: a group of a block being re-evaluated, or one being replayed. It must
+// see only that group's events: its logic sigs first, then the group, from its BeforeTxnGroup to
+// its AfterTxnGroup (ledger.DevTracer forwards them so). It changes nothing in the evaluation (no
+// extra budget, eval constants or unnamed resource policy, unlike simulate's tracer) and never
+// aborts.
 type GroupExecTracer struct {
 	*evalTracer
 	bytes int64
 }
 
-// NewGroupExecTracer returns a tracer for group, a top-level group of the block of round rnd,
-// recording what cfg asks for.
-func NewGroupExecTracer(rnd basics.Round, group []transactions.SignedTxnWithAD, cfg ExecTraceConfig) *GroupExecTracer {
+// GroupExecOptions are what a GroupExecTracer records besides the traces.
+type GroupExecOptions struct {
+	// InitialStates records, as simulate's initial-states, the app state each opcode reaches,
+	// read before it runs (with cfg.State). The reads can change what the evaluator caches:
+	// leave it off where the result is checked against a block's (a re-evaluated round).
+	InitialStates bool
+}
+
+// NewGroupExecTracer returns a tracer for group, a top-level group of the block after round
+// lastRound, recording what cfg and opts ask for.
+func NewGroupExecTracer(lastRound basics.Round, group []transactions.SignedTxnWithAD, cfg ExecTraceConfig, opts GroupExecOptions) *GroupExecTracer {
 	txns := make([]transactions.SignedTxn, len(group))
 	for i := range group {
 		txns[i] = group[i].SignedTxn
 	}
-	request := Request{Round: rnd, TxnGroups: [][]transactions.SignedTxn{txns}, TraceConfig: cfg}
-	t := makeEvalTracer(rnd, [][]transactions.SignedTxnWithAD{group}, request)
-	// recording them reads the state an opcode reaches before it runs, which can change what
-	// the evaluator caches
-	t.result.InitialStates = nil
+	request := Request{Round: lastRound, TxnGroups: [][]transactions.SignedTxn{txns}, TraceConfig: cfg}
+	t := makeEvalTracer(lastRound, [][]transactions.SignedTxnWithAD{group}, request)
+	t.passive = true
+	if !opts.InitialStates {
+		t.result.InitialStates = nil
+	}
 	t.startGroup(0)
 	return &GroupExecTracer{evalTracer: t}
+}
+
+// InitialStates returns the initial states recorded with GroupExecOptions.InitialStates, else nil.
+func (t *GroupExecTracer) InitialStates() *ResourcesInitialStates {
+	return t.result.InitialStates
 }
 
 // Sizes counted for what an opcode adds to a trace.

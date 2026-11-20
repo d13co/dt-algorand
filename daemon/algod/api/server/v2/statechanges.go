@@ -23,12 +23,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/algorand/go-algorand/config"
-	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
@@ -135,7 +133,9 @@ func (v2 *Handlers) GetTxnStateChangesForRound(ctx echo.Context, round basics.Ro
 			return badRequest(ctx, ledger.ErrTraceNeedsOneTxn, errTraceNeedsOneTxn, v2.Log)
 		}
 		f.Trace = func(group []transactions.SignedTxnWithAD) logic.EvalTracer {
-			trace = simulation.NewGroupExecTracer(round, group, stateChangesTraceConfig)
+			// the block is re-evaluated against round-1; reading initial states could change
+			// what its evaluation caches
+			trace = simulation.NewGroupExecTracer(round-1, group, stateChangesTraceConfig, simulation.GroupExecOptions{})
 			return trace
 		}
 	}
@@ -301,122 +301,4 @@ func convertGroupStateChanges(sc ledger.StateChanges) []model.GroupStateChanges 
 		out[i] = m
 	}
 	return out
-}
-
-var programKinds = map[ledger.ProgramKind]model.ProgramBudgetKind{
-	ledger.ProgramApproval:   model.ProgramBudgetKindApproval,
-	ledger.ProgramClearState: model.ProgramBudgetKindClear,
-	ledger.ProgramLogicSig:   model.ProgramBudgetKindLogicSig,
-}
-
-func txidOrNil(txid transactions.Txid) *string {
-	if txid == (transactions.Txid{}) {
-		return nil
-	}
-	s := txid.String()
-	return &s
-}
-
-func convertProgramBudget(b ledger.ProgramBudget) model.ProgramBudget {
-	return model.ProgramBudget{
-		Path:         b.Path,
-		Txid:         txidOrNil(b.TxID),
-		Kind:         programKinds[b.Kind],
-		AppId:        omitEmpty(b.App),
-		Cost:         uint64(b.Cost),
-		BudgetBefore: b.BudgetBefore,
-		BudgetAfter:  b.BudgetAfter,
-		Failed:       omitEmpty(b.Failed),
-	}
-}
-
-func convertTxnStateReads(r ledger.TxnStateReads) model.TxnStateReads {
-	reads := util.Map(r.Reads, func(sr ledger.StateRead) model.AppStateRead {
-		m := model.AppStateRead{
-			AppId:        sr.App,
-			AppStateType: model.AppStateReadAppStateType(convertApplicationState(sr.Type)),
-			Key:          []byte(sr.Key),
-			Exists:       sr.Exists,
-		}
-		if sr.Type == logic.LocalState {
-			m.Account = addrOrNil(sr.Account)
-		}
-		if sr.Exists {
-			if sr.Type == logic.BoxState {
-				n := uint64(sr.Length)
-				m.Length = &n
-			} else {
-				m.Value = convertStateChangeValue(&sr.Value)
-			}
-		}
-		return m
-	})
-	return model.TxnStateReads{Path: r.Path, Txid: txidOrNil(r.TxID), Reads: reads}
-}
-
-// convertGroupTrace converts the traced group's execution traces, and the
-// disassembly of the programs they ran, in the order the traces first ran them.
-func convertGroupTrace(g *ledger.GroupTrace, traces []*simulation.TransactionTrace) (*[]model.TxnExecTrace, *[]model.ProgramDisassembly) {
-	out := make([]model.TxnExecTrace, 0, len(traces))
-	var order []crypto.Digest
-	seen := make(map[crypto.Digest]bool)
-	var visit func(t *simulation.TransactionTrace)
-	visit = func(t *simulation.TransactionTrace) {
-		for _, h := range []crypto.Digest{t.LogicSigHash, t.ApprovalProgramHash, t.ClearStateProgramHash} {
-			if !h.IsZero() && !seen[h] {
-				seen[h] = true
-				order = append(order, h)
-			}
-		}
-		for i := range t.InnerTraces {
-			visit(&t.InnerTraces[i])
-		}
-	}
-	for i, t := range traces {
-		if i >= len(g.TxIDs) {
-			break
-		}
-		if t == nil {
-			t = &simulation.TransactionTrace{}
-		}
-		visit(t)
-		out = append(out, model.TxnExecTrace{Txid: g.TxIDs[i].String(), ExecTrace: *convertTxnTrace(t)})
-	}
-	programs := make([]model.ProgramDisassembly, 0, len(order))
-	for _, h := range order {
-		program, ok := g.Programs[h]
-		if !ok {
-			continue
-		}
-		programs = append(programs, model.ProgramDisassembly{Hash: slices.Clone(h[:]), Lines: disassemblyLines(program)})
-	}
-	return &out, &programs
-}
-
-// disassemblyLines splits a program's disassembly into lines, each with the pc
-// of the opcode it holds.
-func disassemblyLines(program []byte) []model.DisassemblyLine {
-	text, offsets, err := logic.DisassembleWithOffsets(program)
-	if err != nil && text == "" {
-		return []model.DisassemblyLine{{Text: "// " + err.Error()}}
-	}
-	pcAt := make(map[int]uint64, len(offsets))
-	for _, o := range offsets {
-		pcAt[o.Offset] = uint64(o.PC)
-	}
-	lines := make([]model.DisassemblyLine, 0, len(offsets)+2)
-	start := 0
-	for start < len(text) {
-		end := strings.IndexByte(text[start:], '\n')
-		if end < 0 {
-			end = len(text) - start
-		}
-		line := model.DisassemblyLine{Text: text[start : start+end]}
-		if pc, ok := pcAt[start]; ok {
-			line.Pc = &pc
-		}
-		lines = append(lines, line)
-		start += end + 1
-	}
-	return lines
 }
