@@ -1182,6 +1182,60 @@ type EvalDeltaKeyValue struct {
 	Value EvalDelta `json:"value"`
 }
 
+// Failure A failure this node keeps. Non-standard fork feature.
+type Failure struct {
+	// ConsensusVersion The consensus version of the block it was evaluated in.
+	ConsensusVersion *string `json:"consensus-version,omitempty"`
+
+	// Error A failure of the whole request: the simulator refused it, and no group ran.
+	Error *string `json:"error,omitempty"`
+
+	// Groups The groups that failed, in the request's order.
+	Groups *[]FailureGroup `json:"groups,omitempty"`
+
+	// Id The failure's id, as in the X-Algod-Failure-Id header of the answer that failed.
+	Id string `json:"id"`
+
+	// Kind What failed: `simulate`, a simulate request. Clients should ignore kinds they don't know.
+	Kind string `json:"kind"`
+
+	// NodeVersion The node's build when it failed. A replay on another build can differ.
+	NodeVersion *string `json:"node-version,omitempty"`
+
+	// Request The request as received, in request-format. Only from GET /v2/failures/{id}.
+	Request *[]byte `json:"request,omitempty"`
+
+	// RequestFormat The encoding of request: `json` or `msgpack`.
+	RequestFormat *string `json:"request-format,omitempty"`
+
+	// Round The round whose state it ran on: it was evaluated as the block after this round. A simulate request replays with this round as its `round`.
+	Round basics.Round `json:"round"`
+
+	// Time When it failed, in milliseconds since the Unix epoch.
+	Time int64 `json:"time"`
+}
+
+// FailureGroup A failed group of a simulate request.
+type FailureGroup struct {
+	// FailedAt The path of the transaction that failed, as simulate's failed-at.
+	FailedAt *[]uint64 `json:"failed-at,omitempty"`
+
+	// Index The group's index in the request.
+	Index uint64 `json:"index"`
+
+	// Message Why it failed, as simulate's failure-message.
+	Message string `json:"message"`
+}
+
+// FailureLimits What this node keeps of failed simulations (GET /v2/failures). Present when the node keeps them (node config EnableFailureCapture). Non-standard fork feature.
+type FailureLimits struct {
+	// MaxBytes The most bytes the kept failures take; the oldest are dropped beyond it. 0 means no limit (node config FailureCaptureMaxBytes).
+	MaxBytes uint64 `json:"max-bytes"`
+
+	// RetentionSeconds How long a failure is kept; 0 until max-bytes drops it (node config FailureCaptureRetentionSeconds).
+	RetentionSeconds uint64 `json:"retention-seconds"`
+}
+
 // Genesis defines model for Genesis.
 type Genesis struct {
 	Alloc     []GenesisAllocation `json:"alloc"`
@@ -2134,6 +2188,9 @@ type CapabilitiesResponse struct {
 	// DeveloperApi If true, the node serves POST /v2/teal/compile and /v2/teal/disassemble (and POST /v2/transactions/async when EnableExperimentalAPI is also set), and requests may enable simulate's exec-trace-config and set the protocol future in query. A simulate request with exec-trace-config enabled may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).
 	DeveloperApi bool `json:"developer-api"`
 
+	// Failures What this node keeps of failed simulations (GET /v2/failures). Present when the node keeps them (node config EnableFailureCapture). Non-standard fork feature.
+	Failures *FailureLimits `json:"failures,omitempty"`
+
 	// Query The limits of POST /v2/query requests on this node. Absent when the node has queries disabled (node config MaxAPIQueryCalls 0). Non-standard fork feature.
 	Query *QueryLimits `json:"query,omitempty"`
 
@@ -2181,6 +2238,17 @@ type DebugSettingsProfResponse = DebugSettingsProf
 type DisassembleResponse struct {
 	// Result disassembled Teal code
 	Result string `json:"result"`
+}
+
+// FailureResponse A failure this node keeps. Non-standard fork feature.
+type FailureResponse = Failure
+
+// FailuresResponse defines model for FailuresResponse.
+type FailuresResponse struct {
+	Failures []Failure `json:"failures"`
+
+	// NextToken Pass as `next` for the next page; absent on the last one.
+	NextToken *string `json:"next-token,omitempty"`
 }
 
 // GetBlockTimeStampOffsetResponse defines model for GetBlockTimeStampOffsetResponse.
@@ -2916,6 +2984,18 @@ type GetTxnStateChangesForRoundParamsFormat string
 
 // GetTxnStateChangesForRoundParamsInclude defines parameters for GetTxnStateChangesForRound.
 type GetTxnStateChangesForRoundParamsInclude string
+
+// ListFailuresParams defines parameters for ListFailures.
+type ListFailuresParams struct {
+	// Kind Only failures of this kind: `simulate`.
+	Kind *string `form:"kind,omitempty" json:"kind,omitempty"`
+
+	// Limit Maximum number of failures to return. Defaults to 100, at most 1000.
+	Limit *uint64 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Next The next page of results. Use the next token provided by the previous results.
+	Next *string `form:"next,omitempty" json:"next,omitempty"`
+}
 
 // GetSupplyParams defines parameters for GetSupply.
 type GetSupplyParams struct {

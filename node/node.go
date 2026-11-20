@@ -41,6 +41,7 @@ import (
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/data/committee"
+	"github.com/algorand/go-algorand/data/failures"
 	"github.com/algorand/go-algorand/data/pools"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/verify"
@@ -119,6 +120,8 @@ type AlgorandFullNode struct {
 
 	ledger *data.Ledger
 	net    network.GossipNode
+
+	failures *failures.Store // EnableFailureCapture; nil without (failures.go)
 
 	transactionPool *pools.TransactionPool
 	txHandler       *data.TxHandler
@@ -396,6 +399,8 @@ recreateNetwork:
 
 	node.heartbeatService = heartbeat.NewService(node.accountManager, node.ledger, node, node.log)
 
+	node.openFailureStore()
+
 	return node, err
 }
 
@@ -559,6 +564,7 @@ func (node *AlgorandFullNode) Stop() {
 	node.transactionPool.Shutdown()
 	node.cancelCtx()
 	node.ledger.Close()
+	node.closeFailureStore()
 }
 
 // note: unlike the other two functions, this accepts a whole filename

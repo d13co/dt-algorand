@@ -1620,7 +1620,8 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	// Simulate transaction
-	simulationResult, answered, err := v2.simulateOnce(ctx, convertSimulationRequest(simulateRequest))
+	request := convertSimulationRequest(simulateRequest)
+	simulationResult, answered, err := v2.simulateOnce(ctx, request)
 	if answered {
 		return err
 	}
@@ -1628,11 +1629,22 @@ func (v2 *Handlers) SimulateTransaction(ctx echo.Context, params model.SimulateT
 		var invalidTxErr simulation.InvalidRequestError
 		switch {
 		case errors.As(err, &invalidTxErr):
+			// kept when the simulator refused it, not its limits: those take no slot, and
+			// a replay would be refused the same way
+			cfg := v2.Node.Config()
+			if request.WithNodeLimits(cfg).Validate(cfg.EnableDeveloperAPI) == nil {
+				ranOn := simulateRequest.Round
+				if ranOn == 0 {
+					ranOn = stat.LastRound
+				}
+				v2.captureSimulate(ctx, requestData, ranOn, nil, invalidTxErr)
+			}
 			return badRequest(ctx, invalidTxErr, invalidTxErr.Error(), v2.Log)
 		default:
 			return internalError(ctx, err, err.Error(), v2.Log)
 		}
 	}
+	v2.captureSimulate(ctx, requestData, simulationResult.LastRound, &simulationResult, nil)
 
 	response := convertSimulationResult(simulationResult)
 	responseData, err := encode(handle, &response)

@@ -742,6 +742,9 @@
                   "description": "If true, the node serves POST /v2/teal/compile and /v2/teal/disassemble (and POST /v2/transactions/async when EnableExperimentalAPI is also set), and requests may enable simulate's exec-trace-config and set the protocol future in query. A simulate request with exec-trace-config enabled may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
                   "type": "boolean"
                 },
+                "failures": {
+                  "$ref": "#/components/schemas/FailureLimits"
+                },
                 "query": {
                   "$ref": "#/components/schemas/QueryLimits"
                 },
@@ -868,6 +871,41 @@
           }
         },
         "description": "Teal disassembly Result"
+      },
+      "FailureResponse": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Failure"
+            }
+          }
+        },
+        "description": "A failure this node keeps, with its request. Non-standard fork feature."
+      },
+      "FailuresResponse": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "properties": {
+                "failures": {
+                  "items": {
+                    "$ref": "#/components/schemas/Failure"
+                  },
+                  "type": "array"
+                },
+                "next-token": {
+                  "description": "Pass as `next` for the next page; absent on the last one.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "failures"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "description": "The failures this node keeps, newest first, without their requests. Non-standard fork feature."
       },
       "GetBlockTimeStampOffsetResponse": {
         "content": {
@@ -3063,6 +3101,112 @@
         "required": [
           "key",
           "value"
+        ],
+        "type": "object"
+      },
+      "Failure": {
+        "description": "A failure this node keeps. Non-standard fork feature.",
+        "properties": {
+          "consensus-version": {
+            "description": "The consensus version of the block it was evaluated in.",
+            "type": "string"
+          },
+          "error": {
+            "description": "A failure of the whole request: the simulator refused it, and no group ran.",
+            "type": "string"
+          },
+          "groups": {
+            "description": "The groups that failed, in the request's order.",
+            "items": {
+              "$ref": "#/components/schemas/FailureGroup"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "The failure's id, as in the X-Algod-Failure-Id header of the answer that failed.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "What failed: `simulate`, a simulate request. Clients should ignore kinds they don't know.",
+            "type": "string"
+          },
+          "node-version": {
+            "description": "The node's build when it failed. A replay on another build can differ.",
+            "type": "string"
+          },
+          "request": {
+            "description": "The request as received, in request-format. Only from GET /v2/failures/{id}.",
+            "format": "byte",
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            "type": "string"
+          },
+          "request-format": {
+            "description": "The encoding of request: `json` or `msgpack`.",
+            "type": "string"
+          },
+          "round": {
+            "description": "The round whose state it ran on: it was evaluated as the block after this round. A simulate request replays with this round as its `round`.",
+            "type": "integer",
+            "x-go-type": "basics.Round"
+          },
+          "time": {
+            "description": "When it failed, in milliseconds since the Unix epoch.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "round",
+          "time"
+        ],
+        "type": "object"
+      },
+      "FailureGroup": {
+        "description": "A failed group of a simulate request.",
+        "properties": {
+          "failed-at": {
+            "description": "The path of the transaction that failed, as simulate's failed-at.",
+            "items": {
+              "type": "integer",
+              "x-go-type": "uint64"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The group's index in the request.",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "message": {
+            "description": "Why it failed, as simulate's failure-message.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FailureLimits": {
+        "description": "What this node keeps of failed simulations (GET /v2/failures). Present when the node keeps them (node config EnableFailureCapture). Non-standard fork feature.",
+        "properties": {
+          "max-bytes": {
+            "description": "The most bytes the kept failures take; the oldest are dropped beyond it. 0 means no limit (node config FailureCaptureMaxBytes).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          },
+          "retention-seconds": {
+            "description": "How long a failure is kept; 0 until max-bytes drops it (node config FailureCaptureRetentionSeconds).",
+            "type": "integer",
+            "x-go-type": "uint64"
+          }
+        },
+        "required": [
+          "max-bytes",
+          "retention-seconds"
         ],
         "type": "object"
       },
@@ -8460,6 +8604,9 @@
                       "description": "If true, the node serves POST /v2/teal/compile and /v2/teal/disassemble (and POST /v2/transactions/async when EnableExperimentalAPI is also set), and requests may enable simulate's exec-trace-config and set the protocol future in query. A simulate request with exec-trace-config enabled may ask for at most 320000 extra-opcode-budget. A disabled exec-trace-config is accepted either way (node config EnableDeveloperAPI).",
                       "type": "boolean"
                     },
+                    "failures": {
+                      "$ref": "#/components/schemas/FailureLimits"
+                    },
                     "query": {
                       "$ref": "#/components/schemas/QueryLimits"
                     },
@@ -9593,6 +9740,202 @@
         "tags": [
           "public",
           "experimental"
+        ]
+      }
+    },
+    "/v2/failures": {
+      "get": {
+        "description": "Lists the failures this node keeps, newest first, without their requests: simulate requests with a failed group, or that the simulator refused (not those refused for the node's limits), each as received. A failure is kept for node config FailureCaptureRetentionSeconds, or until FailureCaptureMaxBytes drops it. Fetch one with GET /v2/failures/{id}; replay a simulate failure by simulating its request at its round. Needs node config EnableFailureCapture: 400 without it, 503 when it is set but the node keeps no failures (a follower, or a store that failed to open); GET /v2/capabilities lists `failures` only when the node keeps them. Non-standard fork feature.",
+        "operationId": "ListFailures",
+        "parameters": [
+          {
+            "description": "Only failures of this kind: `simulate`.",
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of failures to return. Defaults to 100, at most 1000.",
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "x-go-type": "uint64"
+            },
+            "x-go-type": "uint64"
+          },
+          {
+            "description": "The next page of results. Use the next token provided by the previous results.",
+            "in": "query",
+            "name": "next",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "failures": {
+                      "items": {
+                        "$ref": "#/components/schemas/Failure"
+                      },
+                      "type": "array"
+                    },
+                    "next-token": {
+                      "description": "Pass as `next` for the next page; absent on the last one.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "failures"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The failures this node keeps, newest first, without their requests. Non-standard fork feature."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid API Token"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Failure capture is enabled but the node keeps no failures"
+          },
+          "default": {
+            "content": {},
+            "description": "Unknown Error"
+          }
+        },
+        "summary": "List the failed simulations this node keeps.",
+        "tags": [
+          "dtalgorand"
+        ]
+      }
+    },
+    "/v2/failures/{id}": {
+      "get": {
+        "description": "Returns a failure this node keeps, with its request, by the id from the X-Algod-Failure-Id header of the answer that failed, or from GET /v2/failures. Needs node config EnableFailureCapture: 400 without it, 503 when it is set but the node keeps no failures. Non-standard fork feature.",
+        "operationId": "GetFailure",
+        "parameters": [
+          {
+            "description": "The failure's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            },
+            "description": "A failure this node keeps, with its request. Non-standard fork feature."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid API Token"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No such failure: never kept, expired or dropped"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Failure capture is enabled but the node keeps no failures"
+          },
+          "default": {
+            "content": {},
+            "description": "Unknown Error"
+          }
+        },
+        "summary": "Get a failed simulation this node keeps.",
+        "tags": [
+          "dtalgorand"
         ]
       }
     },

@@ -34,7 +34,11 @@ import (
 // simulate and query requests.
 // (GET /v2/capabilities)
 func (v2 *Handlers) GetCapabilities(ctx echo.Context) error {
-	return ctx.JSON(http.StatusOK, capabilities(v2.Node.Config()))
+	c := capabilities(v2.Node.Config())
+	if v2.failureStore() == nil {
+		c.Failures = nil // configured, but not kept (a follower, or a store that didn't open)
+	}
+	return ctx.JSON(http.StatusOK, c)
 }
 
 // timeLimitSeconds returns limit in whole seconds, at least 1 for a limit under a second, since 0
@@ -68,6 +72,10 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 		include := StateChangesIncludeValues(cfg.EnableDeveloperAPI)
 		stateChanges = &model.StateChangesLimits{MaxResponseBytes: cfg.MaxAPIStateChangesResponseBytes, Include: &include}
 	}
+	var failureLimits *model.FailureLimits
+	if cfg.EnableFailureCapture {
+		failureLimits = &model.FailureLimits{RetentionSeconds: cfg.FailureCaptureRetentionSeconds, MaxBytes: cfg.FailureCaptureMaxBytes}
+	}
 	return model.CapabilitiesResponse{
 		TimeTravel:       cfg.EnableTimeTravel,
 		DeveloperApi:     cfg.EnableDeveloperAPI,
@@ -78,5 +86,6 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 		},
 		Query:        query,
 		StateChanges: stateChanges,
+		Failures:     failureLimits,
 	}
 }
