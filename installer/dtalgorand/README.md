@@ -46,10 +46,10 @@ Don't run `brew services start dtalgorand` yet: a first start begins a sync from
 
 On Linux, there is nothing to set: the commands run as the `dtalgorand` user through `sudo -u dtalgorand`, which doesn't pass your environment on, so they keep `-d`.
 
-On macOS, point the dtalgorand commands at the node's data directory, so that they work without `-d`. Add `DTALGORAND_DATA` to `~/.zshrc` (zsh is the default shell; with bash, write `~/.bash_profile` instead of `~/.zshrc` in the commands below). The `grep` skips the `echo` when the file already sets the variable, so running the line again doesn't add a second copy:
+On macOS, point the dtalgorand commands at the node's data directory, so that they work without `-d`. Add `DTALGORAND_DATA` to `~/.zshrc` (zsh is the default shell; with bash, write `~/.bash_profile` instead of `~/.zshrc` in the commands below). The `grep` skips the `echo` when the file already has an `export DTALGORAND_DATA=` line, so running the line again doesn't add a second copy:
 
 ```sh
-grep -qs DTALGORAND_DATA ~/.zshrc || echo "export DTALGORAND_DATA=$(brew --prefix)/var/dtalgorand" >> ~/.zshrc
+grep -qs '^export DTALGORAND_DATA=' ~/.zshrc || echo "export DTALGORAND_DATA=$(brew --prefix)/var/dtalgorand" >> ~/.zshrc
 ```
 
 The line holds the path as it was when you ran it: `/opt/homebrew/var/dtalgorand` with a default Homebrew. Open a new terminal, or run `source ~/.zshrc`, then check that the commands find the data directory:
@@ -288,6 +288,6 @@ Don't point dtalgorand at a validator's data directory: give it its own, or run 
 - The node stops while the Mac sleeps, as does a `ttsnap fetch` (rerun it to resume). Keep the Mac awake on power in System Settings, or run `caffeinate -s -w $(cat $(brew --prefix)/var/dtalgorand/algod.pid)`.
 - Time Machine backs up the history unless you exclude it: `tmutil addexclusion <dir>`.
 - Unlike the .deb, an upgrade doesn't restart the node: run `brew services restart dtalgorand`.
-- Start, stop and restart the node with `brew services`. `dtgoal node start`, `stop` and `restart` refuse, saying the node is managed with systemctl: the data directory's `system.json` is the .deb's, with `"systemd_managed": true`. The message's systemctl advice and link are for the .deb: on macOS, launchd runs the node for `brew services`. Don't remove the flag to get `dtgoal` working: launchd starts again a node that `dtgoal node stop` stopped, and a node that `dtgoal node start` started runs outside launchd, which neither restarts it nor stops it with `brew services stop`.
-- `brew uninstall dtalgorand` removes the binaries only: after `brew services stop dtalgorand`, delete `D` (and the history's directory, if `TimeTravelDBDir` put it elsewhere) and `$(brew --prefix)/var/log/dtalgorand.log` by hand. `brew untap d13co/tap` removes the tap.
+- Start, stop and restart the node with `brew services`. `dtgoal node start`, `stop` and `restart` refuse, saying the node is managed with systemctl: the data directory's `system.json` is the .deb's, with `"systemd_managed": true`. The message's systemctl advice and link are for the .deb: on macOS, launchd runs the node for `brew services`. Keep the flag: without it, launchd starts again a node that `dtgoal node stop` stopped, and `dtgoal node restart` can start an algod alongside launchd's, so one of them fails to lock `algod.lock`, and if that one is launchd's, launchd starts it again about every 10 seconds. Don't delete `system.json` either: its `"shared_server": true` keeps the wallets you make with `dtgoal` in `~/.algorand/mainnet-v1.0/kmd-v0.5`, and without it `dtgoal` looks for them in the data directory instead.
+- `brew uninstall dtalgorand` removes the binaries only: run `brew services stop dtalgorand`, check that `D/algod.pid` is gone, then delete `D` (and the history's directory, if `TimeTravelDBDir` put it elsewhere) and `$(brew --prefix)/var/log/dtalgorand.log` by hand. Wallets made with `dtgoal` are outside `D`, in `~/.algorand/mainnet-v1.0/kmd-v0.5`, which a stock `goal` on the same Mac may also use: delete it only if neither holds wallets you need. `brew untap d13co/tap` removes the tap.
 - A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
