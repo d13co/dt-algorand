@@ -326,8 +326,9 @@ func hasSigProgram(stxn transactions.SignedTxn) bool {
 	return stxn.SKsig.IsLogicSig() || stxn.Lsig.HasProgram()
 }
 
-// sigProgram returns the logic sig that authorizes stxn, as the node's verifier picks it: an
-// ls-scheme SaltedKeySig's before the Lsig.
+// sigProgram returns the logic sig that authorizes stxn: the one an ls-scheme SaltedKeySig carries,
+// or else its Lsig. A committed txn has at most one of them (the verifier refuses a txn with more
+// than one kind of signature), so the order does not choose between two.
 func sigProgram(stxn transactions.SignedTxn) (transactions.LogicSig, error) {
 	if stxn.SKsig.IsLogicSig() {
 		return stxn.SKsig.Lsig()
