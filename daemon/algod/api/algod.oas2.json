@@ -4628,6 +4628,10 @@
         "state-change": {
           "description": "A boolean option enabling returning application state changes (global, local, and box changes) with the execution trace during simulation.",
           "type": "boolean"
+        },
+        "state-change-app-id": {
+          "description": "A boolean option adding app-id to each application state change of the execution trace. Needs state-change. Non-standard fork feature: stock algod refuses it, and a node takes it when its capabilities list it in simulate.exec-trace-config.",
+          "type": "boolean"
         }
       }
     },
@@ -5118,6 +5122,13 @@
           "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
           "type": "integer",
           "x-go-type": "uint64"
+        },
+        "exec-trace-config": {
+          "description": "The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. A node without this list takes none of them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -5700,7 +5711,7 @@
           "x-algorand-format": "Address"
         },
         "app-id": {
-          "description": "The application whose state the operation changed. It differs from the running application for the foreign box opcodes (app_box_*). Non-standard fork feature.",
+          "description": "The application whose state the operation changed. It differs from the running application only when a foreign box opcode (app_box_*) changes another application's boxes. Only with exec-trace-config state-change-app-id. Non-standard fork feature.",
           "type": "integer",
           "x-go-type": "basics.AppIndex",
           "x-algorand-format": "uint64"
@@ -5767,7 +5778,7 @@
           }
         },
         "state-changes": {
-          "description": "The operations against application states: the current application's, or another application's boxes for the foreign box opcodes (app_box_*); each operation's app-id names the application.",
+          "description": "The operations against application states: the current application's, or another application's boxes when a foreign box opcode (app_box_*) names one. With exec-trace-config state-change-app-id, each operation's app-id names the application.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/ApplicationStateOperation"

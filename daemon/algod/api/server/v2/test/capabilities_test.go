@@ -72,7 +72,7 @@ func TestCapabilitiesJSON(t *testing.T) {
 
 	require.JSONEq(t, `{
 		"time-travel": false, "developer-api": false, "time-limit-seconds": 108,
-		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000},
+		"simulate": {"max-txn-groups": 16, "max-extra-opcode-budget": 320000, "exec-trace-config": ["state-change-app-id"]},
 		"query": {"max-calls": 1024, "max-call-budget": 320000, "max-call-log-bytes": 65536, "max-call-state-bytes": 67108864, "max-response-bytes": 16777216, "max-rounds": 16, "max-total-calls": 1024}
 	}`, string(capabilitiesJSON(t, capabilitiesRouter(t, config.GetDefaultLocal()))))
 }
@@ -84,6 +84,7 @@ func TestCapabilities(t *testing.T) {
 	t.Parallel()
 
 	stateChangesIncludes := []string{"accounts", "assets", "apps"}
+	execTraceOptions := []string{"state-change-app-id"}
 
 	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
 	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024}
@@ -178,6 +179,8 @@ func TestCapabilities(t *testing.T) {
 			t.Parallel()
 			cfg := config.GetDefaultLocal()
 			tc.configure(&cfg)
+			// whatever the config
+			tc.want.Simulate.ExecTraceConfig = &execTraceOptions
 			require.Equal(t, tc.want, getCapabilities(t, capabilitiesRouter(t, cfg)))
 		})
 	}
