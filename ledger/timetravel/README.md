@@ -54,7 +54,7 @@ They take `min-round`, `max-round` (inclusive, default 0 and the latest round), 
 
 `GET /v2/deltas/{R}` works for any round whose block is still stored (every round with `Archival: true`, otherwise the last ~1,000, more with `MaxBlockHistoryLookback`): rounds older than the trackers' in-memory deltas are re-evaluated (see [Node integration](#node-integration)).
 
-`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. Such a node can't catch up from a catchpoint (stock algod refuses catchpoints on archival nodes), so it builds its history by syncing from genesis or with `ttimport`, not from a snapshot. The cost is the archival block DB (~3.5 TB) plus the history (about 70 GB, of which about 11.5 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
+`Archival: true` also works: the node keeps every block and certificate and serves every stock archival endpoint unchanged, with `?round=` and historical simulate on top. Such a node can't catch up from a catchpoint (stock algod refuses catchpoints on archival nodes), so it builds its history by syncing from genesis or with `ttimport`, not from a snapshot. The cost is the archival block DB (~3.5 TB) plus the history (about 70 GB, of which about 11.7 GB are headers that duplicate the block DB's; historical lookups read them from the history all the same).
 
 ### Extra opcode budget limit in simulation
 
@@ -404,14 +404,17 @@ A mainnet node on 2026-11-20 (`ttdump info`, rounds 0..67,147,267, holders index
 | | **state** | **49.4 GiB (53.0 GB)** | **737.7 GiB** | **14.9×** | **51 GB (45–57)** |
 | `H` | headers and digests | 10.88 GiB (11.7 GB) | 32.9 GiB | 3.0× | 12.05 GB (11.0–13.3) |
 | `E` | expired stake | 0.22 GiB (0.2 GB) | 0.65 GiB | 2.9× | 0.2 GB |
-| `b` | box index | 3.08 GiB (3.3 GB) | 7.8 GiB | 2.5× | 1–3 GB ([Box index](#box-index)) |
+| `b` | box index | 2.32 GiB (2.5 GB) | 5.4 GiB | 2.3× | 1–3 GB ([Box index](#box-index)) |
+| `b` | box index entries deleted, not yet compacted away | 0.76 GiB (0.8 GB) | 2.4 GiB | | |
 | `a` | asset holders index | 3.62 GiB (3.9 GB) | 5.9 GiB | 1.6× | 3.9 GB (3.59 GiB, measured on a copy; [Holders index](#holders-index)) |
 | | WAL, manifest and other files | 0.12 GiB (0.1 GB) | | | |
 | | **directory on disk** | **67.32 GiB (72.3 GB)** | **784.9 GiB (842.8 GB)** | **11.7×** | |
 
-The measured keyspace rows are Pebble's estimates (sstables only); the directory row is the directory's size, and its ratio is that of the sstables. Without the two indexes the store is 60.6 GiB (65.1 GB), against the estimate of 65 GB (57–73) for a live store; the estimates are for 65.8 M rounds. Uncompressed, the store holds 2.84 B entries: 109.8 GiB of keys, 21.2 GiB of trailers and 654.0 GiB of values, 621.3 GiB of them state values (667 GB, against the 0.60 TB sampled in [What history is made of](#what-history-is-made-of)). App params are 68% of the uncompressed store (73% of the state) and compress 30×, since every global-state write stores the whole params again; the holders index, mostly 32-byte addresses, compresses least.
+The measured keyspace rows are Pebble's estimates (sstables only); the directory row is the directory's size, and its ratio is against the sstables' 67.20 GiB. The deleted box index entries are the snapshot's own index: `ttsnap fetch` rebuilt the index at install, which deletes the old entries with a range tombstone, and four weeks later Pebble had not yet compacted that sstable, so its 54.45 million entries still take space. Without them the store holds 66.44 GiB of sstables and 782.5 GiB uncompressed (11.8×). Without the two indexes, deleted entries included, the store is 60.6 GiB (65.1 GB), against the estimate of 65 GB (57–73) for a live store; the estimates are for 65.8 M rounds.
 
-A node that built its own history measured 65.48 GiB (70.3 GB) on 2026-10-30, at rounds 0..66,475,729, with a 2.06 GiB box index. Apart from its box index (1.02 GiB larger), the node above is 0.82 GiB larger, about what the 0.67 M rounds in between add at the 2026 run's ~1.25 KB per round (940 B of state, ~315 B of headers). A freshly installed snapshot is a few GB larger than a history built in place: the snapshot of round 66,469,709 was 65.4 GiB before its holders index was built.
+Uncompressed, the store holds 2.84 billion entries: 109.8 GiB of keys, 21.2 GiB of trailers and 654.0 GiB of values. The trailers weigh most on the small entries: without them, expired stake compresses 1.7×, the holders index 1.4× and the box index 2.0×. State values are 621.3 GiB (667 GB), above the 0.60 TB estimated from samples in [What history is made of](#what-history-is-made-of): app params are 85.5% of them there (the sample: 82%), and asset params hold 8.7 GB of values, not 32 GB. App params are 68% of the uncompressed store and compress 30×, since every global-state write stores the whole params again; the holders index, mostly 32-byte addresses, compresses least.
+
+A node that built its own history measured 65.48 GiB (70.3 GB) on 2026-10-30, at rounds 0..66,475,729, with a 2.06 GiB box index. The node above is 1.84 GiB larger: 0.76 GiB of deleted box index entries, 0.26 GiB more live box index, and 0.82 GiB elsewhere, about what the 0.67 M rounds in between add at the 2026 run's ~1.25 KB per round (940 B of state, ~315 B of headers). The snapshot itself, 61.49 GiB in 211 files, is about the size of a history built in place without a holders index (61.88 GiB on the October node).
 
 #### Estimates
 
