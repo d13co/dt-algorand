@@ -84,11 +84,15 @@ make install
 
 ### Test
 
-```bash
-# Unit tests
-make test
+Unit tests:
 
-# Integration tests
+```bash
+make test
+```
+
+Integration tests:
+
+```bash
 make integration
 ```
 
