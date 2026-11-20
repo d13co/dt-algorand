@@ -146,7 +146,7 @@ The commitment is a SHA-256 digest of a history's content up to a round, the sam
 
 Two copies of fnet's history taken two weeks apart, written by different builds and one with 23k more rounds, give the same commitment at the earlier one's last round; so does a copy before and after `ttimport -dedup` or `-index-boxes`, and a fetched copy after the install removed 2,775 no-op records.
 
-It reads the whole history: fnet's 25.3M rounds (3.0 GB on disk, 20.5 GB of keys and values) take 45–50 s on one core and 9 s with 16 goroutines on an idle 16-thread desktop, from the page cache (about 70 CPU-seconds). Mainnet's history (about 70 GB on disk, 0.75 TB of keys and values) should take about 6 minutes with 16 goroutines when the disk keeps up (NVMe), and the read speed of the disk otherwise.
+It reads the whole history: fnet's 25.3M rounds (3.0 GB on disk, 20.5 GB of keys and values) take 45–50 s on one core and 9 s with 16 goroutines on an idle 16-thread desktop, from the page cache (about 70 CPU-seconds). Mainnet's history (about 70 GB on disk, 0.82 TB of keys and values) should take about 6 minutes with 16 goroutines when the disk keeps up (NVMe), and the read speed of the disk otherwise.
 
 ## Statements
 
