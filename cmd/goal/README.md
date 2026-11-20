@@ -90,7 +90,7 @@ Created app with app index 2
 ### Q: How do I fund the app account so that it can satisfy its boxes min-balance requirement and allow for box creation?
 
 ### A:
-Assuming you followed the previous step, and that the _app index_ is 2:
+Assuming you followed the previous step, and that the _app index_ is 2.
 
 Store the app index and the app's account address in variables for later use:
 
@@ -165,7 +165,7 @@ goal app box info --app-id ${APPID} --name "str:an_ABI_box"
 ### Q: My node runs with `EnableTimeTravel`. How do I see an account, app or box as it was at an earlier round, or how it changed?
 
 ### A:
-The read commands take `--round`, and `versions` subcommands list the rounds at which an object changed, with the fields that changed:
+The read commands take `--round`, and `versions` subcommands list the rounds at which an object changed, with the fields that changed.
 
 The box and the app as of round 1000:
 
@@ -174,7 +174,7 @@ goal app box info --app-id ${APPID} --name "str:greatBox" --round 1000
 goal app info --app-id ${APPID} --round 1000
 ```
 
-Every change of the box; of every box of the app since round 1000 (no `--name`); of the app's params and global state; and of an account:
+Every change of the box; of every box of the app (no `--name`) and of the app's params and global state since round 1000; and of an account:
 
 ```sh
 goal app box versions --app-id ${APPID} --name "str:greatBox"
@@ -183,7 +183,7 @@ goal app versions --app-id ${APPID} --min-round 1000 --all
 goal account versions --address ${ACCOUNT} --exclude all
 ```
 
-The raw pages, as JSON:
+An asset's versions, as the raw JSON pages (`ASSETID` holds the asset's index):
 
 ```sh
 goal asset versions --assetid ${ASSETID} --json
