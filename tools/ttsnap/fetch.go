@@ -181,11 +181,8 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return nil, "", err
 	}
-	if !cfg.EnableTimeTravel {
-		return nil, "", errors.New("the data directory's config.json must set EnableTimeTravel")
-	}
-	if cfg.Archival {
-		return nil, "", errors.New("the data directory's config.json must not set Archival: an archival node resets a block DB that does not start at genesis")
+	if err = checkNodeConfig(cfg); err != nil {
+		return nil, "", err
 	}
 	kind := kindHistory
 	if o.full {
@@ -293,6 +290,18 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	}
 	if err = ensureDir(histStage); err != nil {
 		return nil, "", err
+	}
+	// one install at a time: a bootstrap phase left running may download
+	// into the same files (only Linux stops it with bootstrap)
+	unlock, err := lockDir(histStage)
+	if errors.Is(err, errLocked) {
+		return nil, "", fmt.Errorf("another ttsnap is installing a snapshot into %s: wait for it to finish, or stop it", dirs.TimeTravelGenesisDir)
+	} else if err != nil {
+		return nil, "", err
+	}
+	defer unlock.Close()
+	if _, err = os.Lstat(histFinal); err == nil {
+		return nil, "", fmt.Errorf("another ttsnap installed a snapshot into %s meanwhile: rerun", dirs.TimeTravelGenesisDir)
 	}
 	// what an earlier run left of another snapshot (the latest one changes
 	// while a download runs for hours) must not end up in the store
@@ -731,9 +740,17 @@ func hashPrefix(path string, n int64, h hash.Hash) error {
 
 // getSmall GETs a document of at most limit bytes.
 func getSmall(ctx context.Context, client *http.Client, u string, limit int64) ([]byte, error) {
+	return getSmallHeader(ctx, client, u, limit, nil)
+}
+
+// getSmallHeader is getSmall with the request header h.
+func getSmallHeader(ctx context.Context, client *http.Client, u string, limit int64, h http.Header) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
+	}
+	for k, v := range h {
+		req.Header[k] = v
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -757,6 +774,9 @@ func getSmall(ctx context.Context, client *http.Client, u string, limit int64) (
 }
 
 var errNotFound = errors.New("not found")
+
+// errLocked: another process holds the lock.
+var errLocked = errors.New("locked")
 
 // canonicalize makes the downloaded store answer like any other store with
 // the manifest's commitment, or fails: the strict commitment refuses records
@@ -915,6 +935,17 @@ func clearCatchpointState(path string) error {
 		if _, err := acc.Handle.Exec(s); err != nil && !strings.Contains(err.Error(), "no such table") {
 			return fmt.Errorf("%s: %s: %w", path, s, err)
 		}
+	}
+	return nil
+}
+
+// checkNodeConfig checks that a node with cfg can run on a snapshot.
+func checkNodeConfig(cfg config.Local) error {
+	if !cfg.EnableTimeTravel {
+		return errors.New("the data directory's config.json must set EnableTimeTravel")
+	}
+	if cfg.Archival {
+		return errors.New("the data directory's config.json must not set Archival: an archival node resets a block DB that does not start at genesis")
 	}
 	return nil
 }

@@ -26,8 +26,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,12 +47,15 @@ const startNone = "none"
 
 // The dtalgorand packages' services, which -start defaults to.
 const (
-	debDataDir   = "/var/lib/dtalgorand"
-	debUnit      = "dtalgorand.service"
-	debStart     = "systemctl enable --now dtalgorand"
-	brewService  = "dtalgorand"
-	brewStart    = "brew services start " + brewService
-	brewDataPath = "var/dtalgorand" // under the Homebrew prefix
+	debDataDir      = "/var/lib/dtalgorand"
+	debUser         = "dtalgorand" // the units' User
+	debUnit         = "dtalgorand.service"
+	debTemplateUnit = "dtalgorand@.service" // for other data directories
+	systemctlStart  = "systemctl enable --now "
+	debStart        = systemctlStart + "dtalgorand"
+	brewService     = "dtalgorand"
+	brewStart       = "brew services start " + brewService
+	brewDataPath    = "var/dtalgorand" // under the Homebrew prefix
 )
 
 // debUnitDirs are where the .deb's unit may be.
@@ -62,6 +68,14 @@ const bootstrapPhaseEnv = "TTSNAP_BOOTSTRAP_PHASE"
 // exitNodeRunning is the install phase's exit status when algod already
 // runs on the data directory, so there is nothing to install or start.
 const exitNodeRunning = 3
+
+// bootstrapKeysEnv hands the install phase the -keys file as root read it:
+// its owner may not be able to (a file in root's home).
+const bootstrapKeysEnv = "TTSNAP_BOOTSTRAP_KEYS"
+
+// storeLock is the file of the history store that algod locks while it has
+// the store open, from the start of its ledger's opening.
+const storeLock = "LOCK"
 
 type bootstrapOpts struct {
 	fetch         fetchOpts
@@ -86,7 +100,7 @@ func cmdBootstrap(args []string) error {
 	fs.IntVar(&o.fetch.parallel, "parallel", 4, "files downloaded at once")
 	fs.DurationVar(&o.fetch.maxAge, "max-age", 7*24*time.Hour, "refuse a latest snapshot older than this; 0: any age")
 	fs.BoolVar(&o.holders, "holders-index", true, "build the asset holders index after the download (config.json must set TimeTravelHoldersIndex); -holders-index=false skips it")
-	fs.StringVar(&o.start, "start", "", "shell command that starts the node once the history is installed, run from / (as the data directory's owner when bootstrap runs as root), or \""+startNone+"\" to start it yourself while bootstrap waits (default: \""+debStart+"\" for the .deb's "+debDataDir+", \""+brewStart+"\" for Homebrew's)")
+	fs.StringVar(&o.start, "start", "", "shell command that starts the node once the history is installed, run from / (as the data directory's owner when bootstrap runs as root), or \""+startNone+"\" to start it yourself while bootstrap waits (default: \""+debStart+"\" for the .deb's "+debDataDir+", the .deb's "+debTemplateUnit+" for another directory its user owns, \""+brewStart+"\" for Homebrew's)")
 	fs.DurationVar(&o.wait, "wait", 30*time.Minute, "how long to wait for the started node's API, which comes up once algod has opened its ledger")
 	fs.StringVar(&o.label, "label", "", "catchpoint label to catch up to; default: the network's latest")
 	fs.BoolVar(&o.snapshotLabel, "snapshot-label", false, "when the network's latest catchpoint is past the installed history, use the one its producer recorded (the producer's word for the account state)")
@@ -123,6 +137,12 @@ func cmdBootstrap(args []string) error {
 	}
 	switch phase {
 	case "install":
+		if keys, ok := os.LookupEnv(bootstrapKeysEnv); ok && o.fetch.keys != "" {
+			_ = os.Unsetenv(bootstrapKeysEnv) // the keys stay out of what it runs
+			if o.fetch.trusted, err = parseKeys(strings.NewReader(keys), o.fetch.keys); err != nil {
+				return err
+			}
+		}
 		if err = o.loadKeys(); err != nil {
 			return err
 		}
@@ -132,6 +152,7 @@ func cmdBootstrap(args []string) error {
 		}
 		return ierr
 	case "catchup":
+		_ = o.resolveStart() // for where to look if algod doesn't answer
 		return o.catchup()
 	case "":
 	default:
@@ -144,11 +165,9 @@ func cmdBootstrap(args []string) error {
 // bootstrap runs the phases, as the data directory's owner when ttsnap runs
 // as root on another user's data directory, with args as the child's flags.
 func (o *bootstrapOpts) bootstrap(args []string) error {
-	var err error
-	if o.start == "" {
-		if o.start, o.startAsRoot, err = defaultStart(o.fetch.dataDir, runtime.GOOS, debUnitDirs, brewPrefixes); err != nil {
-			return err
-		}
+	err := o.resolveStart()
+	if err != nil {
+		return err
 	}
 	owner, err := phaseOwner(o.fetch.dataDir)
 	if err != nil {
@@ -156,6 +175,10 @@ func (o *bootstrapOpts) bootstrap(args []string) error {
 	}
 	if err = checkStartUser(o.start, o.startAsRoot, os.Geteuid()); err != nil {
 		return err
+	}
+	if o.startAsRoot && owner == nil && os.Geteuid() == 0 {
+		// the service's algod, as debUser, could not open what root installs
+		return fmt.Errorf("%s belongs to root, but the service runs algod as %s: sudo chown -R %s:%s %s, then rerun bootstrap", o.fetch.dataDir, debUser, debUser, debUser, shellQuote(o.fetch.dataDir))
 	}
 	if owner == nil {
 		if err = o.loadKeys(); err != nil {
@@ -166,10 +189,17 @@ func (o *bootstrapOpts) bootstrap(args []string) error {
 	// as root on a data directory another user owns: everything runs as
 	// that user but the package's service start (systemctl), which needs root
 	child := append(append([]string{}, args...), "-d", o.fetch.dataDir)
+	var keysEnv []string
 	if o.fetch.keys != "" {
+		// root reads it: the owner may not be able to
 		child = append(child, "-keys", o.fetch.keys)
+		keys, kerr := readKeysFile(o.fetch.keys)
+		if kerr != nil {
+			return kerr
+		}
+		keysEnv = []string{bootstrapKeysEnv + "=" + keys}
 	}
-	running, err := runPhase(owner, "install", child)
+	running, err := runPhase(owner, "install", child, keysEnv)
 	if err != nil {
 		return err
 	}
@@ -178,8 +208,48 @@ func (o *bootstrapOpts) bootstrap(args []string) error {
 			return err
 		}
 	}
-	_, err = runPhase(owner, "catchup", child)
+	_, err = runPhase(owner, "catchup", child, nil)
 	return err
+}
+
+// resolveStart sets the start command to the package's default unless -start
+// gave one. A -start that is the default needs root as the default does.
+func (o *bootstrapOpts) resolveStart() error {
+	def, asRoot, err := defaultStart(o.fetch.dataDir, runtime.GOOS, dirOwnerName(o.fetch.dataDir), debUnitDirs, brewPrefixes)
+	switch {
+	case o.start == "":
+		if err != nil {
+			return err
+		}
+		o.start, o.startAsRoot = def, asRoot
+	case err == nil && o.start == def:
+		o.startAsRoot = o.startAsRoot || asRoot
+	}
+	return nil
+}
+
+// maxKeysEnv bounds a keys file passed in the environment, well under
+// Linux's limit for one variable (128 KiB). A keys file has a line per key.
+const maxKeysEnv = 64 << 10
+
+// readKeysFile reads and checks the keys file at path.
+func readKeysFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxKeysEnv+1))
+	if err != nil {
+		return "", err
+	}
+	if len(b) > maxKeysEnv {
+		return "", fmt.Errorf("%s: larger than %d bytes, too large for a keys file", path, maxKeysEnv)
+	}
+	if _, err = parseKeys(bytes.NewReader(b), path); err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // loadKeys finds the installed keys when -keys is not given, as fetch does.
@@ -217,9 +287,9 @@ func (o *bootstrapOpts) run() error {
 // install downloads and installs the latest snapshot unless one is
 // installed, then builds the asset holders index unless it is complete or
 // not wanted. It does nothing, and reports running, when algod already
-// answers on the data directory: a node that started has a history. An algod
-// still opening its ledger (algod.net comes after) holds the store's lock,
-// so the index step fails.
+// answers on the data directory, or a process holds the history's lock, as
+// algod does while it opens its ledger (algod.net comes after): a node that
+// started has a history.
 func (o *bootstrapOpts) install() (running bool, err error) {
 	dataDir := o.fetch.dataDir
 	genesis, err := bookkeeping.LoadGenesisFromFile(filepath.Join(dataDir, config.GenesisJSONFile))
@@ -237,6 +307,9 @@ func (o *bootstrapOpts) install() (running bool, err error) {
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
 	}
+	if err = checkNodeConfig(cfg); err != nil {
+		return false, err
+	}
 	if o.holders && !cfg.TimeTravelHoldersIndex {
 		// before the download: algod deletes an index its config doesn't ask for
 		return false, fmt.Errorf("the config.json of %s does not set TimeTravelHoldersIndex: set it to build the asset holders index (dtalgocfg set -d %s -p TimeTravelHoldersIndex -v true), or pass -holders-index=false", dataDir, shellQuote(dataDir))
@@ -247,6 +320,24 @@ func (o *bootstrapOpts) install() (running bool, err error) {
 	}
 	hist := filepath.Join(ttDir, historyDir)
 	m, ierr := installed(dataDir, genesis)
+	if pid, held := lockHolder(filepath.Join(hist, storeLock)); held {
+		// algod opening its ledger, or another program that reads the store
+		// (ttsnap info, ttimport), which bootstrap must not wait on
+		name := ""
+		if pid > 0 {
+			name = processName(pid)
+		}
+		switch {
+		case pid <= 0:
+			return false, fmt.Errorf("a process bootstrap can't identify (in a container?) has the history of %s open: stop it, then rerun bootstrap", dataDir)
+		case name != "" && !strings.Contains(name, "algod"):
+			return false, fmt.Errorf("process %d (%s) has the history of %s open: wait for it to finish, or stop it, then rerun bootstrap", pid, name, dataDir)
+		case ierr != nil:
+			return false, fmt.Errorf("algod (pid %d) has the history of %s open, which no snapshot installed (%v): bootstrap is for a new data directory", pid, dataDir, ierr)
+		}
+		fmt.Fprintf(o.log, "algod (pid %d) is opening its ledger: nothing to install or start\n", pid)
+		return true, nil
+	}
 	if ierr != nil && !os.IsNotExist(ierr) {
 		return false, fmt.Errorf("the installed snapshot's record: %w", ierr)
 	}
@@ -314,6 +405,7 @@ func (o *bootstrapOpts) startNode(owner *phaseUser) error {
 	}
 	fmt.Fprintf(o.log, "starting the node: %s\n", o.start)
 	cmd := shellCommand(o.start)
+	cmd.Dir = "/"
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	var err error
 	if owner != nil && !o.startAsRoot {
@@ -340,15 +432,8 @@ func (o *bootstrapOpts) catchup() error {
 	if err != nil {
 		return fmt.Errorf("no installed snapshot: %w", err)
 	}
-	if !nodeAnswers(dataDir, genesis) {
-		fmt.Fprintln(o.log, "waiting for algod to open its ledger (a minute or more on mainnet)")
-		deadline := time.Now().Add(o.wait)
-		for !nodeAnswers(dataDir, genesis) {
-			if time.Now().After(deadline) {
-				return fmt.Errorf("algod did not answer on %s within %v: check its node.log, then rerun bootstrap", dataDir, o.wait)
-			}
-			time.Sleep(o.pollEvery)
-		}
+	if err = o.waitForAPI(genesis); err != nil {
+		return err
 	}
 	st, err := nodeStatus(dataDir)
 	if err != nil {
@@ -368,17 +453,125 @@ func (o *bootstrapOpts) catchup() error {
 	return catchup(dataDir, o.label, o.snapshotLabel, http.DefaultClient)
 }
 
+// waitForAPI waits for algod to answer on the data directory. It gives up
+// early once algod has exited: the process seen holding the history's lock is
+// gone, or the package's unit failed or restarted.
+func (o *bootstrapOpts) waitForAPI(genesis bookkeeping.Genesis) error {
+	dataDir := o.fetch.dataDir
+	var lock string
+	if cfg, err := config.LoadConfigFromDisk(dataDir); err == nil || os.IsNotExist(err) {
+		if ttDir, terr := cfg.TimeTravelGenesisDir(dataDir, genesis.ID()); terr == nil {
+			lock = filepath.Join(ttDir, historyDir, storeLock)
+		}
+	}
+	unit, restarts := o.systemdUnit(), -1
+	deadline := time.Now().Add(o.wait)
+	holder := 0
+	for i := 0; !nodeAnswers(dataDir, genesis); i++ {
+		if i == 0 {
+			fmt.Fprintln(o.log, "waiting for algod to open its ledger (a minute or more on mainnet)")
+		}
+		if pid, held := lockHolder(lock); held && pid > 0 {
+			holder = pid
+		} else if !held && holder != 0 && !processAlive(holder) {
+			return fmt.Errorf("algod (pid %d, which had the history open) exited before its API came up: check %s, then rerun bootstrap", holder, o.startLogs())
+		}
+		if unit != "" {
+			if err := unitFailed(unit, &restarts); err != nil {
+				return fmt.Errorf("%w: check %s, then rerun bootstrap", err, o.startLogs())
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("algod did not answer on %s within %v: check %s, then rerun bootstrap", dataDir, o.wait, o.startLogs())
+		}
+		time.Sleep(o.pollEvery)
+	}
+	return nil
+}
+
+// systemdUnit is the system unit that a start of the form "systemctl
+// <verb> [--now] <unit>" starts, or "".
+func (o *bootstrapOpts) systemdUnit() string {
+	f := strings.Fields(o.start)
+	if len(f) < 3 || f[0] != "systemctl" {
+		return ""
+	}
+	switch strings.Join(f[1:len(f)-1], " ") {
+	case "enable --now", "start", "restart", "reload-or-restart", "try-restart":
+	default:
+		return ""
+	}
+	unit := f[len(f)-1]
+	if len(unit) >= 2 && unit[0] == '\'' && unit[len(unit)-1] == '\'' {
+		unit = unit[1 : len(unit)-1] // shellQuote's, with no quote inside
+	}
+	return unit
+}
+
+// unitFailed reports that the systemd unit failed, or that systemd restarted
+// it since the first call (its algod exited), which set *restarts. It reports
+// nothing when systemctl can't tell.
+func unitFailed(unit string, restarts *int) error {
+	out, serr := exec.Command("systemctl", "show", "--property=ActiveState,NRestarts", unit).Output()
+	if serr != nil {
+		return nil //nolint:nilerr // systemctl can't tell: wait on
+	}
+	state, n := "", -1
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch k {
+		case "ActiveState":
+			state = v
+		case "NRestarts":
+			if r, perr := strconv.Atoi(v); perr == nil {
+				n = r
+			}
+		}
+	}
+	switch {
+	case state == "failed":
+		return fmt.Errorf("%s failed", unit)
+	case *restarts < 0:
+		*restarts = n
+	case n > *restarts:
+		return fmt.Errorf("algod exited: systemd restarted %s", unit)
+	}
+	return nil
+}
+
+// startLogs says where to look when the started algod doesn't answer.
+func (o *bootstrapOpts) startLogs() string {
+	logs := filepath.Join(o.fetch.dataDir, "node.log")
+	switch {
+	case o.systemdUnit() != "":
+		logs += " and journalctl -u " + shellQuote(o.systemdUnit())
+	case o.start == brewStart:
+		logs += " and the service's log, $(brew --prefix)/var/log/dtalgorand.log"
+	}
+	return logs
+}
+
 // defaultStart returns the command that starts the node of the dtalgorand
-// package whose data directory is dataDir, and whether it needs root.
-func defaultStart(dataDir, goos string, unitDirs, brewPrefixes []string) (string, bool, error) {
+// package whose data directory is dataDir, owned by the user dirOwner, and
+// whether it needs root.
+func defaultStart(dataDir, goos, dirOwner string, unitDirs, brewPrefixes []string) (string, bool, error) {
+	unit := func(name string) bool {
+		for _, d := range unitDirs {
+			if exists(filepath.Join(d, name)) {
+				return true
+			}
+		}
+		return false
+	}
 	switch goos {
 	case "linux":
-		if sameDir(dataDir, debDataDir) {
-			for _, d := range unitDirs {
-				if exists(filepath.Join(d, debUnit)) {
-					return debStart, true, nil
-				}
-			}
+		if sameDir(dataDir, debDataDir) && unit(debUnit) {
+			return debStart, true, nil
+		}
+		// the template unit runs algod as debUser on the directory its
+		// instance names, which the .deb's instructions give to that user
+		if dirOwner == debUser && unit(debTemplateUnit) {
+			return systemctlStart + shellQuote(templateInstance(dataDir)), true, nil
 		}
 	case "darwin":
 		for _, p := range brewPrefixes {
@@ -387,7 +580,40 @@ func defaultStart(dataDir, goos string, unitDirs, brewPrefixes []string) (string
 			}
 		}
 	}
-	return "", false, fmt.Errorf("%s is not a dtalgorand package's data directory: pass -start with the command that starts its algod (e.g. -start 'goal node start -d %s'), or -start %s to start it yourself while bootstrap waits", dataDir, dataDir, startNone)
+	return "", false, fmt.Errorf("%s is not a dtalgorand package's data directory: pass -start with the command that starts its algod (e.g. -start %s), or -start %s to start it yourself while bootstrap waits", dataDir, shellQuote(goalCommand()+" node start -d "+shellQuote(dataDir)), startNone)
+}
+
+// templateInstance names the instance of the package's template unit for
+// dataDir as systemd-escape does, so that its %I is dataDir.
+func templateInstance(dataDir string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSuffix(debTemplateUnit, ".service"))
+	for i := 0; i < len(dataDir); i++ {
+		c := dataDir[i]
+		switch {
+		case c == '/':
+			b.WriteByte('-')
+		case c == '.' && i == 0,
+			!('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == ':' || c == '_' || c == '.'):
+			fmt.Fprintf(&b, `\x%02x`, c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// dirOwnerName is the name of the user who owns path, or "".
+func dirOwnerName(path string) string {
+	uid, err := fileOwner(path)
+	if err != nil {
+		return ""
+	}
+	u, err := user.LookupId(strconv.FormatUint(uint64(uid), 10))
+	if err != nil {
+		return ""
+	}
+	return u.Username
 }
 
 // checkStartUser refuses a start that cannot work as the user euid.
@@ -395,7 +621,7 @@ func checkStartUser(start string, asRoot bool, euid int) error {
 	switch {
 	case asRoot && euid != 0:
 		return fmt.Errorf("starting the node (%s) needs root: run sudo ttsnap bootstrap ..., which installs as the data directory's owner and starts the service as root, or pass -start %s and start it yourself while bootstrap waits", start, startNone)
-	case start == brewStart && euid == 0:
+	case strings.HasPrefix(start, "brew ") && euid == 0:
 		return errors.New("brew services runs as you, not root: run ttsnap bootstrap without sudo")
 	}
 	return nil
@@ -422,34 +648,35 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// nodeAnswers tells whether algod runs on dataDir: its algod.net names an
-// address where a node of genesis answers. algod.net outlives a crash, and
-// another node may have that address now.
+// nodeAnswers tells whether algod runs on dataDir: its algod.pid names a
+// live process, and its algod.net an address where a node of genesis answers
+// and takes its algod.token. Both outlive a crash, and another node may have
+// that address now.
 func nodeAnswers(dataDir string, genesis bookkeeping.Genesis) bool {
-	u, err := nodecontrol.MakeNodeController("", dataDir).ServerURL()
+	if pid, err := nodecontrol.MakeNodeController("", dataDir).GetAlgodPID(); err != nil || !processAlive(int(pid)) {
+		return false
+	}
+	u, _, err := algodAPI(dataDir, "/versions", "")
 	if err != nil {
 		return false
 	}
-	u.Path = "/versions"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	b, err := getSmall(ctx, http.DefaultClient, u, 64<<10)
 	if err != nil {
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
 	var v struct {
 		GenesisHash []byte `json:"genesis_hash_b64"`
 	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&v) != nil {
+	if json.Unmarshal(b, &v) != nil {
 		return false
 	}
-	h := genesis.Hash()
-	return bytes.Equal(v.GenesisHash, h[:])
+	if h := genesis.Hash(); !bytes.Equal(v.GenesisHash, h[:]) {
+		return false
+	}
+	_, err = nodeStatus(dataDir)
+	return err == nil
 }
 
 // phaseUser is the user a bootstrap phase runs as (see runPhase).
@@ -467,31 +694,35 @@ type nodeState struct {
 
 func nodeStatus(dataDir string) (nodeState, error) {
 	var st nodeState
-	u, err := nodecontrol.MakeNodeController("", dataDir).ServerURL()
+	u, h, err := algodAPI(dataDir, "/v2/status", tokens.AlgodTokenFilename)
 	if err != nil {
 		return st, err
 	}
-	u.Path = "/v2/status"
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	b, err := getSmallHeader(ctx, http.DefaultClient, u, 1<<20, h)
 	if err != nil {
 		return st, err
 	}
-	if token, terr := tokens.GetAndValidateAPIToken(dataDir, tokens.AlgodTokenFilename); terr == nil {
-		req.Header.Set("X-Algo-API-Token", token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return st, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return st, fmt.Errorf("GET %s: %s: %s", u.Path, resp.Status, strings.TrimSpace(string(body)))
-	}
-	if err = json.Unmarshal(body, &st); err != nil {
-		return st, fmt.Errorf("GET %s: %w", u.Path, err)
+	if err = json.Unmarshal(b, &st); err != nil {
+		return st, fmt.Errorf("GET %s: %w", u, err)
 	}
 	return st, nil
+}
+
+// algodAPI returns the URL of path on the API of the algod of dataDir, and a
+// header with the token of tokenFile when it has one.
+func algodAPI(dataDir, path, tokenFile string) (string, http.Header, error) {
+	u, err := nodecontrol.MakeNodeController("", dataDir).ServerURL()
+	if err != nil {
+		return "", nil, err
+	}
+	u.Path = path
+	h := http.Header{}
+	if tokenFile != "" {
+		if token, terr := tokens.GetAndValidateAPIToken(dataDir, tokenFile); terr == nil {
+			h.Set("X-Algo-API-Token", token)
+		}
+	}
+	return u.String(), h, nil
 }

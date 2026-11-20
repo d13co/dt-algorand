@@ -26,7 +26,7 @@ import (
 // phaseOwner: Windows has no root to step down from.
 func phaseOwner(string) (*phaseUser, error) { return nil, nil }
 
-func runPhase(*phaseUser, string, []string) (bool, error) {
+func runPhase(*phaseUser, string, []string, []string) (bool, error) {
 	return false, errors.New("bootstrap phases run in-process on Windows")
 }
 

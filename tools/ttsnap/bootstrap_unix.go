@@ -21,6 +21,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // phaseOwner returns the user to run the install and catchup phases as: the
@@ -69,9 +71,9 @@ func phaseOwner(dataDir string) (*phaseUser, error) {
 	return pu, nil
 }
 
-// runPhase runs ttsnap bootstrap's phase as u, with args, and reports
-// whether the install phase found algod running.
-func runPhase(u *phaseUser, phase string, args []string) (running bool, err error) {
+// runPhase runs ttsnap bootstrap's phase as u, with args and the environment
+// variables env, and reports whether the install phase found algod running.
+func runPhase(u *phaseUser, phase string, args, env []string) (running bool, err error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return false, err
@@ -79,7 +81,7 @@ func runPhase(u *phaseUser, phase string, args []string) (running bool, err erro
 	fmt.Printf("running the %s as %s\n", phase, u.name)
 	cmd := exec.Command(exe, append([]string{"bootstrap"}, args...)...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	cmd.Env = append(os.Environ(), bootstrapPhaseEnv+"="+phase)
+	cmd.Env = append(append(os.Environ(), bootstrapPhaseEnv+"="+phase), env...)
 	err = runAs(cmd, u)
 	var ee *exec.ExitError
 	switch {
@@ -88,15 +90,17 @@ func runPhase(u *phaseUser, phase string, args []string) (running bool, err erro
 	case phase == "install" && errors.As(err, &ee) && ee.ExitCode() == exitNodeRunning:
 		return true, nil
 	case errors.As(err, &ee):
-		// the child reported its error
-		return false, fmt.Errorf("the %s as %s failed", phase, u.name)
+		// the child reported its error, unless a signal stopped it
+		return false, fmt.Errorf("the %s as %s failed (%v)", phase, u.name, err)
 	}
 	return false, fmt.Errorf("running the %s as %s: %w", phase, u.name, err)
 }
 
-// runAs runs cmd as u, in a session of its own and without stdin: a process
-// of u's can't reach root's terminal through it. The signals that stop
-// bootstrap are passed on, as the terminal no longer sends them.
+// runAs runs cmd as u, in a session of its own, without stdin and with
+// pipes for its output: a process of u's can't reach root's terminal through
+// it, even one that outlives cmd. The signals that stop bootstrap are passed
+// on, as the terminal no longer sends them, but those it started ignoring
+// (nohup); on Linux, cmd is killed if bootstrap dies another way.
 func runAs(cmd *exec.Cmd, u *phaseUser) error {
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
@@ -112,10 +116,28 @@ func runAs(cmd *exec.Cmd, u *phaseUser) error {
 	cmd.Env = append(env, "HOME="+u.home, "USER="+u.name, "LOGNAME="+u.name)
 	cmd.Dir = "/"
 	cmd.Stdin = nil
+	// not *os.File, so exec copies through a pipe; WaitDelay ends the copy
+	// once cmd exits, should a process it left hold the pipe
+	if cmd.Stdout != nil {
+		cmd.Stdout = struct{ io.Writer }{cmd.Stdout}
+	}
+	if cmd.Stderr != nil {
+		cmd.Stderr = struct{ io.Writer }{cmd.Stderr}
+	}
+	cmd.WaitDelay = 2 * time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: &syscall.Credential{Uid: u.uid, Gid: u.gid, Groups: u.groups}}
+	defer dieWithParent(cmd.SysProcAttr)()
+	var forward []os.Signal
+	for _, sig := range []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
+		if !signal.Ignored(sig) {
+			forward = append(forward, sig)
+		}
+	}
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(sigs)
+	if len(forward) > 0 {
+		signal.Notify(sigs, forward...)
+		defer signal.Stop(sigs)
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -133,7 +155,12 @@ func runAs(cmd *exec.Cmd, u *phaseUser) error {
 			}
 		}
 	}()
-	return cmd.Wait()
+	err := cmd.Wait()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		fmt.Fprintf(os.Stderr, "%q exited, leaving a process that holds its output, which no longer goes anywhere: start algod with a command that sends its output elsewhere (%s node start does)\n", strings.Join(cmd.Args, " "), goalCommand())
+		err = nil
+	}
+	return err
 }
 
 func shellCommand(command string) *exec.Cmd {

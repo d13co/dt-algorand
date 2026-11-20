@@ -19,6 +19,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/base32"
 	"encoding/base64"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,13 +48,64 @@ import (
 )
 
 // TestMain runs ttsnap for a bootstrap phase that TestBootstrapAsRoot
-// re-executes the test binary for, as the data directory's owner.
+// re-executes the test binary for, as the data directory's owner, and holds
+// a store open for holdStore.
 func TestMain(m *testing.M) {
 	if os.Getenv(bootstrapPhaseEnv) != "" {
 		main()
 		os.Exit(0)
 	}
+	if dir := os.Getenv(holdStoreEnv); dir != "" {
+		st, err := timetravel.Open(dir, timetravel.Options{})
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		fmt.Println("open")
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		st.Close()
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
+}
+
+const holdStoreEnv = "TTSNAP_TEST_HOLD_STORE"
+
+// holdStore has another process, of the program name, open the store at dir,
+// as algod does when it opens its ledger, until the returned function is
+// called.
+func holdStore(t *testing.T, dir, name string) (pid int, closeStore func()) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	prog := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.Symlink(exe, prog))
+	cmd := exec.Command(prog, "-test.run=^$")
+	cmd.Env = append(os.Environ(), holdStoreEnv+"="+dir)
+	in, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	out, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	line, err := bufio.NewReader(out).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "open\n", line)
+	var once bool
+	closeStore = func() {
+		if !once {
+			once = true
+			in.Close()
+			_ = cmd.Wait()
+		}
+	}
+	t.Cleanup(closeStore)
+	return cmd.Process.Pid, closeStore
+}
+
+// writeAlgodFiles writes the algod.net and algod.pid of a running algod at
+// a, which runs in this process.
+func writeAlgodFiles(t *testing.T, dataDir string, a *fakeAlgod) {
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "algod.net"), []byte(strings.TrimPrefix(a.srv.URL, "http://")+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "algod.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644))
 }
 
 // fakeAlgod answers /versions, /v2/status and POST /v2/catchup/ as algod
@@ -63,6 +116,7 @@ type fakeAlgod struct {
 	lastRound  uint64
 	catchpoint string
 	catchups   []string
+	token      string // that /v2/status wants, if any
 }
 
 func newFakeAlgod(t *testing.T, genesis bookkeeping.Genesis) *fakeAlgod {
@@ -74,6 +128,8 @@ func newFakeAlgod(t *testing.T, genesis bookkeeping.Genesis) *fakeAlgod {
 		switch {
 		case r.URL.Path == "/versions":
 			fmt.Fprintf(w, `{"genesis_id":%q,"genesis_hash_b64":%q}`, genesis.ID(), base64.StdEncoding.EncodeToString(gh[:]))
+		case r.URL.Path == "/v2/status" && a.token != "" && r.Header.Get("X-Algo-API-Token") != a.token:
+			http.Error(w, "Invalid API Token", http.StatusUnauthorized)
 		case r.URL.Path == "/v2/status":
 			fmt.Fprintf(w, `{"last-round":%d,"catchpoint":%q}`, a.lastRound, a.catchpoint)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v2/catchup/"):
@@ -110,12 +166,13 @@ func testLabel(rnd uint64) string {
 
 // bootstrapNode makes a consumer data directory with config, and bootstrap
 // options whose start command "starts" a (the fake algod writes its
-// algod.net) and counts its runs in the file started.
+// algod.net, and algod.pid names this process) and counts its runs in the
+// file started.
 func bootstrapNode(t *testing.T, n *testNet, a *fakeAlgod, cfg string) (bootstrapOpts, string) {
 	dataDir := n.consumer()
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, config.ConfigFilename), []byte(cfg), 0o644))
 	host := strings.TrimPrefix(a.srv.URL, "http://")
-	start := fmt.Sprintf("echo %s > %s/algod.net && echo x >> %s/started", host, dataDir, dataDir)
+	start := fmt.Sprintf("echo %s > %s/algod.net && echo %d > %s/algod.pid && echo x >> %s/started", host, dataDir, os.Getpid(), dataDir, dataDir)
 	return bootstrapOpts{
 		fetch:   fetchOpts{dataDir: dataDir, base: n.srv.URL, keys: n.keys, workers: 2, parallel: 2, progressLog: io.Discard},
 		holders: true, start: start, wait: 10 * time.Second, pollEvery: 10 * time.Millisecond,
@@ -174,8 +231,8 @@ func TestBootstrap(t *testing.T) {
 }
 
 // TestBootstrapStaleAlgodNet checks that an algod.net a crash left, now
-// naming another network's node, doesn't pass for the node of the data
-// directory.
+// naming another network's node or another node of the network, doesn't pass
+// for the node of the data directory.
 func TestBootstrapStaleAlgodNet(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	n := newTestNet(t)
@@ -184,13 +241,111 @@ func TestBootstrapStaleAlgodNet(t *testing.T) {
 	other.Network = "othernet"
 	a := newFakeAlgod(t, other)
 	o, dataDir := bootstrapNode(t, n, a, `{"EnableTimeTravel": true, "TimeTravelHoldersIndex": true}`)
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "algod.net"), []byte(strings.TrimPrefix(a.srv.URL, "http://")+"\n"), 0o644))
+	writeAlgodFiles(t, dataDir, a)
 	require.False(t, nodeAnswers(dataDir, n.genesis))
 	require.True(t, nodeAnswers(dataDir, other))
 	running, err := o.install()
 	require.NoError(t, err)
 	require.False(t, running, "installed")
 	require.Equal(t, timetravel.HoldersComplete, holdersState(t, n.installedHistory(dataDir)))
+
+	// the network's, with another token
+	same := newFakeAlgod(t, n.genesis)
+	same.token = strings.Repeat("b", 64)
+	writeAlgodFiles(t, dataDir, same)
+	require.False(t, nodeAnswers(dataDir, n.genesis), "no token")
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "algod.token"), []byte(strings.Repeat("a", 64)), 0o644))
+	require.False(t, nodeAnswers(dataDir, n.genesis), "another token")
+	same.token = strings.Repeat("a", 64)
+	require.True(t, nodeAnswers(dataDir, n.genesis))
+
+	// even with the token (a copy of the data directory), not once the
+	// algod of algod.pid is gone
+	dead := exec.Command("true")
+	require.NoError(t, dead.Run())
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "algod.pid"), []byte(strconv.Itoa(dead.Process.Pid)+"\n"), 0o644))
+	require.False(t, nodeAnswers(dataDir, n.genesis), "dead pid")
+	require.NoError(t, os.Remove(filepath.Join(dataDir, "algod.pid")))
+	require.False(t, nodeAnswers(dataDir, n.genesis), "no algod.pid")
+}
+
+// TestBootstrapLedgerOpening checks that a rerun while algod opens its
+// ledger (it has the history open, and has not written algod.net yet) takes
+// the node as running, even with no index step to fail, and that the wait
+// gives up as soon as that algod exits.
+func TestBootstrapLedgerOpening(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	n := newTestNet(t)
+	n.publish()
+	a := newFakeAlgod(t, n.genesis)
+	o, dataDir := bootstrapNode(t, n, a, `{"EnableTimeTravel": true}`)
+	o.holders = false
+	running, err := o.install()
+	require.NoError(t, err)
+	require.False(t, running)
+
+	// another program reading the store is not waited on
+	pid, closeStore := holdStore(t, n.installedHistory(dataDir), "ttsnap")
+	_, err = o.install()
+	require.ErrorContains(t, err, fmt.Sprintf("process %d (ttsnap) has the history", pid))
+	closeStore()
+
+	pid, closeStore = holdStore(t, n.installedHistory(dataDir), "dtalgod")
+	held, ok := lockHolder(filepath.Join(n.installedHistory(dataDir), storeLock))
+	require.True(t, ok)
+	require.Equal(t, pid, held)
+	running, err = o.install()
+	require.NoError(t, err)
+	require.True(t, running, "opening")
+
+	o.wait = time.Minute
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		closeStore()
+	}()
+	began := time.Now()
+	require.ErrorContains(t, o.run(), fmt.Sprintf("algod (pid %d, which had the history open) exited", pid))
+	require.Less(t, time.Since(began), 30*time.Second)
+	require.Equal(t, 0, startCount(t, dataDir))
+	_, ok = lockHolder(filepath.Join(n.installedHistory(dataDir), storeLock))
+	require.False(t, ok)
+}
+
+// TestFetchLocked checks that an install into a data directory that another
+// one is installing into is refused.
+func TestFetchLocked(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	n := newTestNet(t)
+	n.publish()
+	a := newFakeAlgod(t, n.genesis)
+	o, dataDir := bootstrapNode(t, n, a, `{"EnableTimeTravel": true}`)
+	stage := n.installedHistory(dataDir) + stageSuffix
+	require.NoError(t, os.MkdirAll(stage, 0o755))
+	l, err := lockDir(stage)
+	require.NoError(t, err)
+	_, _, err = fetch(o.fetch)
+	require.ErrorContains(t, err, "another ttsnap is installing")
+	require.NoError(t, l.Close())
+	_, _, err = fetch(o.fetch)
+	require.NoError(t, err)
+}
+
+func TestSystemdUnit(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	for start, unit := range map[string]string{
+		debStart: "dtalgorand",
+		systemctlStart + shellQuote(templateInstance("/srv/dt node")): `dtalgorand@-srv-dt\x20node`,
+		"systemctl start dtalgorand":                                  "dtalgorand",
+		"systemctl restart dtalgorand":                                "dtalgorand",
+		"systemctl --user start x":                                    "",
+		"systemctl stop dtalgorand":                                   "",
+		brewStart:                                                     "",
+		"goal node start -d x":                                        "",
+		systemctlStart + "a b":                                        "",
+	} {
+		o := bootstrapOpts{start: start}
+		require.Equal(t, unit, o.systemdUnit(), start)
+	}
 }
 
 // TestBootstrapRunningWithoutSnapshot checks that a node that runs on a
@@ -201,7 +356,7 @@ func TestBootstrapRunningWithoutSnapshot(t *testing.T) {
 	n.publish()
 	a := newFakeAlgod(t, n.genesis)
 	o, dataDir := bootstrapNode(t, n, a, `{"EnableTimeTravel": true, "TimeTravelHoldersIndex": true}`)
-	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "algod.net"), []byte(strings.TrimPrefix(a.srv.URL, "http://")+"\n"), 0o644))
+	writeAlgodFiles(t, dataDir, a)
 	_, err := o.install()
 	require.ErrorContains(t, err, "no snapshot installed")
 	require.ErrorContains(t, o.run(), "no snapshot installed")
@@ -249,10 +404,15 @@ func TestBootstrapHoldersIndexOption(t *testing.T) {
 	n.publish()
 	a := newFakeAlgod(t, n.genesis)
 
+	// without time travel, that first
+	o, _ := bootstrapNode(t, n, a, `{"TimeTravelHoldersIndex": true}`)
+	_, err := o.install()
+	require.ErrorContains(t, err, "must set EnableTimeTravel")
+
 	// asked for, but the config would have algod delete it: refused before
 	// anything is downloaded
 	o, dataDir := bootstrapNode(t, n, a, `{"EnableTimeTravel": true}`)
-	_, err := o.install()
+	_, err = o.install()
 	require.ErrorContains(t, err, "TimeTravelHoldersIndex")
 	_, err = os.Stat(filepath.Join(dataDir, n.genesis.ID()))
 	require.True(t, os.IsNotExist(err), "nothing is written")
@@ -287,29 +447,40 @@ func TestDefaultStart(t *testing.T) {
 	units := t.TempDir()
 	var noBrew []string
 
-	_, _, err := defaultStart(debDataDir, "linux", []string{units}, noBrew)
+	_, _, err := defaultStart(debDataDir, "linux", debUser, []string{units}, noBrew)
 	require.ErrorContains(t, err, "-start", "no unit installed")
 	require.NoError(t, os.WriteFile(filepath.Join(units, debUnit), nil, 0o644))
-	start, root, err := defaultStart(debDataDir+"/", "linux", []string{t.TempDir(), units}, noBrew)
+	start, root, err := defaultStart(debDataDir+"/", "linux", debUser, []string{t.TempDir(), units}, noBrew)
 	require.NoError(t, err)
 	require.Equal(t, debStart, start)
 	require.True(t, root)
-	_, _, err = defaultStart(t.TempDir(), "linux", []string{units}, noBrew)
+	_, _, err = defaultStart(t.TempDir(), "linux", debUser, []string{units}, noBrew)
 	require.ErrorContains(t, err, "-start", "another data directory")
+
+	// another directory of the package's user, with the template unit
+	require.NoError(t, os.WriteFile(filepath.Join(units, debTemplateUnit), nil, 0o644))
+	start, root, err = defaultStart("/var/lib/dtalgorand_testnet", "linux", debUser, []string{units}, noBrew)
+	require.NoError(t, err)
+	require.Equal(t, "systemctl enable --now dtalgorand@-var-lib-dtalgorand_testnet", start)
+	require.True(t, root)
+	_, _, err = defaultStart("/var/lib/dtalgorand_testnet", "linux", "someone", []string{units}, noBrew)
+	require.ErrorContains(t, err, "-start", "another user's directory")
+	require.Equal(t, `dtalgorand@-srv-my\x2dnode-.testnet-a\x20b`, templateInstance("/srv/my-node/.testnet/a b"))
 
 	prefix := t.TempDir()
 	brew := []string{t.TempDir(), prefix}
-	start, root, err = defaultStart(filepath.Join(prefix, "var", "dtalgorand"), "darwin", nil, brew)
+	start, root, err = defaultStart(filepath.Join(prefix, "var", "dtalgorand"), "darwin", "", nil, brew)
 	require.NoError(t, err)
 	require.Equal(t, brewStart, start)
 	require.False(t, root)
-	_, _, err = defaultStart(filepath.Join(prefix, "var", "other"), "darwin", nil, brew)
+	_, _, err = defaultStart(filepath.Join(prefix, "var", "other"), "darwin", "", nil, brew)
 	require.ErrorContains(t, err, "-start")
 
 	require.ErrorContains(t, checkStartUser(debStart, true, 1000), "needs root")
 	require.NoError(t, checkStartUser(debStart, true, 0))
 	require.ErrorContains(t, checkStartUser(brewStart, false, 0), "without sudo")
 	require.NoError(t, checkStartUser(brewStart, false, 501))
+	require.ErrorContains(t, checkStartUser("brew services restart dtalgorand", false, 0), "not root")
 	require.NoError(t, checkStartUser("goal node start -d x", false, 0))
 }
 
@@ -323,7 +494,8 @@ func rootNode(t *testing.T, n *testNet, uid int) (keys, dataDir string) {
 	keys = filepath.Join(base, "keys")
 	b, err := os.ReadFile(n.keys)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(keys, b, 0o644))
+	// root's alone: bootstrap reads it for the owner
+	require.NoError(t, os.WriteFile(keys, b, 0o600))
 	dataDir = filepath.Join(base, "node")
 	require.NoError(t, os.Mkdir(dataDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dataDir, config.GenesisJSONFile), protocol.EncodeJSON(&n.genesis), 0o644))
@@ -356,12 +528,15 @@ func TestBootstrapAsRoot(t *testing.T) {
 		o := bootstrapOpts{
 			fetch: fetchOpts{dataDir: dataDir, base: n.srv.URL, keys: keys, progressLog: io.Discard},
 			// what the started algod would write, as the owner
-			start:       fmt.Sprintf("echo %s > %s/algod.net && chown %d %s/algod.net && echo x >> %s/started && id -u > %s/start-uid", host, dataDir, uid, dataDir, dataDir, dataDir),
+			// and leaves a process holding its output, as a daemon may
+			start:       fmt.Sprintf("echo %s > %s/algod.net && echo %d > %s/algod.pid && chown %d %s/algod.net %s/algod.pid && echo x >> %s/started && id -u > %s/start-uid && (sleep 60 &)", host, dataDir, os.Getpid(), dataDir, uid, dataDir, dataDir, dataDir, dataDir),
 			startAsRoot: asRoot,
 			wait:        10 * time.Second, pollEvery: 10 * time.Millisecond, log: io.Discard,
 		}
 		args := []string{"-url", n.srv.URL, "-workers", "2", "-parallel", "2", "-label", label}
+		began := time.Now()
 		require.NoError(t, o.bootstrap(args))
+		require.Less(t, time.Since(began), 30*time.Second, "waited for the start's leftover process")
 
 		require.Equal(t, 1, startCount(t, dataDir))
 		u, err := os.ReadFile(filepath.Join(dataDir, "start-uid"))
@@ -389,4 +564,9 @@ func TestBootstrapAsRoot(t *testing.T) {
 		require.ErrorContains(t, cmdBootstrap(append(args, "-d", dataDir, "-keys", keys)), "runs as the data directory's owner")
 		os.Unsetenv(bootstrapPhaseEnv)
 	}
+
+	// a root-owned directory, which the service's algod could not open
+	_, dataDir := rootNode(t, n, 0)
+	o := bootstrapOpts{fetch: fetchOpts{dataDir: dataDir}, start: "true", startAsRoot: true, log: io.Discard}
+	require.ErrorContains(t, o.bootstrap(nil), "belongs to root")
 }
