@@ -86,6 +86,12 @@ func (c CountedLedger) LookupKv(rnd basics.Round, key string) ([]byte, error) {
 	return c.lookupKv(rnd, key, c.e)
 }
 
+// LookupKvExists is LookupKv that also reports whether the key exists.
+func (c CountedLedger) LookupKvExists(rnd basics.Round, key string) ([]byte, bool, error) {
+	c.e.Lookup(false)
+	return c.lookupKvExists(rnd, key, c.e)
+}
+
 // LookupKeysByPrefix is Ledger.LookupKeysByPrefix, counted as one lookup; a history scan also
 // counts its entries.
 func (c CountedLedger) LookupKeysByPrefix(round basics.Round, keyPrefix string, maxKeyNum uint64) ([]string, error) {

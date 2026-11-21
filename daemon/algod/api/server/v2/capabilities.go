@@ -37,6 +37,12 @@ func (v2 *Handlers) GetCapabilities(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, capabilities(v2.Node.Config()))
 }
 
+// ExecTraceConfigOptions lists the fork's simulate exec-trace-config options, the ones stock algod
+// lacks. A node lists them only with EnableDeveloperAPI, without which it refuses any trace.
+func ExecTraceConfigOptions() []string {
+	return []string{"state-change-app-id"}
+}
+
 // timeLimitSeconds returns limit in whole seconds, at least 1 for a limit under a second, since 0
 // means no limit.
 func timeLimitSeconds(limit time.Duration) uint64 {
@@ -63,6 +69,16 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxTotalCalls:     uint64(q.MaxTotalCalls),
 		}
 	}
+	var stateChanges *model.StateChangesLimits
+	if cfg.EnableTimeTravel {
+		include := StateChangesIncludeValues()
+		stateChanges = &model.StateChangesLimits{MaxResponseBytes: cfg.MaxAPIStateChangesResponseBytes, Include: &include}
+	}
+	var execTraceOptions *[]string
+	if cfg.EnableDeveloperAPI {
+		options := ExecTraceConfigOptions()
+		execTraceOptions = &options
+	}
 	return model.CapabilitiesResponse{
 		TimeTravel:       cfg.EnableTimeTravel,
 		DeveloperApi:     cfg.EnableDeveloperAPI,
@@ -70,7 +86,9 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 		Simulate: model.SimulateLimits{
 			MaxTxnGroups:         uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
 			MaxExtraOpcodeBudget: uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
+			ExecTraceConfig:      execTraceOptions,
 		},
-		Query: query,
+		Query:        query,
+		StateChanges: stateChanges,
 	}
 }

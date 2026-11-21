@@ -23,6 +23,7 @@ Install the `dtalgorand` package: a Debian package from apt.d13.co, which instal
 - **Use**: [ledger/timetravel/README.md](ledger/timetravel/README.md) covers the configuration (`EnableTimeTravel`), the REST endpoints that take `?round=`, simulation at a past round, the design, and the mainnet size estimates. [VERSIONS.md](ledger/timetravel/VERSIONS.md) describes the API that lists the rounds at which an object changed.
 - **Round marker**: every answer given as of a past round carries `X-Algod-TT-Round: R`, so a client can tell that the node honoured `round`; a stock node ignores the parameter and answers as of the latest round. See [REST](ledger/timetravel/README.md#rest).
 - **Asset holders**: `GET /v2/assets/{id}/holders` lists an asset's holders at any round, from an index of every holding by asset (`TimeTravelHoldersIndex`, on in a new package install). See [Holders index](ledger/timetravel/README.md#holders-index).
+- **Per-transaction state changes**: `GET /v2/deltas/{round}/txn/state-changes` re-evaluates a round's block and lists, for each transaction and inner transaction, the globals, local states and boxes it changed, with app id and values before and after. See [REST](ledger/timetravel/README.md#rest).
 - **goal**: read commands take `--round`, and `versions` subcommands list an object's changes. See [cmd/goal/README.md](cmd/goal/README.md#past-rounds-and-versions-time-travel).
 - **Simulate budget**: `MaxAPISimulateExtraOpcodeBudget` lets an operator raise (or lower) the 320,000 limit on `extra-opcode-budget`, per group (mind the CPU, timeout and trace-memory costs listed there). See [Extra opcode budget limit in simulation](ledger/timetravel/README.md#extra-opcode-budget-limit-in-simulation).
 - **Simulate groups**: one simulate request can hold several transaction groups, run in order as one block. See [Several transaction groups in one simulation](ledger/timetravel/README.md#several-transaction-groups-in-one-simulation).
@@ -84,11 +85,15 @@ make install
 
 ### Test
 
-```bash
-# Unit tests
-make test
+Unit tests:
 
-# Integration tests
+```bash
+make test
+```
+
+Integration tests:
+
+```bash
 make integration
 ```
 

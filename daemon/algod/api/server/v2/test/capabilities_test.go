@@ -83,6 +83,9 @@ func TestCapabilities(t *testing.T) {
 	partitiontest.PartitionTest(t)
 	t.Parallel()
 
+	stateChangesIncludes := []string{"accounts", "assets", "apps"}
+	execTraceOptions := []string{"state-change-app-id"}
+
 	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
 	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024}
 	for _, tc := range []struct {
@@ -148,8 +151,16 @@ func TestCapabilities(t *testing.T) {
 			c.RestWriteTimeoutSeconds = 65
 		}, model.CapabilitiesResponse{
 			TimeTravel: true, DeveloperApi: true, TimeLimitSeconds: 58,
-			Simulate: model.SimulateLimits{MaxTxnGroups: 3, MaxExtraOpcodeBudget: 1_000},
-			Query:    defaultQuery,
+			Simulate:     model.SimulateLimits{MaxTxnGroups: 3, MaxExtraOpcodeBudget: 1_000},
+			Query:        defaultQuery,
+			StateChanges: &model.StateChangesLimits{MaxResponseBytes: 16 << 20, Include: &stateChangesIncludes},
+		}},
+		{"state changes without a limit", func(c *config.Local) {
+			c.EnableTimeTravel = true
+			c.MaxAPIStateChangesResponseBytes = 0
+		}, model.CapabilitiesResponse{
+			TimeTravel: true, TimeLimitSeconds: 108, Simulate: defaultSimulate, Query: defaultQuery,
+			StateChanges: &model.StateChangesLimits{Include: &stateChangesIncludes},
 		}},
 		{"deprecated settings", func(c *config.Local) {
 			c.MaxAPISimulateRounds = 5
@@ -168,6 +179,10 @@ func TestCapabilities(t *testing.T) {
 			t.Parallel()
 			cfg := config.GetDefaultLocal()
 			tc.configure(&cfg)
+			// with the developer API, which every trace needs
+			if cfg.EnableDeveloperAPI {
+				tc.want.Simulate.ExecTraceConfig = &execTraceOptions
+			}
 			require.Equal(t, tc.want, getCapabilities(t, capabilitiesRouter(t, cfg)))
 		})
 	}
