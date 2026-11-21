@@ -707,6 +707,12 @@ func (s Simulator) Simulate(simulateRequest Request) (Result, error) {
 
 	// Access underlying data.Ledger to get the real latest round
 	latest := s.ledger.Ledger.Latest()
+	if simulateRequest.Round > latest {
+		// A request error, as query's, so that clients don't retry it as a server error.
+		return Result{}, InvalidRequestError{SimulatorError{
+			fmt.Errorf("round %d is after the latest round %d", simulateRequest.Round, latest),
+		}}
+	}
 	if simulateRequest.Round != 0 {
 		s.ledger.start = simulateRequest.Round
 	} else {
