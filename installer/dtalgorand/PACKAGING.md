@@ -28,6 +28,7 @@ The node runs as the `dtalgorand` user, whose home is `/var/lib/dtalgorand`: alg
 | `$(brew --prefix)/opt/dtalgorand/share/dtalgorand/ttsnap/keys` | the snapshot keys `ttsnap fetch` trusts, found from the binary's location |
 | `$(brew --prefix)/var/dtalgorand/` | the node's data directory, set up as the .deb's is; a new one starts with `"EnableTimeTravel": true` and `"TimeTravelHoldersIndex": true` |
 | `$(brew --prefix)/var/log/dtalgorand.log` | the service's stdout and stderr (algod logs to `node.log` in the data directory) |
+| `~/Library/LaunchAgents/homebrew.mxcl.dtalgorand.plist` | the node's launchd agent, from the formula's `service` block: `brew services start` writes it (the install doesn't) and `brew services stop` removes it. It runs algod as the user, from login, and restarts it if it exits |
 
 ## Building the .deb
 
