@@ -16,7 +16,7 @@ A time travel node's history comes from every round's state delta since genesis:
   - The archival node can keep running. Blocks it writes during the import are left for a rerun, which replays only the new rounds. This was tested with a writer appending blocks to the archive the way algod's block queue does.
 - **Write access to the archive's directory**, for SQLite's `-wal` and `-shm` files. Run `ttimport` as the user that owns the data directory: it refuses to run as root on a data directory that another user owns, whose node could not open the files root writes. On macOS, copy the archive to a disk you own if it belongs to another user.
 - **Disk for the new data directory:**
-  - the history: about 70 GB on mainnet (65.5 GiB in October 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
+  - the history: about 70 GB on mainnet (67.3 GiB in November 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
   - the account DB of a non-archival node;
   - about 1,000 blocks.
   
