@@ -490,55 +490,71 @@ func convertStateChanges(sc ledger.StateChanges, groups bool) model.TxnStateChan
 	return out
 }
 
-func convertApplicationStateChange(stateChange simulation.StateOperation) model.ApplicationStateOperation {
-	return model.ApplicationStateOperation{
+// convertApplicationStateChange converts a state change of an execution trace. appID adds the app
+// whose state it changed, a non-standard fork field (exec-trace-config state-change-app-id).
+func convertApplicationStateChange(stateChange simulation.StateOperation, appID bool) model.ApplicationStateOperation {
+	op := model.ApplicationStateOperation{
 		Key:          []byte(stateChange.Key),
 		NewValue:     omitEmpty(convertToAVMValue(stateChange.NewValue)),
 		Operation:    convertApplicationStateOperation(stateChange.AppStateOp),
 		AppStateType: convertApplicationState(stateChange.AppState),
 		Account:      addrOrNil(stateChange.Account),
 	}
+	if appID {
+		// even 0, the app argument of a failed app_box_* opcode
+		id := stateChange.AppID
+		op.AppId = &id
+	}
+	return op
 }
 
-func convertOpcodeTraceUnit(opcodeTraceUnit simulation.OpcodeTraceUnit) model.SimulationOpcodeTraceUnit {
+func convertOpcodeTraceUnit(opcodeTraceUnit simulation.OpcodeTraceUnit, appID bool) model.SimulationOpcodeTraceUnit {
 	return model.SimulationOpcodeTraceUnit{
 		Pc:             opcodeTraceUnit.PC,
 		SpawnedInners:  sliceOrNil(opcodeTraceUnit.SpawnedInners),
 		StackAdditions: sliceOrNil(util.Map(opcodeTraceUnit.StackAdded, convertToAVMValue)),
 		StackPopCount:  omitEmpty(opcodeTraceUnit.StackPopCount),
 		ScratchChanges: sliceOrNil(util.Map(opcodeTraceUnit.ScratchSlotChanges, convertScratchChange)),
-		StateChanges:   sliceOrNil(util.Map(opcodeTraceUnit.StateChanges, convertApplicationStateChange)),
+		StateChanges: sliceOrNil(util.Map(opcodeTraceUnit.StateChanges, func(op simulation.StateOperation) model.ApplicationStateOperation {
+			return convertApplicationStateChange(op, appID)
+		})),
 	}
 }
 
-func convertTxnTrace(txnTrace *simulation.TransactionTrace) *model.SimulationTransactionExecTrace {
+// convertTxnTrace converts an execution trace. appID adds the app-id to each state change.
+func convertTxnTrace(txnTrace *simulation.TransactionTrace, appID bool) *model.SimulationTransactionExecTrace {
 	if txnTrace == nil {
 		return nil
 	}
+	units := func(trace []simulation.OpcodeTraceUnit) *[]model.SimulationOpcodeTraceUnit {
+		return sliceOrNil(util.Map(trace, func(u simulation.OpcodeTraceUnit) model.SimulationOpcodeTraceUnit {
+			return convertOpcodeTraceUnit(u, appID)
+		}))
+	}
 	return &model.SimulationTransactionExecTrace{
-		ApprovalProgramTrace:    sliceOrNil(util.Map(txnTrace.ApprovalProgramTrace, convertOpcodeTraceUnit)),
+		ApprovalProgramTrace:    units(txnTrace.ApprovalProgramTrace),
 		ApprovalProgramHash:     digestOrNil(txnTrace.ApprovalProgramHash),
-		ClearStateProgramTrace:  sliceOrNil(util.Map(txnTrace.ClearStateProgramTrace, convertOpcodeTraceUnit)),
+		ClearStateProgramTrace:  units(txnTrace.ClearStateProgramTrace),
 		ClearStateProgramHash:   digestOrNil(txnTrace.ClearStateProgramHash),
 		ClearStateRollback:      omitEmpty(txnTrace.ClearStateRollback),
 		ClearStateRollbackError: omitEmpty(txnTrace.ClearStateRollbackError),
-		LogicSigTrace:           sliceOrNil(util.Map(txnTrace.LogicSigTrace, convertOpcodeTraceUnit)),
+		LogicSigTrace:           units(txnTrace.LogicSigTrace),
 		LogicSigHash:            digestOrNil(txnTrace.LogicSigHash),
 		InnerTrace: sliceOrNil(util.Map(txnTrace.InnerTraces,
 			func(trace simulation.TransactionTrace) model.SimulationTransactionExecTrace {
-				return *convertTxnTrace(&trace)
+				return *convertTxnTrace(&trace, appID)
 			}),
 		),
 	}
 }
 
-func convertTxnResult(txnResult simulation.TxnResult) PreEncodedSimulateTxnResult {
+func convertTxnResult(txnResult simulation.TxnResult, appID bool) PreEncodedSimulateTxnResult {
 	result := PreEncodedSimulateTxnResult{
 		Txn:                      ConvertInnerTxn(&txnResult.Txn),
 		AppBudgetConsumed:        omitEmpty(txnResult.AppBudgetConsumed),
 		LogicSigBudgetConsumed:   omitEmpty(txnResult.LogicSigBudgetConsumed),
 		FeesPaid:                 omitEmpty(txnResult.FeesPaid.Raw),
-		TransactionTrace:         convertTxnTrace(txnResult.Trace),
+		TransactionTrace:         convertTxnTrace(txnResult.Trace, appID),
 		UnnamedResourcesAccessed: convertUnnamedResourcesAccessed(txnResult.UnnamedResourcesAccessed),
 	}
 
@@ -626,8 +642,10 @@ func convertSimulateInitialStates(initialStates *simulation.ResourcesInitialStat
 	}
 }
 
-func convertTxnGroupResult(txnGroupResult simulation.TxnGroupResult) PreEncodedSimulateTxnGroupResult {
-	txnResults := util.Map(txnGroupResult.Txns, convertTxnResult)
+func convertTxnGroupResult(txnGroupResult simulation.TxnGroupResult, appID bool) PreEncodedSimulateTxnGroupResult {
+	txnResults := util.Map(txnGroupResult.Txns, func(r simulation.TxnResult) PreEncodedSimulateTxnResult {
+		return convertTxnResult(r, appID)
+	})
 
 	encoded := PreEncodedSimulateTxnGroupResult{
 		Txns:                     txnResults,
@@ -660,10 +678,13 @@ func convertSimulationResult(result simulation.Result) PreEncodedSimulateRespons
 		}
 	}
 
+	groups := util.Map(result.TxnGroups, func(g simulation.TxnGroupResult) PreEncodedSimulateTxnGroupResult {
+		return convertTxnGroupResult(g, result.ReturnStateAppID())
+	})
 	return PreEncodedSimulateResponse{
 		Version:         result.Version,
 		LastRound:       result.LastRound,
-		TxnGroups:       util.Map(result.TxnGroups, convertTxnGroupResult),
+		TxnGroups:       groups,
 		EvalOverrides:   evalOverrides,
 		ExecTraceConfig: result.TraceConfig,
 		InitialStates:   convertSimulateInitialStates(result.InitialStates),
