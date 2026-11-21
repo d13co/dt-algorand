@@ -63,6 +63,11 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxTotalCalls:     uint64(q.MaxTotalCalls),
 		}
 	}
+	var stateChanges *model.StateChangesLimits
+	if cfg.EnableTimeTravel {
+		include := StateChangesIncludeValues()
+		stateChanges = &model.StateChangesLimits{MaxResponseBytes: cfg.MaxAPIStateChangesResponseBytes, Include: &include}
+	}
 	return model.CapabilitiesResponse{
 		TimeTravel:       cfg.EnableTimeTravel,
 		DeveloperApi:     cfg.EnableDeveloperAPI,
@@ -71,6 +76,7 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 			MaxTxnGroups:         uint64(simulation.EffectiveMaxGroups(limits.MaxGroups)),
 			MaxExtraOpcodeBudget: uint64(simulation.EffectiveMaxExtraOpcodeBudget(limits.MaxExtraOpcodeBudget)),
 		},
-		Query: query,
+		Query:        query,
+		StateChanges: stateChanges,
 	}
 }
