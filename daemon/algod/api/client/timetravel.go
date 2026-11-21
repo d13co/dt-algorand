@@ -182,3 +182,24 @@ func (client RestClient) Capabilities() (response model.CapabilitiesResponse, er
 	err = client.get(&response, "/v2/capabilities", nil)
 	return
 }
+
+type txnStateChangesParams struct {
+	App     basics.AppIndex `url:"app,omitempty"`
+	TxIDs   []string        `url:"txids,comma,omitempty"`
+	Include []string        `url:"include,comma,omitempty"`
+}
+
+// TxnStateChanges gets the app state changes of each transaction of a round (EnableTimeTravel),
+// only those to app when it is not 0, and only those of top-level transactions txids and their
+// inner transactions when there are any.
+func (client RestClient) TxnStateChanges(round basics.Round, app basics.AppIndex, txids ...string) (response model.TxnStateChangesResponse, err error) {
+	return client.TxnStateChangesWithGroups(round, app, nil, txids...)
+}
+
+// TxnStateChangesWithGroups is TxnStateChanges that also gets, with a non-empty include (accounts,
+// assets, apps), what each group changed besides app state: of the groups of txids when there are
+// any, else of every group.
+func (client RestClient) TxnStateChangesWithGroups(round basics.Round, app basics.AppIndex, include []string, txids ...string) (response model.TxnStateChangesResponse, err error) {
+	err = client.get(&response, fmt.Sprintf("/v2/deltas/%d/txn/state-changes", round), txnStateChangesParams{App: app, TxIDs: txids, Include: include})
+	return
+}
