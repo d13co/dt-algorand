@@ -428,12 +428,21 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 		if tracer.result.ReturnStackChange() {
 			latestOpcodeTraceUnit.computeStackValueDeletions(cx, tracer)
 		}
+		// The op fails on a short stack (a ClearState program's failure is kept): reading
+		// its operands to explain it would panic first, and change how the program fails.
+		// StackExplain above runs before this check, so it must not read cx.Stack's values
+		// (only its length, the program's immediates and a non-empty cx.callstack).
+		if len(cx.Stack) < len(cx.GetOpSpec().Arg.Types) {
+			return
+		}
 		if tracer.result.ReturnScratchChange() {
 			tracer.recordChangedScratchSlots(cx)
 		}
 		if tracer.result.ReturnStateChange() {
 			latestOpcodeTraceUnit.appendStateOperations(cx)
-			tracer.result.InitialStates.increment(cx)
+			if tracer.result.InitialStates != nil { // nil for a GroupExecTracer
+				tracer.result.InitialStates.increment(cx)
+			}
 		}
 	}
 }
@@ -582,7 +591,7 @@ func (tracer *evalTracer) BeforeProgram(cx *logic.EvalContext) {
 		if tracer.result.ReturnStateChange() {
 			// If we are recording state changes, including initial states,
 			// then we should exclude initial states of created app during simulation.
-			if cx.TxnGroup[groupIndex].SignedTxn.Txn.ApplicationID == 0 {
+			if cx.TxnGroup[groupIndex].SignedTxn.Txn.ApplicationID == 0 && tracer.result.InitialStates != nil {
 				tracer.result.InitialStates.CreatedApp.Add(cx.AppID())
 			}
 		}
