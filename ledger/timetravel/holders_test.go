@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/sstable/block"
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/data/basics"
@@ -662,7 +663,9 @@ func TestStoreHoldersState(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, dropped)
 		require.Empty(t, holdersRange(t, s))
+		require.Positive(t, rangeDels(t, s, []byte{pfxHolders}, []byte{pfxHolders + 1}), "the drop is a range tombstone")
 		require.NoError(t, s.CompactHoldersIndex(context.Background()))
+		require.Zero(t, rangeDels(t, s, []byte{pfxHolders}, []byte{pfxHolders + 1}), "the compaction drops it")
 	})
 
 	t.Run("read-only", func(t *testing.T) {
@@ -1082,4 +1085,15 @@ func TestStoreHoldersTruncateHalfBuilt(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, HoldersNone, s.HoldersIndexState())
 	require.Equal(t, half, holdersRange(t, s))
+}
+
+// rangeDels counts the range tombstone fragments that overlap [lo, hi) in the
+// store, memtables included.
+func rangeDels(t *testing.T, s *Store, lo, hi []byte) (n int) {
+	err := s.DB().ScanInternal(context.Background(), block.CategoryUnknown, lo, hi,
+		func(*pebble.InternalKey, pebble.LazyValue, pebble.IteratorLevel) error { return nil },
+		func([]byte, []byte, pebble.SeqNum) error { n++; return nil },
+		nil, nil, nil)
+	require.NoError(t, err)
+	return n
 }

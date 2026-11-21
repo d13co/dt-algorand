@@ -292,12 +292,14 @@ func TestPublishFetchHoldersIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, it.First(), "no holders index entry is installed")
 	require.NoError(t, it.Close())
-	require.Zero(t, rangeDels(t, st.DB(), []byte{'a'}, []byte{'b'}), "the dropped index is compacted away")
+	// in a store this small, the box index's compaction takes the holders
+	// tombstone along: TestStoreHoldersState checks CompactHoldersIndex alone
+	require.Zero(t, rangeDels(t, st.DB(), []byte{'a'}, []byte{'b'}), "nothing of the dropped index is left")
 }
 
-// rangeDels counts the range tombstones over [lo, hi) in the store, memtables
-// included. A tombstone stays until a compaction into the bottom level drops
-// it, with the entries it deletes.
+// rangeDels counts the range tombstone fragments that overlap [lo, hi) in the
+// store, memtables included. Pebble drops a tombstone, with the entries it
+// deletes, in a compaction that leaves nothing older beneath it.
 func rangeDels(t *testing.T, db *pebble.DB, lo, hi []byte) (n int) {
 	err := db.ScanInternal(context.Background(), block.CategoryUnknown, lo, hi,
 		func(*pebble.InternalKey, pebble.LazyValue, pebble.IteratorLevel) error { return nil },

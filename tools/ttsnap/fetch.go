@@ -738,8 +738,9 @@ var errNotFound = errors.New("not found")
 // the commitment does not cover (after the last round, outside the store's
 // keyspaces), the records it leaves out (no-ops, lone tombstones) are deleted,
 // and the box index, which it does not cover either, is rebuilt from the box
-// records and compacted, as is the space of a dropped holders index. The store
-// is then marked as installed from the snapshot name.
+// records. The old index and a dropped holders index are compacted away (a
+// failure there is only reported), and the store is marked as installed from
+// the snapshot name.
 func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name string) error {
 	st, err := timetravel.Open(dir, timetravel.Options{})
 	if err != nil {
@@ -799,20 +800,30 @@ func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name s
 	if _, err = st.IndexBoxes(context.Background(), nil); err != nil {
 		return err
 	}
-	// the rebuild and the drop delete the old entries with a range tombstone,
+	// the drop and the rebuild delete the old entries with a range tombstone,
 	// which Pebble may leave on disk for weeks (a mainnet install kept 0.76
-	// GiB of the snapshot's box index): compact them away, as ttimport does
-	fmt.Fprintln(o.progressLog, "compacting the box index")
-	if err = st.CompactBoxIndex(context.Background()); err != nil {
-		return err
-	}
+	// GiB of the snapshot's box index): compact them away, as ttimport does.
+	// The holders index goes first, since it frees space and writes next to
+	// nothing. A compaction only reclaims space, so a failed one is reported
+	// and the install goes on
 	if dropped {
-		fmt.Fprintln(o.progressLog, "compacting away the dropped asset holders index")
-		if err = st.CompactHoldersIndex(context.Background()); err != nil {
-			return err
-		}
+		o.compact(st.CompactHoldersIndex, "the dropped asset holders index", "")
 	}
+	o.compact(st.CompactBoxIndex, "the old box index", " (or, with algod stopped, run ttimport -index-boxes)")
 	return st.SetInstalled(name, uint64(hi.Last))
+}
+
+// compact runs one of the store's compactions of what an index rebuild or
+// drop deleted, and reports a failure without failing the install: the old
+// entries then stay on disk until Pebble compacts them.
+func (o *fetchOpts) compact(f func(context.Context) error, what, remedy string) {
+	fmt.Fprintf(o.progressLog, "compacting away %s\n", what)
+	start := time.Now()
+	if err := f(context.Background()); err != nil {
+		fmt.Fprintf(o.progressLog, "warning: compacting %s: %v; its deleted entries stay on disk until Pebble compacts them%s\n", what, err, remedy)
+		return
+	}
+	fmt.Fprintf(o.progressLog, "compacted %s in %v\n", what, time.Since(start).Round(time.Second))
 }
 
 // attestations fetches the attesters' signatures of stmt from the snapshot
