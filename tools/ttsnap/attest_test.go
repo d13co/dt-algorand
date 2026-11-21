@@ -370,6 +370,7 @@ func TestFetchCanonicalizes(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, it.First(), "the box index is rebuilt")
 	require.NoError(t, it.Close())
+	require.Zero(t, rangeDels(t, st.DB(), []byte{'b'}, []byte{'c'}), "the old box index is compacted away")
 	name, ok, err := st.Installed()
 	require.NoError(t, err)
 	require.True(t, ok)
