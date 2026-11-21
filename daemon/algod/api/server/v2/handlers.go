@@ -926,7 +926,9 @@ func (v2 *Handlers) GetBlockLogs(ctx echo.Context, round basics.Round) error {
 // (GET /v2/blocks/{round}/hash)
 func (v2 *Handlers) GetBlockHash(ctx echo.Context, round basics.Round) error {
 	ledger := v2.Node.LedgerForAPI()
-	block, err := ledger.Block(round)
+	// The block hash is the hash of the header, so there is no need to load
+	// and decode the payset.
+	hdr, err := ledger.BlockHdr(round)
 	if err != nil {
 		switch err.(type) {
 		case ledgercore.ErrNoEntry:
@@ -936,7 +938,7 @@ func (v2 *Handlers) GetBlockHash(ctx echo.Context, round basics.Round) error {
 		}
 	}
 
-	response := model.BlockHashResponse{BlockHash: crypto.Digest(block.Hash()).String()}
+	response := model.BlockHashResponse{BlockHash: crypto.Digest(hdr.Hash()).String()}
 
 	return ctx.JSON(http.StatusOK, response)
 }
@@ -1211,24 +1213,25 @@ func (v2 *Handlers) WaitForBlock(ctx echo.Context, round basics.Round) error {
 }
 
 // decodeTxGroup attempts to decode a request body containing a transaction group.
+// It decodes with msgp, which enforces allocbounds, as for transactions received
+// from the network.
 func decodeTxGroup(body io.Reader, maxTxGroupSize int) ([]transactions.SignedTxn, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
 	var txgroup []transactions.SignedTxn
-	dec := protocol.NewDecoder(body)
-	for {
-		var st transactions.SignedTxn
-		err := dec.Decode(&st)
-		if err == io.EOF {
-			break
+	dec := protocol.NewMsgpDecoderBytes(data)
+	for dec.Remaining() > 0 {
+		if len(txgroup) == maxTxGroupSize {
+			return nil, fmt.Errorf("max group size is %d", maxTxGroupSize)
 		}
+		var st transactions.SignedTxn
+		err = dec.Decode(&st)
 		if err != nil {
 			return nil, err
 		}
 		txgroup = append(txgroup, st)
-
-		if len(txgroup) > maxTxGroupSize {
-			err := fmt.Errorf("max group size is %d", maxTxGroupSize)
-			return nil, err
-		}
 	}
 
 	if len(txgroup) == 0 {
@@ -1248,7 +1251,7 @@ func isEscrowLogicSig(stxn transactions.SignedTxn) bool {
 	return stxn.Lsig.Sig.Blank() &&
 		stxn.Lsig.Msig.Blank() &&
 		stxn.Lsig.LMsig.Blank() &&
-		stxn.Lsig.PQsig.Blank() &&
+		stxn.Lsig.SKsig.Blank() &&
 		stxn.Authorizer() == basics.Address(logic.HashProgram(stxn.Lsig.Logic))
 }
 
@@ -1268,18 +1271,18 @@ func rejectOnCurveLogicSigPrograms(txgroup []transactions.SignedTxn) error {
 	return nil
 }
 
-func enforcePQAuthorizerCompliance(txgroup []transactions.SignedTxn) error {
+func enforceOffCurveAuthorizers(txgroup []transactions.SignedTxn) error {
 	for txnIdx, stxn := range txgroup {
-		pqSig := stxn.PQsig
-		if pqSig.Blank() && stxn.Lsig.HasProgram() {
-			pqSig = stxn.Lsig.PQsig
+		sksig := stxn.SKsig
+		if sksig.Blank() && stxn.Lsig.HasProgram() {
+			sksig = stxn.Lsig.SKsig
 		}
-		if pqSig.Blank() || len(pqSig.PublicKey) == 0 {
+		if sksig.Blank() || len(sksig.PublicKey) == 0 {
 			continue
 		}
-		authorizer := pqSig.Address()
-		if !authorizer.IsPQCompliant() {
-			return fmt.Errorf("transaction %d: pq signature authorizer address %s is an Edwards25519 curve point (non PQ-compliant)", txnIdx, authorizer)
+		authorizer := sksig.Address()
+		if !authorizer.IsOffEd25519Curve() {
+			return fmt.Errorf("transaction %d: salted-key signature authorizer address %s is an Edwards25519 curve point", txnIdx, authorizer)
 		}
 	}
 	return nil
@@ -1304,7 +1307,7 @@ func (v2 *Handlers) RawTransaction(ctx echo.Context, params model.RawTransaction
 	}
 
 	if !shouldSkipPqAddressCheck(params.SkipPqAddressCheck) {
-		if err = enforcePQAuthorizerCompliance(txgroup); err != nil {
+		if err = enforceOffCurveAuthorizers(txgroup); err != nil {
 			return badRequest(ctx, err, err.Error(), v2.Log)
 		}
 		if err = rejectOnCurveLogicSigPrograms(txgroup); err != nil {
@@ -1337,7 +1340,7 @@ func (v2 *Handlers) RawTransactionAsync(ctx echo.Context, params model.RawTransa
 		return badRequest(ctx, err, err.Error(), v2.Log)
 	}
 	if !shouldSkipPqAddressCheck(params.SkipPqAddressCheck) {
-		if err = enforcePQAuthorizerCompliance(txgroup); err != nil {
+		if err = enforceOffCurveAuthorizers(txgroup); err != nil {
 			return badRequest(ctx, err, err.Error(), v2.Log)
 		}
 		if err = rejectOnCurveLogicSigPrograms(txgroup); err != nil {

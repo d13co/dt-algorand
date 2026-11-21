@@ -62,7 +62,7 @@ func TestEvalAborted(t *testing.T) {
 	tracer := &abortingTracer{at: 10}
 	ep.Tracer = tracer
 
-	pass, err := EvalSignature(0, ep)
+	pass, _, err := EvalSignatureProgram(txn.Lsig.Logic, nil, 0, ep)
 	require.False(t, pass)
 	var aborted EvalAborted
 	require.ErrorAs(t, err, &aborted)
@@ -78,7 +78,7 @@ func TestEvalAborted(t *testing.T) {
 	ep = defaultSigParams(txn)
 	ep.logger = logger
 	ep.Tracer = other
-	_, err = EvalSignature(0, ep)
+	_, _, err = EvalSignatureProgram(txn.Lsig.Logic, nil, 0, ep)
 	require.NotErrorAs(t, err, &aborted)
 	require.Contains(t, logOutput.String(), "recovered panic in Eval")
 }
