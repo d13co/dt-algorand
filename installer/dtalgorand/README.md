@@ -5,7 +5,7 @@ The packages of this fork ([time travel](../../ledger/timetravel/README.md)): a 
 ## Requirements
 
 - **OS:** Linux on amd64 or arm64 (the .deb is for Debian and Ubuntu; elsewhere, build from source), or macOS 14 or later on Apple silicon.
-- **Disk:** about 90 GB for a mainnet node today, growing. A synced mainnet node measured on 2026-10-30 held 65.5 GiB of history (3.6 GiB of it the asset holders index), an 11 GiB account DB and 0.7 GiB of recent blocks; a history installed from a snapshot can hold about 1 GB more, the entries of the box index that the install replaced, until Pebble compacts them away. Plan for 100 GB or more on an NVMe SSD: queries at past rounds read the history at random. Before it starts, `ttsnap fetch` checks that the history's disk has room for the download (about 70 GB, which becomes the history) plus 5% and 1 GiB.
+- **Disk:** about 90 GB for a mainnet node today, growing. A synced mainnet node measured on 2026-10-30 held 65.5 GiB of history (3.6 GiB of it the asset holders index), an 11 GiB account DB and 0.7 GiB of recent blocks; a history installed from a snapshot is about the same size (older releases of `ttsnap fetch` left the snapshot's old box index on disk, about 1 GB, until Pebble compacted it away). Plan for 100 GB or more on an NVMe SSD: queries at past rounds read the history at random. Before it starts, `ttsnap fetch` checks that the history's disk has room for the download (about 70 GB, which becomes the history) plus 5% and 1 GiB.
 - **Memory:** what a stock node needs (Algorand recommends 8 GB or more), plus a few hundred MB for the history's cache and memtables.
 
 ## Installing

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/cockroachdb/pebble/v2/sstable/block"
 	"github.com/stretchr/testify/require"
 
 	"github.com/algorand/go-algorand/config"
@@ -291,6 +292,19 @@ func TestPublishFetchHoldersIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, it.First(), "no holders index entry is installed")
 	require.NoError(t, it.Close())
+	require.Zero(t, rangeDels(t, st.DB(), []byte{'a'}, []byte{'b'}), "the dropped index is compacted away")
+}
+
+// rangeDels counts the range tombstones over [lo, hi) in the store, memtables
+// included. A tombstone stays until a compaction into the bottom level drops
+// it, with the entries it deletes.
+func rangeDels(t *testing.T, db *pebble.DB, lo, hi []byte) (n int) {
+	err := db.ScanInternal(context.Background(), block.CategoryUnknown, lo, hi,
+		func(*pebble.InternalKey, pebble.LazyValue, pebble.IteratorLevel) error { return nil },
+		func([]byte, []byte, pebble.SeqNum) error { n++; return nil },
+		nil, nil, nil)
+	require.NoError(t, err)
+	return n
 }
 
 // TestFetchRefuses checks that a manifest that is not the producer's, or that

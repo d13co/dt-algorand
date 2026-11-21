@@ -738,7 +738,8 @@ var errNotFound = errors.New("not found")
 // the commitment does not cover (after the last round, outside the store's
 // keyspaces), the records it leaves out (no-ops, lone tombstones) are deleted,
 // and the box index, which it does not cover either, is rebuilt from the box
-// records. The store is then marked as installed from the snapshot name.
+// records and compacted, as is the space of a dropped holders index. The store
+// is then marked as installed from the snapshot name.
 func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name string) error {
 	st, err := timetravel.Open(dir, timetravel.Options{})
 	if err != nil {
@@ -797,6 +798,19 @@ func (o *fetchOpts) canonicalize(dir string, hi HistoryInfo, m *Manifest, name s
 	fmt.Fprintf(o.progressLog, "removed %d records the commitment leaves out; rebuilding the box index\n", removed)
 	if _, err = st.IndexBoxes(context.Background(), nil); err != nil {
 		return err
+	}
+	// the rebuild and the drop delete the old entries with a range tombstone,
+	// which Pebble may leave on disk for weeks (a mainnet install kept 0.76
+	// GiB of the snapshot's box index): compact them away, as ttimport does
+	fmt.Fprintln(o.progressLog, "compacting the box index")
+	if err = st.CompactBoxIndex(context.Background()); err != nil {
+		return err
+	}
+	if dropped {
+		fmt.Fprintln(o.progressLog, "compacting away the dropped asset holders index")
+		if err = st.CompactHoldersIndex(context.Background()); err != nil {
+			return err
+		}
 	}
 	return st.SetInstalled(name, uint64(hi.Last))
 }
