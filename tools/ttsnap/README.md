@@ -9,7 +9,7 @@ The installer README's [From a snapshot](../../installer/dtalgorand/README.md#fr
 1. Download and install the history:
 
    ```sh
-   ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d <data dir>
+   ttsnap fetch -d <data dir>
    ```
 
 2. If `config.json` sets `TimeTravelHoldersIndex`, build the asset holders index:
@@ -24,13 +24,29 @@ The installer README's [From a snapshot](../../installer/dtalgorand/README.md#fr
    ttsnap catchup -d <data dir>
    ```
 
-`https://tt-snapshots-mainnet.d13.co` serves mainnet's snapshots. Keep `EnableTimeTravel: true` and `Archival: false` (archival nodes can't catch up from a catchpoint), and set `TimeTravelDBDir` before `fetch` if the history goes on another disk. A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
+`ttsnap bootstrap` runs the three steps in one command (see [bootstrap](#bootstrap)):
+
+```sh
+ttsnap bootstrap -d <data dir>
+```
+
+`fetch` and `bootstrap` take the snapshots of the data directory's network from `https://tt-snapshots-mainnet.d13.co` for mainnet and `https://tt-snapshots-testnet.d13.co` for testnet. `-url <base URL>` takes them from another tree (a mirror), and is needed for other networks. Whatever the URL, a manifest installs only if a producer in the keys file signed it, for the genesis of the data directory. Keep `EnableTimeTravel: true` and `Archival: false` (archival nodes can't catch up from a catchpoint), and set `TimeTravelDBDir` before `fetch` if the history goes on another disk. A ttsnap built from source has no keys file of its own: pass `-keys installer/dtalgorand/ttsnap_keys` from the source tree.
+
+### bootstrap
+
+`ttsnap bootstrap -d <data dir>` installs the latest snapshot as `fetch` does, builds the asset holders index, starts the node, waits for its API and starts the catchup as `catchup` does, then returns. Follow the catchup with `goal node status` (`dtgoal` from the packages). A rerun skips the steps already done: the download once a snapshot is installed, the index once it is complete, the install and start while algod answers, and the catchup while one runs or once the node has caught up (past half the snapshot's rounds, which only a catchup reaches). A rerun while algod is still opening its ledger also skips the install and start, and waits: algod holds the history's lock from the start, while it writes `algod.net` only once the ledger is open. Another program that has the history open (`ttsnap info`, `ttimport`) is not waited on: `bootstrap` refuses until it is done. A rerun once algod has the history open doesn't build a missing index (it would need the node stopped), so if the index step failed, stop the node, then rerun. The wait for the API gives up as soon as algod exits (the process holding the history's lock is gone, or the package's unit fails or restarts) rather than after `-wait`. An algod that exits before it opens its ledger is noticed only for a systemd unit; otherwise the wait runs to `-wait`. It doesn't run `ttimport -dedup`: `fetch` already deletes the records `-dedup` would remove and rebuilds the box index.
+
+- `-holders-index=false` skips the asset holders index. With it on (the default), `bootstrap` refuses before downloading anything if `config.json` doesn't set `TimeTravelHoldersIndex`, since algod would delete the index at start. With it off and the option set, the node runs, warns at start, and `/v2/assets/{id}/holders` answers 503: set the option to `false` to do without the index.
+- `-start` is the shell command that starts the node, run from `/`. It defaults to `systemctl enable --now dtalgorand` for the .deb's `/var/lib/dtalgorand`, to the .deb's template unit (`systemctl enable --now dtalgorand@$(systemd-escape <data dir>)`) for another data directory that the `dtalgorand` user owns (outside `/home`, `/root` and `/run/user`, which the unit's `ProtectHome` hides), and to `brew services start dtalgorand` for Homebrew's data directory. Any other data directory needs one, such as `-start 'dtgoal node start -d <data dir>'` (`goal` in a source build), or `-start none` to start the node yourself while `bootstrap` waits.
+- `-wait` is how long it waits for the node's API (30 minutes), which comes up once algod has opened its ledger. algod answers only if it takes the data directory's `algod.token`, so an `algod.net` left by a crash that names another node doesn't pass for this one.
+- As root on a data directory that another user owns (`sudo ttsnap bootstrap` on the .deb's), it runs everything as that user, so that the files stay the node's, except the package's `systemctl` start, which runs as root. A `-keys` file is read as root and handed over, so it may be one that user can't read. On Linux the install stops if `bootstrap` dies, however it dies; elsewhere an install left running keeps its download locked, and a rerun refuses to download alongside it. A `-start` command runs as that user too, with its output going to a file that is shown once it returns rather than to root's terminal: a process it leaves behind (`dtalgod -d <data dir> &`) keeps running, but what it writes later isn't shown. As another user, a `systemctl` start is refused: run it with `sudo`, or pass `-start none`. A root-owned data directory is refused for a `systemctl` start, since the service runs algod as `dtalgorand`. Homebrew's runs as you, not with `sudo`. The user is the data directory's owner: if `config.json` puts the history elsewhere (`TimeTravelDBDir`), that directory must be theirs too.
+- `-keys`, `-min-attest`, `-workers`, `-parallel` and `-max-age` are `fetch`'s; `-label` and `-snapshot-label` are `catchup`'s.
 
 ### fetch
 
 - It refuses a data directory that already has a history (`ledger.timetravel already exists`), which any start of the node creates: see [Starting over](../../installer/dtalgorand/README.md#starting-over).
 - It checks first that the history's disk has room for what is left to download, plus 5% and 1 GiB.
-- Downloads resume when rerun. The history downloads into `ledger.timetravel.ttsnap-partial/` next to its target, and is renamed into place once every file checks out, the headers chain from genesis and the commitment is the manifest's (minutes on mainnet with NVMe). A full snapshot's tracker and block DBs download as `*.ttsnap-partial` files next to theirs. A rerun of an install that stopped while moving files finishes it.
+- Downloads resume when rerun. A second install into the same data directory while one runs is refused. The history downloads into `ledger.timetravel.ttsnap-partial/` next to its target, and is renamed into place once every file checks out, the headers chain from genesis and the commitment is the manifest's (minutes on mainnet with NVMe). A full snapshot's tracker and block DBs download as `*.ttsnap-partial` files next to theirs. A rerun of an install that stopped while moving files finishes it.
 - `-parallel` sets the files downloaded at once (4), `-workers` the goroutines that check the commitment (one per CPU).
 - `-keys` selects another keys file, and `-min-attest N` requires N attesters' signatures of the snapshot's statement.
 - The latest pointer is not signed, so a mirror could keep serving an old one: `fetch` refuses a latest snapshot older than `-max-age` (7 days). `-manifest` installs a given one.

@@ -55,14 +55,9 @@ class Dtalgorand < Formula
         dtalgocfg set -d #{var}/dtalgorand -p TimeTravelDBDir -v /Volumes/<disk>/dtalgorand
 
       To start from a history snapshot instead (about 70 GB on mainnet), before the first start:
-        ttsnap fetch -url https://tt-snapshots-mainnet.d13.co -d #{var}/dtalgorand
-        ttimport -holders-index -d #{var}/dtalgorand
-      then start the node and run
-        ttsnap catchup -d #{var}/dtalgorand
-
-      A sync from genesis keeps the holders index from round 0. After a snapshot,
-      GET /v2/assets/<id>/holders answers 503 until ttimport -holders-index has built it, with
-      the node stopped (about 5 minutes on mainnet).
+        ttsnap bootstrap -d #{var}/dtalgorand
+      It downloads the snapshot, builds the asset holders index, starts the service and starts
+      a catchpoint catchup; a rerun picks up where it stopped.
 
       To run dtgoal, dtalgocfg, dtalgod, dtalgoh and dtdiagcfg without -d (ttsnap and ttimport
       always need it), add the data directory to your shell, then open a new terminal (with
