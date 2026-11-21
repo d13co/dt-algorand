@@ -186,4 +186,4 @@ It scans the holding records once and writes an entry per holding that ever exis
 - a source from another network, judged by its last block header's genesis hash against `genesis.json`;
 - a data directory whose ledger directories resolve into the source's directory.
 
-The ledger refuses a data directory that is ahead of the source, with the message of an interrupted run ("rerun tools/ttimport"). If algod has already synced the directory past the archive's tip, there is nothing left to import: start the node. For an archival time travel node (`Archival: true`), sync from genesis over the network instead.
+The ledger refuses a data directory that is ahead of the source, with the message of an interrupted run ("rerun tools/ttimport"). If algod has already synced the directory past the archive's tip, there is nothing left to import: start the node. For an archival time travel node (`Archival: true`), import as usual, then hand the archive's block DB over to the node and turn `Archival` on while it is stopped: see [Making the node archival](../../installer/dtalgorand/README.md#making-the-node-archival).
