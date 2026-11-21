@@ -66,7 +66,7 @@ var stateChangesIncludes = map[string]ledger.StateChangesInclude{
 const stateChangesIncludeGroups = ledger.IncludeAccounts | ledger.IncludeAssets | ledger.IncludeApps
 
 // stateChangesTraceConfig is what include=trace records: everything simulate can.
-var stateChangesTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true}
+var stateChangesTraceConfig = simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true, StateAppID: true}
 
 // StateChangesIncludeValues lists the values of the include parameter this node takes, in a fixed
 // order: trace only with EnableDeveloperAPI, as simulate's execution traces.
@@ -166,7 +166,10 @@ func (v2 *Handlers) GetTxnStateChangesForRound(ctx echo.Context, round basics.Ro
 			err = errors.New("the trace is missing")
 			return internalError(ctx, err, fmt.Sprintf(errFailedRetrievingStateDelta, err), v2.Log)
 		}
-		out.Traces, out.Programs = convertGroupTrace(sc.Trace, trace.Traces())
+		out.Traces, out.Programs, err = convertGroupTrace(sc.Trace, trace.Traces(), maxBytes)
+		if err != nil {
+			return badRequest(ctx, err, fmt.Sprintf(errStateChangesTooLarge, maxBytes), v2.Log)
+		}
 	}
 	data, err := encode(handle, out)
 	if err != nil {
@@ -356,7 +359,9 @@ func convertTxnStateReads(r ledger.TxnStateReads) model.TxnStateReads {
 
 // convertGroupTrace converts the traced group's execution traces, and the
 // disassembly of the programs they ran, in the order the traces first ran them.
-func convertGroupTrace(g *ledger.GroupTrace, traces []*simulation.TransactionTrace) (*[]model.TxnExecTrace, *[]model.ProgramDisassembly) {
+// It fails with ledger.ErrStateChangesTooLarge once the disassembly's text alone
+// passes maxBytes (0: no limit), which the answer could not fit.
+func convertGroupTrace(g *ledger.GroupTrace, traces []*simulation.TransactionTrace, maxBytes uint64) (*[]model.TxnExecTrace, *[]model.ProgramDisassembly, error) {
 	out := make([]model.TxnExecTrace, 0, len(traces))
 	var order []crypto.Digest
 	seen := make(map[crypto.Digest]bool)
@@ -380,17 +385,25 @@ func convertGroupTrace(g *ledger.GroupTrace, traces []*simulation.TransactionTra
 			t = &simulation.TransactionTrace{}
 		}
 		visit(t)
-		out = append(out, model.TxnExecTrace{Txid: g.TxIDs[i].String(), ExecTrace: *convertTxnTrace(t)})
+		out = append(out, model.TxnExecTrace{Txid: g.TxIDs[i].String(), ExecTrace: *convertTxnTrace(t, true)})
 	}
 	programs := make([]model.ProgramDisassembly, 0, len(order))
+	var text uint64
 	for _, h := range order {
 		program, ok := g.Programs[h]
 		if !ok {
 			continue
 		}
-		programs = append(programs, model.ProgramDisassembly{Hash: slices.Clone(h[:]), Lines: disassemblyLines(program)})
+		lines := disassemblyLines(program)
+		for _, l := range lines {
+			text += uint64(len(l.Text))
+		}
+		if maxBytes > 0 && text > maxBytes {
+			return nil, nil, fmt.Errorf("%w: the disassembly passes %d bytes", ledger.ErrStateChangesTooLarge, maxBytes)
+		}
+		programs = append(programs, model.ProgramDisassembly{Hash: slices.Clone(h[:]), Lines: lines})
 	}
-	return &out, &programs
+	return &out, &programs, nil
 }
 
 // disassemblyLines splits a program's disassembly into lines, each with the pc

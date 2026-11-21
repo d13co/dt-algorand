@@ -765,7 +765,7 @@ type ApplicationStateOperation struct {
 	// Account For local state changes, the address of the account associated with the local state.
 	Account *string `json:"account,omitempty"`
 
-	// AppId The application whose state the operation changed. It differs from the running application for the foreign box opcodes (app_box_*). Non-standard fork feature.
+	// AppId The application whose state the operation changed. It differs from the running application only when a foreign box opcode (app_box_*) changes another application's boxes. Only with exec-trace-config state-change-app-id. Non-standard fork feature.
 	AppId *basics.AppIndex `json:"app-id,omitempty"`
 
 	// AppStateType Type of application state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
@@ -1554,6 +1554,9 @@ type SimulateInitialStates struct {
 
 // SimulateLimits The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
 type SimulateLimits struct {
+	// ExecTraceConfig The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. Listed only with developer-api, without which the node refuses any execution trace. A node without this list takes none of them.
+	ExecTraceConfig *[]string `json:"exec-trace-config,omitempty"`
+
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
 
@@ -1607,6 +1610,9 @@ type SimulateTraceConfig struct {
 
 	// StateChange A boolean option enabling returning application state changes (global, local, and box changes) with the execution trace during simulation.
 	StateChange *bool `json:"state-change,omitempty"`
+
+	// StateChangeAppId A boolean option adding app-id to each application state change of the execution trace. Needs state-change. Non-standard fork feature: stock algod refuses it, and a node takes it when its capabilities list it in simulate.exec-trace-config.
+	StateChangeAppId *bool `json:"state-change-app-id,omitempty"`
 }
 
 // SimulateTransactionGroupResult Simulation result for an atomic transaction group
@@ -1722,7 +1728,7 @@ type SimulationOpcodeTraceUnit struct {
 	// StackPopCount The number of deleted stack values by this opcode.
 	StackPopCount *int `json:"stack-pop-count,omitempty"`
 
-	// StateChanges The operations against application states: the current application's, or another application's boxes for the foreign box opcodes (app_box_*); each operation's app-id names the application.
+	// StateChanges The operations against application states: the current application's, or another application's boxes when a foreign box opcode (app_box_*) names one. With exec-trace-config state-change-app-id, each operation's app-id names the application.
 	StateChanges *[]ApplicationStateOperation `json:"state-changes,omitempty"`
 }
 
@@ -1881,7 +1887,7 @@ type TxnStateReads struct {
 	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level, as in `txns`.
 	Path []uint64 `json:"path"`
 
-	// Reads The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote.
+	// Reads The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote, even in a clear state program that then failed, whose writes the block discards.
 	Reads []AppStateRead `json:"reads"`
 
 	// Txid The transaction id, for a top-level transaction.
@@ -2419,7 +2425,7 @@ type TxnStateChangesResponse struct {
 	// Round The round.
 	Round basics.Round `json:"round"`
 
-	// Traces With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes.
+	// Traces With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).
 	Traces *[]TxnExecTrace `json:"traces,omitempty"`
 
 	// Txns The transactions that changed app state, top-level and inner, in execution order.

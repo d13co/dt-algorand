@@ -1442,7 +1442,7 @@
                   "x-go-type": "basics.Round"
                 },
                 "traces": {
-                  "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes.",
+                  "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).",
                   "items": {
                     "$ref": "#/components/schemas/TxnExecTrace"
                   },
@@ -2293,7 +2293,7 @@
             "x-algorand-format": "Address"
           },
           "app-id": {
-            "description": "The application whose state the operation changed. It differs from the running application for the foreign box opcodes (app_box_*). Non-standard fork feature.",
+            "description": "The application whose state the operation changed. It differs from the running application only when a foreign box opcode (app_box_*) changes another application's boxes. Only with exec-trace-config state-change-app-id. Non-standard fork feature.",
             "type": "integer",
             "x-algorand-format": "uint64",
             "x-go-type": "basics.AppIndex"
@@ -3873,6 +3873,13 @@
       "SimulateLimits": {
         "description": "The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.",
         "properties": {
+          "exec-trace-config": {
+            "description": "The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. Listed only with developer-api, without which the node refuses any execution trace. A node without this list takes none of them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "max-extra-opcode-budget": {
             "description": "The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).",
             "type": "integer",
@@ -3970,6 +3977,10 @@
           },
           "state-change": {
             "description": "A boolean option enabling returning application state changes (global, local, and box changes) with the execution trace during simulation.",
+            "type": "boolean"
+          },
+          "state-change-app-id": {
+            "description": "A boolean option adding app-id to each application state change of the execution trace. Needs state-change. Non-standard fork feature: stock algod refuses it, and a node takes it when its capabilities list it in simulate.exec-trace-config.",
             "type": "boolean"
           }
         },
@@ -4179,7 +4190,7 @@
             "type": "integer"
           },
           "state-changes": {
-            "description": "The operations against application states: the current application's, or another application's boxes for the foreign box opcodes (app_box_*); each operation's app-id names the application.",
+            "description": "The operations against application states: the current application's, or another application's boxes when a foreign box opcode (app_box_*) names one. With exec-trace-config state-change-app-id, each operation's app-id names the application.",
             "items": {
               "$ref": "#/components/schemas/ApplicationStateOperation"
             },
@@ -4519,7 +4530,7 @@
             "type": "array"
           },
           "reads": {
-            "description": "The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote.",
+            "description": "The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote, even in a clear state program that then failed, whose writes the block discards.",
             "items": {
               "$ref": "#/components/schemas/AppStateRead"
             },
@@ -9272,7 +9283,7 @@
                       "x-go-type": "basics.Round"
                     },
                     "traces": {
-                      "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes.",
+                      "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).",
                       "items": {
                         "$ref": "#/components/schemas/TxnExecTrace"
                       },
@@ -9335,7 +9346,7 @@
                       "x-go-type": "basics.Round"
                     },
                     "traces": {
-                      "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes.",
+                      "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).",
                       "items": {
                         "$ref": "#/components/schemas/TxnExecTrace"
                       },

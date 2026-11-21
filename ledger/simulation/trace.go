@@ -146,6 +146,11 @@ type ExecTraceConfig struct {
 	Stack   bool `codec:"stack-change"`
 	Scratch bool `codec:"scratch-change"`
 	State   bool `codec:"state-change"`
+
+	// StateAppID adds the app-id to each state change of the trace. Non-standard fork option,
+	// opt-in because stock algod's response has no such field and upstream's strict decoders
+	// (goal, libgoal) refuse unknown fields.
+	StateAppID bool `codec:"state-change-app-id"`
 }
 
 // Result contains the result from a call to Simulator.Simulate
@@ -210,6 +215,9 @@ func (r Result) ReturnScratchChange() bool { return r.TraceConfig.Scratch }
 // ReturnStateChange tells if the simulation runs with state-change enabled.
 func (r Result) ReturnStateChange() bool { return r.TraceConfig.State }
 
+// ReturnStateAppID tells if each state change of the trace reports its app-id.
+func (r Result) ReturnStateAppID() bool { return r.TraceConfig.StateAppID }
+
 // validateSimulateRequest first checks relation between request and config variables, including developerAPI:
 // if `developerAPI` provided is turned off, this method would:
 // - error on asking for exec trace
@@ -242,6 +250,20 @@ func validateSimulateRequest(request Request, developerAPI bool) error {
 					err: fmt.Errorf("basic trace must be enabled when enabling app state change tracing"),
 				},
 			}
+		}
+		if request.TraceConfig.StateAppID {
+			return InvalidRequestError{
+				SimulatorError{
+					err: fmt.Errorf("basic trace must be enabled when enabling state-change-app-id"),
+				},
+			}
+		}
+	}
+	if request.TraceConfig.StateAppID && !request.TraceConfig.State {
+		return InvalidRequestError{
+			SimulatorError{
+				err: fmt.Errorf("app state change tracing must be enabled when enabling state-change-app-id"),
+			},
 		}
 	}
 	return nil
@@ -292,7 +314,8 @@ type StateOperation struct {
 	AppState logic.AppStateEnum
 
 	// AppID is the ID of the app whose state the operation changes: the current
-	// app, or another app for the foreign box opcodes (app_box_*).
+	// app, or another app when a foreign box opcode (app_box_*) names one. The
+	// response reports it only with ExecTraceConfig.StateAppID.
 	AppID basics.AppIndex
 
 	// Key is the app state kv-pair's key, directly casting byte slice to string.

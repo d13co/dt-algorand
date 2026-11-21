@@ -30,9 +30,8 @@ import (
 // GroupExecTracer records the execution traces of one top-level group of a block being
 // re-evaluated, as simulate records them. It must see only that group's events: its logic sig
 // runs first, then the group, from its BeforeTxnGroup to its AfterTxnGroup. It changes nothing
-// in the evaluation: a request without overrides leaves the evaluation constants and budgets as
-// they are, and it never aborts. Unlike simulate, it reads no state before an opcode: it
-// records no initial states.
+// in the evaluation: it leaves the evaluation constants and budgets as they are, and it never
+// aborts. Unlike simulate, it reads no state before an opcode: it records no initial states.
 type GroupExecTracer struct {
 	*evalTracer
 	bytes int64
@@ -54,8 +53,22 @@ func NewGroupExecTracer(rnd basics.Round, group []transactions.SignedTxnWithAD, 
 	return &GroupExecTracer{evalTracer: t}
 }
 
-// Sizes counted for what an opcode adds to a trace.
+// BeforeTxnGroup starts a group as simulate does, but leaves the evaluation constants as the
+// block's evaluation set them: simulate replaces them with its request's.
+func (t *GroupExecTracer) BeforeTxnGroup(ep *logic.EvalParams) {
+	constants := ep.EvalConstants
+	t.evalTracer.BeforeTxnGroup(ep)
+	if ep.GetCaller() == nil {
+		ep.EvalConstants = constants
+		return
+	}
+	// simulate keeps a copy of each inner group
+	t.bytes += int64(len(ep.TxnGroup)) * signedTxnSize
+}
+
+// Sizes counted for what a trace holds.
 const (
+	signedTxnSize   = int64(unsafe.Sizeof(transactions.SignedTxnWithAD{}))
 	opcodeUnitSize  = int64(unsafe.Sizeof(OpcodeTraceUnit{}))
 	tealValueSize   = int64(unsafe.Sizeof(basics.TealValue{}))
 	scratchSize     = int64(unsafe.Sizeof(ScratchChange{}))
@@ -89,7 +102,8 @@ func (t *GroupExecTracer) AfterOpcode(cx *logic.EvalContext, evalError error) {
 	}
 }
 
-// Bytes is about how many bytes the traces hold: what their opcodes added.
+// Bytes is about how many bytes the traces hold: what their opcodes added, and the copies of
+// the inner transactions.
 func (t *GroupExecTracer) Bytes() int64 {
 	return t.bytes
 }

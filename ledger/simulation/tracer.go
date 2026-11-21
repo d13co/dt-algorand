@@ -428,6 +428,13 @@ func (tracer *evalTracer) BeforeOpcode(cx *logic.EvalContext) {
 		if tracer.result.ReturnStackChange() {
 			latestOpcodeTraceUnit.computeStackValueDeletions(cx, tracer)
 		}
+		// The op fails on a short stack (a ClearState program's failure is kept): reading
+		// its operands to explain it would panic first, and change how the program fails.
+		// StackExplain above runs before this check, so it must not read cx.Stack's values
+		// (only its length, the program's immediates and a non-empty cx.callstack).
+		if len(cx.Stack) < len(cx.GetOpSpec().Arg.Types) {
+			return
+		}
 		if tracer.result.ReturnScratchChange() {
 			tracer.recordChangedScratchSlots(cx)
 		}
