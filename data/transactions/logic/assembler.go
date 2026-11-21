@@ -3474,6 +3474,13 @@ func Disassemble(program []byte) (text string, err error) {
 	return
 }
 
+// DisassembleWithOffsets is Disassemble, with where in the text each opcode's
+// line begins, by program counter.
+func DisassembleWithOffsets(program []byte) (string, []PCOffset, error) {
+	text, ds, err := disassembleInstrumented(program, nil)
+	return text, ds.pcOffset, err
+}
+
 // HasStatefulOps checks if the program has stateful opcodes
 func HasStatefulOps(program []byte) (bool, error) {
 	_, ds, err := disassembleInstrumented(program, nil)

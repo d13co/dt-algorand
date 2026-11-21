@@ -28,6 +28,13 @@ const (
 	AppStateChangeAppStateTypeL AppStateChangeAppStateType = "l"
 )
 
+// Defines values for AppStateReadAppStateType.
+const (
+	AppStateReadAppStateTypeB AppStateReadAppStateType = "b"
+	AppStateReadAppStateTypeG AppStateReadAppStateType = "g"
+	AppStateReadAppStateTypeL AppStateReadAppStateType = "l"
+)
+
 // Defines values for PeerStatusConnectionType.
 const (
 	PeerStatusConnectionTypeInbound  PeerStatusConnectionType = "inbound"
@@ -38,6 +45,13 @@ const (
 const (
 	PeerStatusNetworkTypeP2p PeerStatusNetworkType = "p2p"
 	PeerStatusNetworkTypeWs  PeerStatusNetworkType = "ws"
+)
+
+// Defines values for ProgramBudgetKind.
+const (
+	ProgramBudgetKindApproval ProgramBudgetKind = "approval"
+	ProgramBudgetKindClear    ProgramBudgetKind = "clear"
+	ProgramBudgetKindLogicSig ProgramBudgetKind = "logic-sig"
 )
 
 // Defines values for TransactionProofHashtype.
@@ -254,6 +268,9 @@ const (
 	GetTxnStateChangesForRoundParamsIncludeAccounts GetTxnStateChangesForRoundParamsInclude = "accounts"
 	GetTxnStateChangesForRoundParamsIncludeApps     GetTxnStateChangesForRoundParamsInclude = "apps"
 	GetTxnStateChangesForRoundParamsIncludeAssets   GetTxnStateChangesForRoundParamsInclude = "assets"
+	GetTxnStateChangesForRoundParamsIncludeBudget   GetTxnStateChangesForRoundParamsInclude = "budget"
+	GetTxnStateChangesForRoundParamsIncludeReads    GetTxnStateChangesForRoundParamsInclude = "reads"
+	GetTxnStateChangesForRoundParamsIncludeTrace    GetTxnStateChangesForRoundParamsInclude = "trace"
 )
 
 // Defines values for QueryParamsFormat.
@@ -608,6 +625,33 @@ type AppStateChange struct {
 
 // AppStateChangeAppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
 type AppStateChangeAppStateType string
+
+// AppStateRead An app state key a transaction read, with what it read. Non-standard fork feature.
+type AppStateRead struct {
+	// Account For local state, the address of the account whose local state was read.
+	Account *string `json:"account,omitempty"`
+
+	// AppId The app whose state was read.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// AppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
+	AppStateType AppStateReadAppStateType `json:"app-state-type"`
+
+	// Exists The key (the box, for a box) existed when it was read.
+	Exists bool `json:"exists"`
+
+	// Key The key of the global or local state, or the box name.
+	Key []byte `json:"key"`
+
+	// Length For a box that exists, its length in bytes (absent when 0). Its value is not given.
+	Length *uint64 `json:"length,omitempty"`
+
+	// Value An app state value: a TealValue whose bytes are bytes (base64 in JSON, bin in msgpack). Non-standard fork feature.
+	Value *StateChangeValue `json:"value,omitempty"`
+}
+
+// AppStateReadAppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
+type AppStateReadAppStateType string
 
 // Application Application index and its parameters
 type Application struct {
@@ -1103,6 +1147,15 @@ type DebugSettingsProf struct {
 	MutexRate *uint64 `json:"mutex-rate,omitempty"`
 }
 
+// DisassemblyLine A line of a program's disassembly. Non-standard fork feature.
+type DisassemblyLine struct {
+	// Pc The program counter of the opcode on the line, as `pc` of a trace gives it. Absent for a line without one, such as `#pragma version` or a label (pc 0 is the version, never an opcode).
+	Pc *uint64 `json:"pc,omitempty"`
+
+	// Text The line.
+	Text string `json:"text"`
+}
+
 // ErrorResponse An error response with optional data field.
 type ErrorResponse struct {
 	Data    *map[string]interface{} `json:"data,omitempty"`
@@ -1313,6 +1366,45 @@ type PendingTransactionResponse struct {
 
 	// Txn The raw signed transaction.
 	Txn map[string]interface{} `json:"txn"`
+}
+
+// ProgramBudget The opcode budget of one program run: an app's approval or clear state program, top-level or inner, or a logic sig. Non-standard fork feature.
+type ProgramBudget struct {
+	// AppId For an app program, the app; for an app create, the new app.
+	AppId *basics.AppIndex `json:"app-id,omitempty"`
+
+	// BudgetAfter The opcode budget the program could still spend when it ended. Inner app calls add to the pooled budget while the program runs, and an inner program that spends more than they added takes the rest from it, so `budget-before` minus `budget-after` can differ from `cost` either way. Negative for a clear state program that ran out of budget.
+	BudgetAfter int `json:"budget-after"`
+
+	// BudgetBefore The opcode budget the program could still spend when it began: the group's pooled budget, apps' or logic sigs', where budgets are pooled (an inner group's app calls add theirs to it before its first program runs); the per-program budget otherwise, and at most that for a clear state program.
+	BudgetBefore int `json:"budget-before"`
+
+	// Cost The opcode budget the program spent. The programs of its inner transactions are entries of their own.
+	Cost uint64 `json:"cost"`
+
+	// Failed The program rejected or failed. In a block, only a clear state program can, or a program inside one: the block keeps the clear state call, without what the program did, so the transactions of the programs inside it are not in the block.
+	Failed *bool `json:"failed,omitempty"`
+
+	// Kind `approval`: the approval program; `clear`: the clear state program; `logic-sig`: the logic sig.
+	Kind ProgramBudgetKind `json:"kind"`
+
+	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level, as in `txns`.
+	Path []uint64 `json:"path"`
+
+	// Txid The transaction id, for a top-level transaction.
+	Txid *string `json:"txid,omitempty"`
+}
+
+// ProgramBudgetKind `approval`: the approval program; `clear`: the clear state program; `logic-sig`: the logic sig.
+type ProgramBudgetKind string
+
+// ProgramDisassembly The disassembly of a program, line by line. Non-standard fork feature.
+type ProgramDisassembly struct {
+	// Hash The program's hash, as `approval-program-hash`, `clear-state-program-hash` and `logic-sig-hash` of the traces give it.
+	Hash []byte `json:"hash"`
+
+	// Lines The lines of the disassembly.
+	Lines []DisassemblyLine `json:"lines"`
 }
 
 // QueryCall One call of a query: the args and references of its app call. The references are only needed by programs before v9, which address resources by index. Non-standard fork feature.
@@ -1769,6 +1861,15 @@ type TransactionProof struct {
 // * sha256
 type TransactionProofHashtype string
 
+// TxnExecTrace The execution trace of a top-level transaction. Non-standard fork feature.
+type TxnExecTrace struct {
+	// ExecTrace The execution trace of calling an app or a logic sig, containing the inner app call trace in a recursive way.
+	ExecTrace SimulationTransactionExecTrace `json:"exec-trace"`
+
+	// Txid The transaction id.
+	Txid string `json:"txid"`
+}
+
 // TxnStateChanges The app state changes of a transaction, net over it and its inner transactions. Non-standard fork feature.
 type TxnStateChanges struct {
 	// Changes The keys the transaction changed, in the order it first changed them.
@@ -1776,6 +1877,18 @@ type TxnStateChanges struct {
 
 	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level. Inner indexes run on across all of a parent's itxn_submit calls, as in the apply data's inner-txns.
 	Path []uint64 `json:"path"`
+
+	// Txid The transaction id, for a top-level transaction.
+	Txid *string `json:"txid,omitempty"`
+}
+
+// TxnStateReads The app state keys a transaction read. Its inner transactions' reads are their own. Non-standard fork feature.
+type TxnStateReads struct {
+	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level, as in `txns`.
+	Path []uint64 `json:"path"`
+
+	// Reads The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote, even in a clear state program that then failed, whose writes the block discards.
+	Reads []AppStateRead `json:"reads"`
 
 	// Txid The transaction id, for a top-level transaction.
 	Txid *string `json:"txid,omitempty"`
@@ -2294,14 +2407,26 @@ type TransactionProofResponse = TransactionProof
 
 // TxnStateChangesResponse defines model for TxnStateChangesResponse.
 type TxnStateChangesResponse struct {
-	// FeeSink With `include`, always: the round's fee sink, which every group that pays fees changes. The proposer payout comes out of it after the groups, in none of them. Its absence means the node ignored `include`.
+	// Budget With `include=budget`: each program run of the transactions asked for, top-level and inner, in the order they began. A group's logic sigs come first, as the node checks them before it evaluates the group. A clear state program skipped for lack of budget has no entry. Left out when there are none.
+	Budget *[]ProgramBudget `json:"budget,omitempty"`
+
+	// FeeSink With `include` of `accounts`, `assets` or `apps`, always: the round's fee sink, which every group that pays fees changes. The proposer payout comes out of it after the groups, in none of them. Its absence then means the node ignored `include`.
 	FeeSink *string `json:"fee-sink,omitempty"`
 
-	// Groups With `include`: each top-level group (of the txids' groups, with `txids`), in block order, with what it changed besides app state. `app` does not narrow it. Left out when there are none, as in an empty block.
+	// Groups With `include` of `accounts`, `assets` or `apps`: each top-level group (of the txids' groups, with `txids`), in block order, with what it changed besides app state. `app` does not narrow it. Left out when there are none, as in an empty block.
 	Groups *[]GroupStateChanges `json:"groups,omitempty"`
+
+	// Programs With `include=trace`: the disassembly of each program the traces ran. Left out when they ran none.
+	Programs *[]ProgramDisassembly `json:"programs,omitempty"`
+
+	// Reads With `include=reads`: each transaction asked for that read app state, top-level and inner, in the order it first read. The inner transactions of a clear state program that failed are left out, as the block does not have them. Left out when there are none.
+	Reads *[]TxnStateReads `json:"reads,omitempty"`
 
 	// Round The round.
 	Round basics.Round `json:"round"`
+
+	// Traces With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).
+	Traces *[]TxnExecTrace `json:"traces,omitempty"`
 
 	// Txns The transactions that changed app state, top-level and inner, in execution order.
 	Txns []TxnStateChanges `json:"txns"`
@@ -2788,7 +2913,7 @@ type GetTxnStateChangesForRoundParams struct {
 	// Txids Only these top-level transactions and their inner transactions, such as the transactions of a group, listed in execution order whatever their order here. Comma-separated, without spaces, in a single `txids` parameter (a repeated `txids` is a 400). Repeats are ignored; an empty list or a malformed txid is a 400, and a transaction that is not in the round is a 404. Combines with `txid`.
 	Txids *[]string `form:"txids,omitempty" json:"txids,omitempty"`
 
-	// Include Also return `groups`: what each top-level group changed besides app state, with values before and after the group. `accounts`: account fields such as the balance; `assets`: asset holdings and asset params; `apps`: app params and local state opt-ins and opt-outs. Comma-separated, without spaces, in a single `include` parameter; an empty list, an unknown value or a repeated `include` is a 400. A node that does not list these in `state-changes.include` of GET /v2/capabilities ignores the parameter.
+	// Include What else to return. `accounts`, `assets` and `apps` return `groups`: what each top-level group changed besides app state, with values before and after the group (`accounts`: account fields such as the balance; `assets`: asset holdings and asset params; `apps`: app params and local state opt-ins and opt-outs). `budget` returns `budget`: the opcode budget of each program run. `reads` returns `reads`: the app state each transaction read. `trace` returns `traces` and `programs`: the execution traces of the group of the one transaction given in `txid` or `txids` (any other number is a 400), and the disassembly of the programs it ran; it needs node config EnableDeveloperAPI, as simulate's execution traces do (400 otherwise). `txid` and `txids` narrow them all; `app` narrows only `txns`. Comma-separated, without spaces, in a single `include` parameter; an empty list, an unknown value or a repeated `include` is a 400. Send only values that `state-changes.include` of GET /v2/capabilities lists: a node that lists none ignores the parameter, and one that lists others answers 400 for a value it does not know.
 	Include *[]GetTxnStateChangesForRoundParamsInclude `form:"include,omitempty" json:"include,omitempty"`
 }
 

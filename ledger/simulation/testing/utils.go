@@ -131,6 +131,23 @@ func (env *Environment) Txn(txn transactions.SignedTxn) transactions.ApplyData {
 	return newBlock.Payset[0].ApplyData
 }
 
+// Block creates and executes a new block with the given groups and returns it
+func (env *Environment) Block(groups ...[]transactions.SignedTxn) bookkeeping.Block {
+	env.t.Helper()
+
+	evaluator := env.nextBlock()
+	for _, group := range groups {
+		withAD := make([]transactions.SignedTxnWithAD, len(group))
+		for i := range group {
+			withAD[i] = group[i].WithAD()
+		}
+		require.NoError(env.t, evaluator.TransactionGroup(withAD...))
+	}
+	newBlock := env.endBlock(evaluator).Block()
+	env.TxnInfo.LatestHeader = newBlock.BlockHeader
+	return newBlock
+}
+
 // CreateAsset creates an asset with the given parameters and returns its ID
 func (env *Environment) CreateAsset(creator basics.Address, params basics.AssetParams) basics.AssetIndex {
 	env.t.Helper()
