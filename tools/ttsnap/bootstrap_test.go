@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,16 +90,28 @@ func holdStore(t *testing.T, dir, name string) (pid int, closeStore func()) {
 	line, err := bufio.NewReader(out).ReadString('\n')
 	require.NoError(t, err)
 	require.Equal(t, "open\n", line)
-	var once bool
+	var once sync.Once
 	closeStore = func() {
-		if !once {
-			once = true
+		once.Do(func() {
 			in.Close()
 			_ = cmd.Wait()
-		}
+		})
 	}
 	t.Cleanup(closeStore)
 	return cmd.Process.Pid, closeStore
+}
+
+// onLine closes ch when a write contains prefix.
+type onLine struct {
+	prefix string
+	ch     chan struct{}
+}
+
+func (w onLine) Write(p []byte) (int, error) {
+	if strings.HasPrefix(string(p), w.prefix) {
+		close(w.ch)
+	}
+	return len(p), nil
 }
 
 // writeAlgodFiles writes the algod.net and algod.pid of a running algod at
@@ -298,9 +311,12 @@ func TestBootstrapLedgerOpening(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, running, "opening")
 
+	// algod exits once the wait has seen it hold the store
 	o.wait = time.Minute
+	waiting := make(chan struct{})
+	o.log = onLine{"waiting for algod", waiting}
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		<-waiting
 		closeStore()
 	}()
 	began := time.Now()

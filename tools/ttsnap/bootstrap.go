@@ -483,9 +483,6 @@ func (o *bootstrapOpts) waitForAPI(genesis bookkeeping.Genesis) (nodeState, erro
 		if st, ok := nodeRunning(dataDir, genesis); ok {
 			return st, nil
 		}
-		if i == 0 {
-			fmt.Fprintln(o.log, "waiting for algod to open its ledger (a minute or more on mainnet)")
-		}
 		pid, held := lockHolder(lock)
 		switch {
 		case held && pid > 0:
@@ -495,6 +492,10 @@ func (o *bootstrapOpts) waitForAPI(genesis bookkeeping.Genesis) (nodeState, erro
 			}
 		case !held && holder != 0 && !processAlive(holder):
 			return nodeState{}, fmt.Errorf("algod (pid %d, which had the history open) exited before its API came up: check %s, then rerun bootstrap", holder, o.startLogs())
+		}
+		if i == 0 {
+			// after the first look at the lock, which tests rely on
+			fmt.Fprintln(o.log, "waiting for algod to open its ledger (a minute or more on mainnet)")
 		}
 		if unit != "" {
 			if err := unitFailed(unit, &restarts); err != nil {
@@ -536,7 +537,7 @@ func unitFailed(unit string, restarts *int) error {
 		return nil //nolint:nilerr // systemctl can't tell: wait on
 	}
 	state, n := "", -1
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
 		switch k {
 		case "ActiveState":

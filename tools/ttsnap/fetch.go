@@ -752,9 +752,7 @@ func getSmallHeader(ctx context.Context, client *http.Client, u string, limit in
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range h {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, h)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
