@@ -5339,7 +5339,7 @@
           "type": "string"
         },
         "reads": {
-          "description": "The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote.",
+          "description": "The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote, even in a clear state program that then failed, whose writes the block discards.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/AppStateRead"
@@ -7122,7 +7122,7 @@
             }
           },
           "traces": {
-            "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes.",
+            "description": "With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).",
             "type": "array",
             "items": {
               "$ref": "#/definitions/TxnExecTrace"

@@ -260,3 +260,117 @@ done: int 1`,
 	_, err = env.Ledger.StateChangesForRound(ctx, r, f)
 	require.NoError(t, err, "without the trace, the rest fits")
 }
+
+// TestStateChangesTraceShortStack traces ClearState programs that fail before
+// their op runs, where explaining the op would read past the stack or the call
+// stack: at a state opcode and at stores on a short stack, at retsub and
+// frame_bury without a frame, and at frame_bury above the stack (whose pop
+// count must not go negative). The block keeps their failure, and tracing them
+// must neither panic nor change how they fail.
+func TestStateChangesTraceShortStack(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	env := simulationtesting.PrepareSimulatorTest(t, func(cfg *config.Local) {
+		cfg.EnableTimeTravel = true
+	})
+	defer env.Close()
+	creator := env.Accounts[0]
+
+	// the number of app args picks the op; past a label the assembler no
+	// longer knows the stack, and lets the ops assemble on an empty one
+	app := env.CreateApp(creator.Addr, simulationtesting.AppParams{
+		ApprovalProgram: "#pragma version 10\nint 1",
+		ClearStateProgram: `#pragma version 10
+txn NumAppArgs
+switch g s r f a
+err
+g:
+app_global_put
+s:
+stores
+r:
+retsub
+f:
+int 1
+frame_bury 0
+a:
+callsub sub
+int 1
+return
+sub:
+proto 0 0
+b x
+x:
+int 1
+frame_bury 5
+retsub`,
+		GlobalStateSchema: basics.StateSchema{NumByteSlice: 1},
+	})
+	cases := []struct{ op, err string }{
+		{"app_global_put", "stack underflow in app_global_put"},
+		{"stores", "stack underflow in stores"},
+		{"retsub", "retsub with empty callstack"},
+		{"frame_bury", "frame_bury with empty callstack"},
+		{"frame_bury above", "frame_bury above stack"},
+	}
+	var groups [][]transactions.SignedTxn
+	for i := range cases {
+		sender := env.Accounts[1+i].Addr
+		env.OptIntoApp(sender, app)
+		clear := env.TxnInfo.NewTxn(txntest.Txn{Type: protocol.ApplicationCallTx, Sender: sender, ApplicationID: app,
+			OnCompletion: transactions.ClearStateOC, ApplicationArgs: make([][]byte, i)})
+		groups = append(groups, []transactions.SignedTxn{clear.SignedTxn()})
+	}
+	blk := env.Block(groups...)
+	r := blk.Round()
+
+	cfg := simulation.ExecTraceConfig{Enable: true, Stack: true, Scratch: true, State: true}
+	ctx := context.Background()
+	for i, c := range cases {
+		// simulated alone at the round before: the other clears change nothing it reads
+		sim, err := simulation.MakeSimulator(env.Ledger, true).Simulate(simulation.Request{
+			Round: r - 1, TxnGroups: groups[i : i+1], AllowEmptySignatures: true, TraceConfig: cfg,
+		})
+		require.NoError(t, err, c.op)
+		g := sim.TxnGroups[0]
+		require.Empty(t, g.FailureMessage, c.op)
+		units := g.Txns[0].Trace.ClearStateProgramTrace
+		require.NotEmpty(t, units, c.op)
+		require.Empty(t, units[len(units)-1].StateChanges, c.op)
+		require.Empty(t, units[len(units)-1].ScratchSlotChanges, c.op)
+		require.GreaterOrEqual(t, units[len(units)-1].StackPopCount, 0, c.op)
+		require.Contains(t, g.Txns[0].Trace.ClearStateRollbackError, c.err)
+
+		var tracer *simulation.GroupExecTracer
+		sc, err := env.Ledger.StateChangesForRound(ctx, r, ledger.StateChangesFilter{
+			Include: ledger.IncludeBudget | ledger.IncludeReads | ledger.IncludeTrace,
+			TxIDs:   []transactions.Txid{groups[i][0].ID()},
+			Trace: func(g []transactions.SignedTxnWithAD) logic.EvalTracer {
+				tracer = simulation.NewGroupExecTracer(r, g, cfg)
+				return tracer
+			},
+		})
+		require.NoError(t, err, c.op)
+		require.Equal(t, g.Txns[0].Trace, tracer.Traces()[0], c.op)
+		require.Len(t, sc.Budget, 1, c.op)
+		require.Equal(t, ledger.ProgramClearState, sc.Budget[0].Kind, c.op)
+		require.True(t, sc.Budget[0].Failed, c.op)
+	}
+}
+
+// TestGroupExecTracerKeepsConstants checks that a GroupExecTracer leaves the
+// evaluation constants of a top-level group as the evaluation set them.
+func TestGroupExecTracerKeepsConstants(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	t.Parallel()
+
+	group := []transactions.SignedTxnWithAD{{SignedTxn: txntest.Txn{Type: protocol.PaymentTx}.SignedTxn()}}
+	tracer := simulation.NewGroupExecTracer(1, group, simulation.ExecTraceConfig{Enable: true})
+	constants := logic.RuntimeEvalConstants()
+	constants.MaxLogCalls = 3
+	constants.MaxLogSize = 5
+	ep := &logic.EvalParams{TxnGroup: group, EvalConstants: constants}
+	tracer.BeforeTxnGroup(ep)
+	require.Equal(t, constants, ep.EvalConstants)
+}

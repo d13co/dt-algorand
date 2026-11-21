@@ -24,6 +24,7 @@ import (
 
 	"github.com/algorand/go-algorand/crypto"
 	"github.com/algorand/go-algorand/daemon/algod/api/server/v2/generated/model"
+	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/transactions"
 	"github.com/algorand/go-algorand/data/transactions/logic"
 	"github.com/algorand/go-algorand/ledger"
@@ -93,18 +94,35 @@ func TestConvertGroupTrace(t *testing.T) {
 		Programs: map[crypto.Digest][]byte{h(lsig): lsig, h(app): app, h(inner): inner, h(unused): unused}}
 	traces := []*simulation.TransactionTrace{
 		{LogicSigHash: h(lsig), LogicSigTrace: []simulation.OpcodeTraceUnit{{PC: 1}}},
-		{ApprovalProgramHash: h(app), ApprovalProgramTrace: []simulation.OpcodeTraceUnit{{PC: 1}},
+		{ApprovalProgramHash: h(app), ApprovalProgramTrace: []simulation.OpcodeTraceUnit{{PC: 1,
+			StateChanges: []simulation.StateOperation{{AppStateOp: logic.AppStateWrite, AppState: logic.BoxState, AppID: 9, Key: "k"}}}},
 			InnerTraces: []simulation.TransactionTrace{{ApprovalProgramHash: h(inner)}, {ApprovalProgramHash: h(app)}}},
 	}
-	out, programs := convertGroupTrace(g, traces)
+	out, programs, err := convertGroupTrace(g, traces, 0)
+	require.NoError(t, err)
 	require.Len(t, *out, 2)
 	require.Equal(t, transactions.Txid{1}.String(), (*out)[0].Txid)
 	require.NotNil(t, (*out)[0].ExecTrace.LogicSigTrace)
 	require.Len(t, *(*out)[1].ExecTrace.InnerTrace, 2)
+	// app-id is always on here, unlike simulate's opt-in state-change-app-id
+	ops := *(*(*out)[1].ExecTrace.ApprovalProgramTrace)[0].StateChanges
+	require.Equal(t, basics.AppIndex(9), *ops[0].AppId)
 	var got [][]byte
 	for _, p := range *programs {
 		got = append(got, p.Hash)
 		require.NotEmpty(t, p.Lines)
 	}
 	require.Equal(t, [][]byte{h(lsig).ToSlice(), h(app).ToSlice(), h(inner).ToSlice()}, got)
+
+	// the disassembly's text counts against the answer's limit
+	var text uint64
+	for _, p := range *programs {
+		for _, l := range p.Lines {
+			text += uint64(len(l.Text))
+		}
+	}
+	_, _, err = convertGroupTrace(g, traces, text)
+	require.NoError(t, err)
+	_, _, err = convertGroupTrace(g, traces, text-1)
+	require.ErrorIs(t, err, ledger.ErrStateChangesTooLarge)
 }

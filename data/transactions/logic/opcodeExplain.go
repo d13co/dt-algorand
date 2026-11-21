@@ -135,6 +135,9 @@ func opUncoverStackChange(cx *EvalContext) (deletions, additions int) {
 }
 
 func opRetSubStackChange(cx *EvalContext) (deletions, additions int) {
+	if len(cx.callstack) == 0 {
+		return // retsub fails
+	}
 	topFrame := cx.callstack[len(cx.callstack)-1]
 	// fast path, no proto case
 	if !topFrame.clear {
@@ -146,12 +149,16 @@ func opRetSubStackChange(cx *EvalContext) (deletions, additions int) {
 
 	diff := topStackIdx - argStart + 1
 
-	deletions = diff
+	// a stack below the frame fails retsub, which then pops nothing
+	deletions = max(diff, 0)
 	additions = topFrame.returns
 	return
 }
 
 func opFrameBuryStackChange(cx *EvalContext) (deletions, additions int) {
+	if len(cx.callstack) == 0 {
+		return // frame_bury fails
+	}
 	topFrame := cx.callstack[len(cx.callstack)-1]
 
 	immIndex := int8(cx.program[cx.pc+1])
@@ -160,8 +167,9 @@ func opFrameBuryStackChange(cx *EvalContext) (deletions, additions int) {
 
 	diff := topStackIdx - idx + 1
 
-	deletions = diff
-	additions = diff - 1
+	// an index at or above the value fails frame_bury, which then pops nothing
+	deletions = max(diff, 0)
+	additions = max(diff-1, 0)
 	return
 }
 

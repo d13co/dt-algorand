@@ -1887,7 +1887,7 @@ type TxnStateReads struct {
 	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level, as in `txns`.
 	Path []uint64 `json:"path"`
 
-	// Reads The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote.
+	// Reads The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote, even in a clear state program that then failed, whose writes the block discards.
 	Reads []AppStateRead `json:"reads"`
 
 	// Txid The transaction id, for a top-level transaction.
@@ -2425,7 +2425,7 @@ type TxnStateChangesResponse struct {
 	// Round The round.
 	Round basics.Round `json:"round"`
 
-	// Traces With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes.
+	// Traces With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).
 	Traces *[]TxnExecTrace `json:"traces,omitempty"`
 
 	// Txns The transactions that changed app state, top-level and inner, in execution order.
