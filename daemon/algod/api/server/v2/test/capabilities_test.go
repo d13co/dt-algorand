@@ -84,6 +84,7 @@ func TestCapabilities(t *testing.T) {
 	t.Parallel()
 
 	stateChangesIncludes := []string{"accounts", "assets", "apps"}
+	execTraceOptions := []string{"state-change-app-id"}
 
 	defaultSimulate := model.SimulateLimits{MaxTxnGroups: 16, MaxExtraOpcodeBudget: 320_000}
 	defaultQuery := &model.QueryLimits{MaxCalls: 1024, MaxCallBudget: 320_000, MaxCallLogBytes: 64 << 10, MaxCallStateBytes: 64 << 20, MaxResponseBytes: 16 << 20, MaxRounds: 16, MaxTotalCalls: 1024}
@@ -178,6 +179,10 @@ func TestCapabilities(t *testing.T) {
 			t.Parallel()
 			cfg := config.GetDefaultLocal()
 			tc.configure(&cfg)
+			// with the developer API, which every trace needs
+			if cfg.EnableDeveloperAPI {
+				tc.want.Simulate.ExecTraceConfig = &execTraceOptions
+			}
 			require.Equal(t, tc.want, getCapabilities(t, capabilitiesRouter(t, cfg)))
 		})
 	}
