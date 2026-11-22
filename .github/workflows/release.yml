@@ -19,9 +19,17 @@ name: release
 # The darwin job builds the macOS (Apple silicon) tarball on a Mac runner in
 # parallel, darwin-release attaches it to the same release, and homebrew points
 # the d13co/tap formula at it.
+#
+# Betas: a v<x.y.z>-dt<n>-beta<m> tag, on a commit of the beta branch, publishes
+# a GitHub pre-release and the .deb <x.y.z>-dt<n>~beta<m> to apt.d13.co's beta
+# suite (which lists the stable releases too; ~ sorts the beta before
+# <x.y.z>-dt<n>). n is the release the beta leads up to, and x.y.z may be an
+# upstream beta (v5.1.0-beta). No macOS tarball or Homebrew formula for betas.
 on:
   push:
-    tags: ["v[0-9]+.[0-9]+.[0-9]+-dt[0-9]+"]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+-dt[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-dt[0-9]+-beta[0-9]+"
 
 permissions:
   contents: read
@@ -33,47 +41,78 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write # the release
+    outputs:
+      suite: ${{ steps.channel.outputs.suite }}
+      deb_version: ${{ steps.channel.outputs.deb_version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the build stamps the version from git describe
           persist-credentials: false # make runs below; only the release needs the token
+      - name: Work out the channel
+        id: channel
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          case $v in
+          *-beta*)
+            git fetch --no-tags origin +refs/heads/beta:refs/remotes/origin/beta ||
+              { echo "no beta branch on origin: beta tags must be on it"; exit 1; }
+            git merge-base --is-ancestor HEAD origin/beta ||
+              { echo "$GITHUB_REF_NAME isn't on the beta branch: beta tags must be"; exit 1; }
+            suite=beta branch=beta deb_version=${v%-beta*}~beta${v##*-beta} ;;
+          *) suite=stable branch=dtalgorand deb_version=$v ;;
+          esac
+          echo "suite=$suite deb_version=$deb_version branch=$branch"
+          { echo "suite=$suite"; echo "deb_version=$deb_version"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-go
         with:
           cache-prefix: buildsrc
       - uses: ./.github/actions/setup-test
       - name: Fetch upstream's release tags
-        run: git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable'
+        # betas may be based on an upstream beta
+        run: git fetch --no-tags https://github.com/algorand/go-algorand.git 'refs/tags/v*-stable:refs/tags/v*-stable' 'refs/tags/v*-beta:refs/tags/v*-beta'
       - name: Build the .deb
         env:
-          BRANCH: dtalgorand # else a tag checkout stamps the branch as HEAD
+          BRANCH: ${{ steps.channel.outputs.branch }} # else a tag checkout stamps the branch as HEAD
         run: installer/dtalgorand/build_deb.sh dist
       - name: Check the versions
+        env:
+          DEB_VERSION: ${{ steps.channel.outputs.deb_version }}
+          SUITE: ${{ steps.channel.outputs.suite }}
         run: |
           v=${GITHUB_REF_NAME#v}
-          base=${v%-dt*}
+          base=${v%%-dt*}
           d=$(dpkg-deb -f dist/*.deb Version)
           a=$(dpkg-deb -f dist/*.deb Architecture)
-          [ "$d" = "$v" ] || { echo "the .deb says $d, tag is $GITHUB_REF_NAME"; exit 1; }
+          [ "$d" = "$DEB_VERSION" ] || { echo "the .deb says $d, tag $GITHUB_REF_NAME wants $DEB_VERSION"; exit 1; }
           [ "$a" = amd64 ] || { echo "the .deb is for $a, not amd64"; exit 1; }
-          # algod -v prints <major>.<minor>.<build number>.<channel> on its second line
+          # algod -v prints <major>.<minor>.<build number>.<channel> [<branch>] on its second
+          # line; the channel is the suite's name
           dpkg-deb -x dist/*.deb "$RUNNER_TEMP/deb"
           b=$("$RUNNER_TEMP/deb/usr/lib/dtalgorand/bin/algod" -v | sed -n 2p)
-          case "$b" in "$base".*) ;; *) echo "algod says $b, tag is $GITHUB_REF_NAME"; exit 1 ;; esac
+          case "$b" in "$base.$SUITE "*) ;; *) echo "algod says $b, tag $GITHUB_REF_NAME wants $base.$SUITE"; exit 1 ;; esac
+          # Name the asset after the tag: a beta's version has a ~, which GitHub may rewrite
+          # in asset names (apt-publish.sh names the pool's copy from the .deb's fields).
+          f=dist/dtalgorand_${v}_$a.deb
+          [ -f "$f" ] || mv dist/*.deb "$f"
           (cd dist && sha256sum ./*.deb > checksums.txt && cat checksums.txt)
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          SUITE: ${{ steps.channel.outputs.suite }}
         run: |
           # A re-run after a failed upload finds the release already there.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload --clobber "$GITHUB_REF_NAME" dist/*.deb dist/checksums.txt
+          elif [ "$SUITE" = beta ]; then
+            gh release create "$GITHUB_REF_NAME" --prerelease --generate-notes dist/*.deb dist/checksums.txt
           else
             gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.deb dist/checksums.txt
           fi
 
   darwin:
-    if: github.repository == 'd13co/dt-algorand'
+    # not for betas; darwin-release and homebrew then skip too
+    if: github.repository == 'd13co/dt-algorand' && !contains(github.ref_name, '-beta')
     runs-on: macos-15 # arm64
     timeout-minutes: 90
     env:
@@ -218,6 +257,7 @@ jobs:
         run: echo "$APT_SIGNING_KEY" | gpg --batch --import
       - name: Publish to apt.d13.co
         env:
+          APT_SUITE: ${{ needs.release.outputs.suite }}
           APT_SIGNING_PASSPHRASE: ${{ secrets.APT_SIGNING_PASSPHRASE }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -226,7 +266,11 @@ jobs:
           printf %s "$APT_SIGNING_PASSPHRASE" > "$RUNNER_TEMP/pass"
           GPG_PASSPHRASE_FILE=$RUNNER_TEMP/pass APT_REPO=$RUNNER_TEMP/apt .github/apt-publish.sh dist/*.deb
       - name: Check apt.d13.co lists the release
+        env:
+          SUITE: ${{ needs.release.outputs.suite }}
+          DEB_VERSION: ${{ needs.release.outputs.deb_version }}
         run: |
-          v=$(dpkg-deb -f dist/*.deb Version)
-          curl -fsS "https://apt.d13.co/dists/stable/main/binary-amd64/Packages?v=$v" |
-            grep -qx "Filename: pool/dtalgorand_${v}_amd64.deb" || { echo "no $v for amd64"; exit 1; }
+          v=$DEB_VERSION
+          pool=pool; [ "$SUITE" = stable ] || pool=pool-$SUITE
+          curl -fsS "https://apt.d13.co/dists/$SUITE/main/binary-amd64/Packages?v=$v" |
+            grep -qxF "Filename: $pool/dtalgorand_${v}_amd64.deb" || { echo "no $v for amd64 in $SUITE"; exit 1; }

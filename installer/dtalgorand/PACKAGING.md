@@ -54,6 +54,14 @@ The `darwin` workflow builds the tarball on pull requests that touch the packagi
 
 Push a `v<x.y.z>-dt<n>` tag on `dtalgorand` and the release workflow builds the .deb, attaches it to a GitHub release and, once approved, publishes it to apt.d13.co. In parallel it builds the macOS tarball on a Mac runner, attaches it to the same release and, once approved, points the `d13co/tap` formula at it. The fork revision counts on from the last release and doesn't restart on a new base: `v5.0.4-dt3` was followed by `v5.0.5-dt4` after the merge of upstream's `v5.0.5-stable`, and a fork-only release on top of it is `v5.0.5-dt5`. The workflow fails if the tag's `x.y.z` isn't the upstream release `dtalgorand` is based on.
 
+### Betas
+
+A beta is a `v<x.y.z>-dt<n>-beta<m>` tag on a commit of the `beta` branch, where `n` is the release the beta leads up to: `v5.1.0-dt6-beta1`, `v5.1.0-dt6-beta2`, then `v5.1.0-dt6`. The release workflow refuses a beta tag that isn't on `beta`. Its package version is `<x.y.z>-dt<n>~beta<m>` (git refs can't hold a `~`), which apt sorts before `<x.y.z>-dt<n>` and after every earlier release; the GitHub release is a pre-release, so Latest stays on the last stable release, and its .deb is named after the tag (`dtalgorand_5.1.0-dt6-beta1_amd64.deb`). Betas get no macOS tarball or Homebrew formula.
+
+A beta may be based on an upstream beta (`v5.1.0-beta`): `version.sh` takes the nearest upstream `v*-stable` or `v*-beta` tag as the base, and the binaries of a beta, or of any build on an upstream beta, report the `beta` channel. A release (`v5.1.0-dt6`) on an upstream beta fails the build: it waits for upstream's `v5.1.0-stable`.
+
+On apt.d13.co the stable suite lists `pool/` and the beta suite lists `pool/` and `pool-beta/`. A release's .deb goes to `pool/` and a beta's to `pool-beta/`, and every publish (`.github/apt-publish.sh`, with `APT_SUITE=beta` for a beta) rebuilds and signs both suites, so beta users get each release as well. A file in `pool/` is only signed if stable's current signed index lists it, and one in `pool-beta/` if beta's does.
+
 ## The tap
 
 The formula lives in [d13co/homebrew-tap](https://github.com/d13co/homebrew-tap), as `Formula/dtalgorand.rb`, rendered from [homebrew/dtalgorand.rb.in](homebrew/dtalgorand.rb.in) by [homebrew/render.sh](homebrew/render.sh). The release workflow's `homebrew` job commits it there. It needs, once:

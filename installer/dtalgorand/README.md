@@ -30,6 +30,19 @@ The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that 
 
 The package does not enable or start `dtalgorand.service`. It turns on unattended upgrades from apt.d13.co (`/etc/apt/apt.conf.d/51dtalgorand-upgrades`), and an upgrade restarts the nodes that are running.
 
+#### Beta channel
+
+Betas of the next release (e.g. `5.1.0-dt6~beta1`, the [pre-releases](https://github.com/d13co/dt-algorand/releases) tagged `v5.1.0-dt6-beta1`) are in the `beta` suite. It also lists every stable release, so a beta node moves on to the final release once it is out. A beta may be built on an upstream beta. To follow it, use `beta` instead of `stable` in the source line:
+
+```sh
+echo "deb [signed-by=/etc/apt/keyrings/d13co.asc] https://apt.d13.co beta main" |
+  sudo tee /etc/apt/sources.list.d/d13co.list
+sudo apt update
+sudo apt install dtalgorand
+```
+
+Unattended upgrades then follow the beta suite as well. To go back, put `stable` back in the source line: apt doesn't downgrade, so the beta stays installed until the stable suite has a newer release (the final release of that beta is newer). To downgrade right away, `sudo apt install --allow-downgrades dtalgorand=<version>` with a version from `apt policy dtalgorand`; the data directory of a newer version may not open with an older one.
+
 ### macOS
 
 ```sh
