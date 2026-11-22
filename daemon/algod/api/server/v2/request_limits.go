@@ -243,3 +243,33 @@ func (v2 *Handlers) stateDeltaForRound(ctx echo.Context, rnd basics.Round) (sd l
 	}
 	return sd, false, err
 }
+
+// stateChangesLedger is implemented by ledgers that re-evaluate a past round for its per-transaction
+// state changes (ledger.Ledger, with time travel).
+type stateChangesLedger interface {
+	StateChangesForRound(ctx context.Context, rnd basics.Round, f ledger.StateChangesFilter) (ledger.StateChanges, error)
+}
+
+// stateChangesForRound returns the state changes of round rnd, as stateDeltaForRound does the
+// delta: under the request's time limit, refused with 503 when every re-evaluation slot stays busy.
+// answered reports that it already answered the request, with err the handler's return value;
+// otherwise err is the lookup's error.
+func (v2 *Handlers) stateChangesForRound(ctx echo.Context, rnd basics.Round, f ledger.StateChangesFilter) (sc ledger.StateChanges, answered bool, err error) {
+	cl, ok := v2.Node.LedgerForAPI().(stateChangesLedger)
+	if !ok {
+		err = errors.New("the node's ledger has no time travel history")
+		return sc, true, notFound(ctx, err, err.Error(), v2.Log)
+	}
+	reqCtx, cancel := requestContext(ctx, v2.Node.Config())
+	defer cancel()
+	sc, err = cl.StateChangesForRound(contextWithEffort(reqCtx, v2.startEffort(ctx)), rnd, f)
+	if err != nil {
+		if errors.Is(err, ledger.ErrReevalBusy) {
+			return sc, true, answerBusy(ctx, err, v2.Log)
+		}
+		if stopped, answerErr := answerStopped(ctx, err, v2.Log); stopped {
+			return sc, true, answerErr
+		}
+	}
+	return sc, false, err
+}

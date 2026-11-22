@@ -21,6 +21,20 @@ const (
 	AccountSigTypeSig  AccountSigType = "sig"
 )
 
+// Defines values for AppStateChangeAppStateType.
+const (
+	AppStateChangeAppStateTypeB AppStateChangeAppStateType = "b"
+	AppStateChangeAppStateTypeG AppStateChangeAppStateType = "g"
+	AppStateChangeAppStateTypeL AppStateChangeAppStateType = "l"
+)
+
+// Defines values for AppStateReadAppStateType.
+const (
+	AppStateReadAppStateTypeB AppStateReadAppStateType = "b"
+	AppStateReadAppStateTypeG AppStateReadAppStateType = "g"
+	AppStateReadAppStateTypeL AppStateReadAppStateType = "l"
+)
+
 // Defines values for PeerStatusConnectionType.
 const (
 	PeerStatusConnectionTypeInbound  PeerStatusConnectionType = "inbound"
@@ -31,6 +45,13 @@ const (
 const (
 	PeerStatusNetworkTypeP2p PeerStatusNetworkType = "p2p"
 	PeerStatusNetworkTypeWs  PeerStatusNetworkType = "ws"
+)
+
+// Defines values for ProgramBudgetKind.
+const (
+	ProgramBudgetKindApproval ProgramBudgetKind = "approval"
+	ProgramBudgetKindClear    ProgramBudgetKind = "clear"
+	ProgramBudgetKindLogicSig ProgramBudgetKind = "logic-sig"
 )
 
 // Defines values for TransactionProofHashtype.
@@ -234,6 +255,22 @@ const (
 const (
 	GetTransactionGroupLedgerStateDeltasForRoundParamsFormatJson    GetTransactionGroupLedgerStateDeltasForRoundParamsFormat = "json"
 	GetTransactionGroupLedgerStateDeltasForRoundParamsFormatMsgpack GetTransactionGroupLedgerStateDeltasForRoundParamsFormat = "msgpack"
+)
+
+// Defines values for GetTxnStateChangesForRoundParamsFormat.
+const (
+	GetTxnStateChangesForRoundParamsFormatJson    GetTxnStateChangesForRoundParamsFormat = "json"
+	GetTxnStateChangesForRoundParamsFormatMsgpack GetTxnStateChangesForRoundParamsFormat = "msgpack"
+)
+
+// Defines values for GetTxnStateChangesForRoundParamsInclude.
+const (
+	GetTxnStateChangesForRoundParamsIncludeAccounts GetTxnStateChangesForRoundParamsInclude = "accounts"
+	GetTxnStateChangesForRoundParamsIncludeApps     GetTxnStateChangesForRoundParamsInclude = "apps"
+	GetTxnStateChangesForRoundParamsIncludeAssets   GetTxnStateChangesForRoundParamsInclude = "assets"
+	GetTxnStateChangesForRoundParamsIncludeBudget   GetTxnStateChangesForRoundParamsInclude = "budget"
+	GetTxnStateChangesForRoundParamsIncludeReads    GetTxnStateChangesForRoundParamsInclude = "reads"
+	GetTxnStateChangesForRoundParamsIncludeTrace    GetTxnStateChangesForRoundParamsInclude = "trace"
 )
 
 // Defines values for QueryParamsFormat.
@@ -440,6 +477,75 @@ type AccountParticipation struct {
 	VoteParticipationKey []byte `json:"vote-participation-key"`
 }
 
+// AccountState An account's own fields at a point within a round: those of Account, under the same names, without its assets, apps and rewards to come. Non-standard fork feature.
+type AccountState struct {
+	// Amount \[algo\] MicroAlgos, as recorded: rewards earned until the account was last touched are included, none after.
+	Amount uint64 `json:"amount"`
+
+	// AppsTotalExtraPages \[teap\] the sum of the extra program pages of the apps created.
+	AppsTotalExtraPages *uint64 `json:"apps-total-extra-pages,omitempty"`
+
+	// AppsTotalSchema Specifies maximums on the number of each type that may be stored.
+	AppsTotalSchema *ApplicationStateSchema `json:"apps-total-schema,omitempty"`
+
+	// AuthAddr \[spend\] the address against which signing is checked; absent when it is the account itself.
+	AuthAddr *string `json:"auth-addr,omitempty"`
+
+	// IncentiveEligible Whether the account can receive block incentives.
+	IncentiveEligible *bool `json:"incentive-eligible,omitempty"`
+
+	// LastHeartbeat The round in which this account last went online, or renewed its online status.
+	LastHeartbeat *basics.Round `json:"last-heartbeat,omitempty"`
+
+	// LastProposed The round in which this account last proposed the block.
+	LastProposed *basics.Round `json:"last-proposed,omitempty"`
+
+	// MinBalance MicroAlgo balance required by the account, under the round's consensus parameters.
+	MinBalance uint64 `json:"min-balance"`
+
+	// Participation AccountParticipation describes the parameters used by this account in consensus protocol.
+	Participation *AccountParticipation `json:"participation,omitempty"`
+
+	// RewardBase \[ebase\] used as part of the rewards computation.
+	RewardBase *uint64 `json:"reward-base,omitempty"`
+
+	// Rewards \[ern\] total rewards of MicroAlgos the account has received.
+	Rewards *uint64 `json:"rewards,omitempty"`
+
+	// Status \[onl\] `Offline`, `Online` or `Not Participating`, as in Account.
+	Status string `json:"status"`
+
+	// TotalAppsOptedIn The number of apps opted into.
+	TotalAppsOptedIn uint64 `json:"total-apps-opted-in"`
+
+	// TotalAssetsOptedIn The number of asset holdings.
+	TotalAssetsOptedIn uint64 `json:"total-assets-opted-in"`
+
+	// TotalBoxBytes \[tbxb\] The bytes of the account's app's box names and values.
+	TotalBoxBytes *uint64 `json:"total-box-bytes,omitempty"`
+
+	// TotalBoxes \[tbx\] The number of boxes of the account's app.
+	TotalBoxes *uint64 `json:"total-boxes,omitempty"`
+
+	// TotalCreatedApps The number of apps created.
+	TotalCreatedApps uint64 `json:"total-created-apps"`
+
+	// TotalCreatedAssets The number of assets created.
+	TotalCreatedAssets uint64 `json:"total-created-assets"`
+}
+
+// AccountStateChange An account changed by a group. Non-standard fork feature.
+type AccountStateChange struct {
+	// Address The account.
+	Address string `json:"address"`
+
+	// After An account's own fields at a point within a round: those of Account, under the same names, without its assets, apps and rewards to come. Non-standard fork feature.
+	After *AccountState `json:"after,omitempty"`
+
+	// Before An account's own fields at a point within a round: those of Account, under the same names, without its assets, apps and rewards to come. Non-standard fork feature.
+	Before *AccountState `json:"before,omitempty"`
+}
+
 // AccountStateDelta Application state delta.
 type AccountStateDelta struct {
 	Address string `json:"address"`
@@ -483,6 +589,69 @@ type AppCallLogs struct {
 	// TxId The transaction ID of the outer app call that lead to these logs
 	TxId string `json:"txId"`
 }
+
+// AppParamsChange An app's params changed by a group, other than its global state. Non-standard fork feature.
+type AppParamsChange struct {
+	// After Stores the global information associated with an application.
+	After *ApplicationParams `json:"after,omitempty"`
+
+	// AppId The app.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// Before Stores the global information associated with an application.
+	Before *ApplicationParams `json:"before,omitempty"`
+}
+
+// AppStateChange An app state key a transaction changed, with its values before and after. A missing before: the key did not exist. A missing after: the key was deleted, or its local state cleared or its app deleted. Non-standard fork feature.
+type AppStateChange struct {
+	// Account For local state changes, the address of the account whose local state changed.
+	Account *string `json:"account,omitempty"`
+
+	// After An app state value: a TealValue whose bytes are bytes (base64 in JSON, bin in msgpack). Non-standard fork feature.
+	After *StateChangeValue `json:"after,omitempty"`
+
+	// AppId The app whose state changed.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// AppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
+	AppStateType AppStateChangeAppStateType `json:"app-state-type"`
+
+	// Before An app state value: a TealValue whose bytes are bytes (base64 in JSON, bin in msgpack). Non-standard fork feature.
+	Before *StateChangeValue `json:"before,omitempty"`
+
+	// Key The key of the global or local state, or the box name.
+	Key []byte `json:"key"`
+}
+
+// AppStateChangeAppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
+type AppStateChangeAppStateType string
+
+// AppStateRead An app state key a transaction read, with what it read. Non-standard fork feature.
+type AppStateRead struct {
+	// Account For local state, the address of the account whose local state was read.
+	Account *string `json:"account,omitempty"`
+
+	// AppId The app whose state was read.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// AppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
+	AppStateType AppStateReadAppStateType `json:"app-state-type"`
+
+	// Exists The key (the box, for a box) existed when it was read.
+	Exists bool `json:"exists"`
+
+	// Key The key of the global or local state, or the box name.
+	Key []byte `json:"key"`
+
+	// Length For a box that exists, its length in bytes (absent when 0). Its value is not given.
+	Length *uint64 `json:"length,omitempty"`
+
+	// Value An app state value: a TealValue whose bytes are bytes (base64 in JSON, bin in msgpack). Non-standard fork feature.
+	Value *StateChangeValue `json:"value,omitempty"`
+}
+
+// AppStateReadAppStateType Type of app state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
+type AppStateReadAppStateType string
 
 // Application Application index and its parameters
 type Application struct {
@@ -600,6 +769,9 @@ type ApplicationStateOperation struct {
 	// Account For local state changes, the address of the account associated with the local state.
 	Account *string `json:"account,omitempty"`
 
+	// AppId The application whose state the operation changed. It differs from the running application only when a foreign box opcode (app_box_*) changes another application's boxes. Only with exec-trace-config state-change-app-id. Non-standard fork feature.
+	AppId *basics.AppIndex `json:"app-id,omitempty"`
+
 	// AppStateType Type of application state. Value `g` is **global state**, `l` is **local state**, `b` is **boxes**.
 	AppStateType string `json:"app-state-type"`
 
@@ -687,6 +859,27 @@ type AssetHolding struct {
 	IsFrozen bool `json:"is-frozen"`
 }
 
+// AssetHoldingChange An asset holding changed by a group. Non-standard fork feature.
+type AssetHoldingChange struct {
+	// Address The holder.
+	Address string `json:"address"`
+
+	// After Describes an asset held by an account.
+	//
+	// Definition:
+	// data/basics/userBalance.go : AssetHolding
+	After *AssetHolding `json:"after,omitempty"`
+
+	// AssetId The asset.
+	AssetId basics.AssetIndex `json:"asset-id"`
+
+	// Before Describes an asset held by an account.
+	//
+	// Definition:
+	// data/basics/userBalance.go : AssetHolding
+	Before *AssetHolding `json:"before,omitempty"`
+}
+
 // AssetHoldingReference References an asset held by an account.
 type AssetHoldingReference struct {
 	// Account Address of the account holding the asset.
@@ -765,6 +958,28 @@ type AssetParams struct {
 
 	// UrlB64 Base64 encoded URL where more information about the asset can be retrieved.
 	UrlB64 *[]byte `json:"url-b64,omitempty"`
+}
+
+// AssetParamsChange An asset's params changed by a group. Non-standard fork feature.
+type AssetParamsChange struct {
+	// After AssetParams specifies the parameters for an asset.
+	//
+	// \[apar\] when part of an AssetConfig transaction.
+	//
+	// Definition:
+	// data/transactions/asset.go : AssetParams
+	After *AssetParams `json:"after,omitempty"`
+
+	// AssetId The asset.
+	AssetId basics.AssetIndex `json:"asset-id"`
+
+	// Before AssetParams specifies the parameters for an asset.
+	//
+	// \[apar\] when part of an AssetConfig transaction.
+	//
+	// Definition:
+	// data/transactions/asset.go : AssetParams
+	Before *AssetParams `json:"before,omitempty"`
 }
 
 // AssetVersion A version of an asset's parameters.
@@ -932,6 +1147,15 @@ type DebugSettingsProf struct {
 	MutexRate *uint64 `json:"mutex-rate,omitempty"`
 }
 
+// DisassemblyLine A line of a program's disassembly. Non-standard fork feature.
+type DisassemblyLine struct {
+	// Pc The program counter of the opcode on the line, as `pc` of a trace gives it. Absent for a line without one, such as `#pragma version` or a label (pc 0 is the version, never an opcode).
+	Pc *uint64 `json:"pc,omitempty"`
+
+	// Text The line.
+	Text string `json:"text"`
+}
+
 // ErrorResponse An error response with optional data field.
 type ErrorResponse struct {
 	Data    *map[string]interface{} `json:"data,omitempty"`
@@ -987,6 +1211,36 @@ type GenesisAllocation struct {
 	} `json:"state"`
 }
 
+// GroupStateChanges What a top-level transaction group changed besides app state (which is per transaction, in `txns`), each with its value right before and right after the group. Only what changed is listed. A missing before: it did not exist before the group (a new account, an opt-in, a created asset or app). A missing after: the group removed it (a closed account, an opt-out, a destroyed asset, a deleted app). Each list is sorted by address, then id (assets and apps by id). What the block changes outside its groups (the proposer payout from the fee sink, the rewards pool) is in no group, so the last after of the fee sink or the proposer can differ from the account at the round. Non-standard fork feature.
+type GroupStateChanges struct {
+	// Accounts The accounts whose fields changed (with include=accounts). The fee sink is among them whenever the group paid fees.
+	Accounts *[]AccountStateChange `json:"accounts,omitempty"`
+
+	// Apps The app params that changed other than global state: created, updated or deleted apps (with include=apps).
+	Apps *[]AppParamsChange `json:"apps,omitempty"`
+
+	// Assets The asset params that changed: created, reconfigured or destroyed assets (with include=assets).
+	Assets *[]AssetParamsChange `json:"assets,omitempty"`
+
+	// Count The number of top-level transactions in the group: payset indexes `first` to `first+count-1`.
+	Count uint64 `json:"count"`
+
+	// First The payset index of the group's first top-level transaction (`path[0]` in `txns`).
+	First uint64 `json:"first"`
+
+	// GroupId The group id; absent for a transaction outside a group.
+	GroupId *[]byte `json:"group-id,omitempty"`
+
+	// Holdings The asset holdings that changed, opt-ins and opt-outs included (with include=assets).
+	Holdings *[]AssetHoldingChange `json:"holdings,omitempty"`
+
+	// LocalStates The local states opted into or out of (with include=apps). Their keys are in `txns`.
+	LocalStates *[]LocalStateChange `json:"local-states,omitempty"`
+
+	// Txids The ids of the group's top-level transactions, in payset order.
+	Txids []string `json:"txids"`
+}
+
 // LedgerStateDelta Ledger StateDelta object
 type LedgerStateDelta = map[string]interface{}
 
@@ -1007,6 +1261,21 @@ type LightBlockHeaderProof struct {
 
 	// Treedepth Represents the depth of the tree that is being proven, i.e. the number of edges from a leaf to the root.
 	Treedepth int `json:"treedepth"`
+}
+
+// LocalStateChange A local state opted into (no before) or out of (no after) by a group; before and after are the local state without its key-value (its keys are in `txns`). Non-standard fork feature.
+type LocalStateChange struct {
+	// Address The account.
+	Address string `json:"address"`
+
+	// After Stores local state associated with an application.
+	After *ApplicationLocalState `json:"after,omitempty"`
+
+	// AppId The app.
+	AppId basics.AppIndex `json:"app-id"`
+
+	// Before Stores local state associated with an application.
+	Before *ApplicationLocalState `json:"before,omitempty"`
 }
 
 // ParticipationKey Represents a participation key used by the node.
@@ -1097,6 +1366,45 @@ type PendingTransactionResponse struct {
 
 	// Txn The raw signed transaction.
 	Txn map[string]interface{} `json:"txn"`
+}
+
+// ProgramBudget The opcode budget of one program run: an app's approval or clear state program, top-level or inner, or a logic sig. Non-standard fork feature.
+type ProgramBudget struct {
+	// AppId For an app program, the app; for an app create, the new app.
+	AppId *basics.AppIndex `json:"app-id,omitempty"`
+
+	// BudgetAfter The opcode budget the program could still spend when it ended. Inner app calls add to the pooled budget while the program runs, and an inner program that spends more than they added takes the rest from it, so `budget-before` minus `budget-after` can differ from `cost` either way. Negative for a clear state program that ran out of budget.
+	BudgetAfter int `json:"budget-after"`
+
+	// BudgetBefore The opcode budget the program could still spend when it began: the group's pooled budget, apps' or logic sigs', where budgets are pooled (an inner group's app calls add theirs to it before its first program runs); the per-program budget otherwise, and at most that for a clear state program.
+	BudgetBefore int `json:"budget-before"`
+
+	// Cost The opcode budget the program spent. The programs of its inner transactions are entries of their own.
+	Cost uint64 `json:"cost"`
+
+	// Failed The program rejected or failed. In a block, only a clear state program can, or a program inside one: the block keeps the clear state call, without what the program did, so the transactions of the programs inside it are not in the block.
+	Failed *bool `json:"failed,omitempty"`
+
+	// Kind `approval`: the approval program; `clear`: the clear state program; `logic-sig`: the logic sig.
+	Kind ProgramBudgetKind `json:"kind"`
+
+	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level, as in `txns`.
+	Path []uint64 `json:"path"`
+
+	// Txid The transaction id, for a top-level transaction.
+	Txid *string `json:"txid,omitempty"`
+}
+
+// ProgramBudgetKind `approval`: the approval program; `clear`: the clear state program; `logic-sig`: the logic sig.
+type ProgramBudgetKind string
+
+// ProgramDisassembly The disassembly of a program, line by line. Non-standard fork feature.
+type ProgramDisassembly struct {
+	// Hash The program's hash, as `approval-program-hash`, `clear-state-program-hash` and `logic-sig-hash` of the traces give it.
+	Hash []byte `json:"hash"`
+
+	// Lines The lines of the disassembly.
+	Lines []DisassemblyLine `json:"lines"`
 }
 
 // QueryCall One call of a query: the args and references of its app call. The references are only needed by programs before v9, which address resources by index. Non-standard fork feature.
@@ -1246,6 +1554,9 @@ type SimulateInitialStates struct {
 
 // SimulateLimits The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
 type SimulateLimits struct {
+	// ExecTraceConfig The non-standard exec-trace-config options this node takes, beyond upstream's: state-change-app-id. Listed only with developer-api, without which the node refuses any execution trace. A node without this list takes none of them.
+	ExecTraceConfig *[]string `json:"exec-trace-config,omitempty"`
+
 	// MaxExtraOpcodeBudget The most extra-opcode-budget a request may ask for. It is added once to the pooled app budget of each top-level transaction group that has an app call, and never to a LogicSig's budget (node config MaxAPISimulateExtraOpcodeBudget).
 	MaxExtraOpcodeBudget uint64 `json:"max-extra-opcode-budget"`
 
@@ -1299,6 +1610,9 @@ type SimulateTraceConfig struct {
 
 	// StateChange A boolean option enabling returning application state changes (global, local, and box changes) with the execution trace during simulation.
 	StateChange *bool `json:"state-change,omitempty"`
+
+	// StateChangeAppId A boolean option adding app-id to each application state change of the execution trace. Needs state-change. Non-standard fork feature: stock algod refuses it, and a node takes it when its capabilities list it in simulate.exec-trace-config.
+	StateChangeAppId *bool `json:"state-change-app-id,omitempty"`
 }
 
 // SimulateTransactionGroupResult Simulation result for an atomic transaction group
@@ -1414,7 +1728,7 @@ type SimulationOpcodeTraceUnit struct {
 	// StackPopCount The number of deleted stack values by this opcode.
 	StackPopCount *int `json:"stack-pop-count,omitempty"`
 
-	// StateChanges The operations against the current application's states.
+	// StateChanges The operations against application states: the current application's, or another application's boxes when a foreign box opcode (app_box_*) names one. With exec-trace-config state-change-app-id, each operation's app-id names the application.
 	StateChanges *[]ApplicationStateOperation `json:"state-changes,omitempty"`
 }
 
@@ -1446,6 +1760,27 @@ type SimulationTransactionExecTrace struct {
 
 	// LogicSigTrace Program trace that contains a trace of opcode effects in a logic sig.
 	LogicSigTrace *[]SimulationOpcodeTraceUnit `json:"logic-sig-trace,omitempty"`
+}
+
+// StateChangeValue An app state value: a TealValue whose bytes are bytes (base64 in JSON, bin in msgpack). Non-standard fork feature.
+type StateChangeValue struct {
+	// Bytes The bytes value.
+	Bytes []byte `json:"bytes"`
+
+	// Type Value type: `1` is **bytes**, `2` is **uint**.
+	Type uint64 `json:"type"`
+
+	// Uint The uint value.
+	Uint uint64 `json:"uint"`
+}
+
+// StateChangesLimits The limit of GET /v2/deltas/{round}/txn/state-changes on this node. Present when the node serves it (node config EnableTimeTravel). Non-standard fork feature.
+type StateChangesLimits struct {
+	// Include The values the `include` parameter takes. A node without this field ignores `include`.
+	Include *[]string `json:"include,omitempty"`
+
+	// MaxResponseBytes The most bytes an answer may take, encoded; a larger one fails with 400. 0 means no limit (node config MaxAPIStateChangesResponseBytes).
+	MaxResponseBytes uint64 `json:"max-response-bytes"`
 }
 
 // StateDelta Application state delta.
@@ -1525,6 +1860,39 @@ type TransactionProof struct {
 // * sha512_256
 // * sha256
 type TransactionProofHashtype string
+
+// TxnExecTrace The execution trace of a top-level transaction. Non-standard fork feature.
+type TxnExecTrace struct {
+	// ExecTrace The execution trace of calling an app or a logic sig, containing the inner app call trace in a recursive way.
+	ExecTrace SimulationTransactionExecTrace `json:"exec-trace"`
+
+	// Txid The transaction id.
+	Txid string `json:"txid"`
+}
+
+// TxnStateChanges The app state changes of a transaction, net over it and its inner transactions. Non-standard fork feature.
+type TxnStateChanges struct {
+	// Changes The keys the transaction changed, in the order it first changed them.
+	Changes []AppStateChange `json:"changes"`
+
+	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level. Inner indexes run on across all of a parent's itxn_submit calls, as in the apply data's inner-txns.
+	Path []uint64 `json:"path"`
+
+	// Txid The transaction id, for a top-level transaction.
+	Txid *string `json:"txid,omitempty"`
+}
+
+// TxnStateReads The app state keys a transaction read. Its inner transactions' reads are their own. Non-standard fork feature.
+type TxnStateReads struct {
+	// Path The transaction's index in the block's payset, then, for an inner transaction, its index among its parent's inner transactions at each level, as in `txns`.
+	Path []uint64 `json:"path"`
+
+	// Reads The keys it read, in the order it first read them, each once, with the value of its first read (`value` for global and local state, when it exists). A key the transaction wrote before reading it shows the value it wrote, even in a clear state program that then failed, whose writes the block discards.
+	Reads []AppStateRead `json:"reads"`
+
+	// Txid The transaction id, for a top-level transaction.
+	Txid *string `json:"txid,omitempty"`
+}
 
 // Version algod version information.
 type Version struct {
@@ -1778,7 +2146,10 @@ type CapabilitiesResponse struct {
 	// Simulate The limits of POST /v2/transactions/simulate requests on this node. Non-standard fork feature.
 	Simulate SimulateLimits `json:"simulate"`
 
-	// TimeLimitSeconds The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and the versions endpoints. One that reaches it fails with 504. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
+	// StateChanges The limit of GET /v2/deltas/{round}/txn/state-changes on this node. Present when the node serves it (node config EnableTimeTravel). Non-standard fork feature.
+	StateChanges *StateChangesLimits `json:"state-changes,omitempty"`
+
+	// TimeLimitSeconds The longest an expensive request may run: simulate, POST /v2/query, GET /v2/deltas/{round} and /v2/deltas/{round}/txn/state-changes, and the versions endpoints. One that reaches it fails with 504. 0 means no limit (node config RestWriteTimeoutSeconds, less a tenth of it, at least a second and at most half, to write the response; a limit under a second reads 1).
 	TimeLimitSeconds uint64 `json:"time-limit-seconds"`
 
 	// TimeTravel If true, the node keeps the history of the ledger since genesis: reads at a round (the round parameter, simulate's round, query's rounds) may name any round since genesis, and the endpoints that need the history, such as the versions and holders endpoints, are served. Otherwise the round parameter is rejected (400), those endpoints answer 404, and simulate's round and query's rounds reach only the last MaxAcctLookback rounds (node config EnableTimeTravel).
@@ -2033,6 +2404,33 @@ type TransactionParametersResponse struct {
 
 // TransactionProofResponse Proof of transaction in a block.
 type TransactionProofResponse = TransactionProof
+
+// TxnStateChangesResponse defines model for TxnStateChangesResponse.
+type TxnStateChangesResponse struct {
+	// Budget With `include=budget`: each program run of the transactions asked for, top-level and inner, in the order they began. A group's logic sigs come first, as the node checks them before it evaluates the group. A clear state program skipped for lack of budget has no entry. Left out when there are none.
+	Budget *[]ProgramBudget `json:"budget,omitempty"`
+
+	// FeeSink With `include` of `accounts`, `assets` or `apps`, always: the round's fee sink, which every group that pays fees changes. The proposer payout comes out of it after the groups, in none of them. Its absence then means the node ignored `include`.
+	FeeSink *string `json:"fee-sink,omitempty"`
+
+	// Groups With `include` of `accounts`, `assets` or `apps`: each top-level group (of the txids' groups, with `txids`), in block order, with what it changed besides app state. `app` does not narrow it. Left out when there are none, as in an empty block.
+	Groups *[]GroupStateChanges `json:"groups,omitempty"`
+
+	// Programs With `include=trace`: the disassembly of each program the traces ran. Left out when they ran none.
+	Programs *[]ProgramDisassembly `json:"programs,omitempty"`
+
+	// Reads With `include=reads`: each transaction asked for that read app state, top-level and inner, in the order it first read. The inner transactions of a clear state program that failed are left out, as the block does not have them. Left out when there are none.
+	Reads *[]TxnStateReads `json:"reads,omitempty"`
+
+	// Round The round.
+	Round basics.Round `json:"round"`
+
+	// Traces With `include=trace`: the execution trace of each top-level transaction of the group of the transaction asked for, in group order, as simulate gives it with stack, scratch and state changes, each state change with its `app-id` (simulate's `state-change-app-id`).
+	Traces *[]TxnExecTrace `json:"traces,omitempty"`
+
+	// Txns The transactions that changed app state, top-level and inner, in execution order.
+	Txns []TxnStateChanges `json:"txns"`
+}
 
 // VersionsResponse algod version information.
 type VersionsResponse = Version
@@ -2500,6 +2898,30 @@ type GetTransactionGroupLedgerStateDeltasForRoundParams struct {
 
 // GetTransactionGroupLedgerStateDeltasForRoundParamsFormat defines parameters for GetTransactionGroupLedgerStateDeltasForRound.
 type GetTransactionGroupLedgerStateDeltasForRoundParamsFormat string
+
+// GetTxnStateChangesForRoundParams defines parameters for GetTxnStateChangesForRound.
+type GetTxnStateChangesForRoundParams struct {
+	// Format Configures whether the response object is JSON or MessagePack encoded. If not provided, defaults to JSON.
+	Format *GetTxnStateChangesForRoundParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// App Only the changes to this app's state.
+	App *basics.AppIndex `form:"app,omitempty" json:"app,omitempty"`
+
+	// Txid Only this top-level transaction and its inner transactions. A transaction that is not in the round is a 404. Combines with `txids`.
+	Txid *string `form:"txid,omitempty" json:"txid,omitempty"`
+
+	// Txids Only these top-level transactions and their inner transactions, such as the transactions of a group, listed in execution order whatever their order here. Comma-separated, without spaces, in a single `txids` parameter (a repeated `txids` is a 400). Repeats are ignored; an empty list or a malformed txid is a 400, and a transaction that is not in the round is a 404. Combines with `txid`.
+	Txids *[]string `form:"txids,omitempty" json:"txids,omitempty"`
+
+	// Include What else to return. `accounts`, `assets` and `apps` return `groups`: what each top-level group changed besides app state, with values before and after the group (`accounts`: account fields such as the balance; `assets`: asset holdings and asset params; `apps`: app params and local state opt-ins and opt-outs). `budget` returns `budget`: the opcode budget of each program run. `reads` returns `reads`: the app state each transaction read. `trace` returns `traces` and `programs`: the execution traces of the group of the one transaction given in `txid` or `txids` (any other number is a 400), and the disassembly of the programs it ran; it needs node config EnableDeveloperAPI, as simulate's execution traces do (400 otherwise). `txid` and `txids` narrow them all; `app` narrows only `txns`. Comma-separated, without spaces, in a single `include` parameter; an empty list, an unknown value or a repeated `include` is a 400. Send only values that `state-changes.include` of GET /v2/capabilities lists: a node that lists none ignores the parameter, and one that lists others answers 400 for a value it does not know.
+	Include *[]GetTxnStateChangesForRoundParamsInclude `form:"include,omitempty" json:"include,omitempty"`
+}
+
+// GetTxnStateChangesForRoundParamsFormat defines parameters for GetTxnStateChangesForRound.
+type GetTxnStateChangesForRoundParamsFormat string
+
+// GetTxnStateChangesForRoundParamsInclude defines parameters for GetTxnStateChangesForRound.
+type GetTxnStateChangesForRoundParamsInclude string
 
 // GetSupplyParams defines parameters for GetSupply.
 type GetSupplyParams struct {

@@ -685,14 +685,23 @@ func (l *Ledger) LookupKv(rnd basics.Round, key string) ([]byte, error) {
 }
 
 func (l *Ledger) lookupKv(rnd basics.Round, key string, e *ledgercore.Effort) ([]byte, error) {
+	v, _, err := l.lookupKvExists(rnd, key, e)
+	return v, err
+}
+
+// lookupKvExists is lookupKv that also reports whether the key exists: from
+// the history, an existing empty value is told apart from a missing one. The
+// trackers keep no such flag, so there a nil value is a missing key, as the
+// evaluator reads it.
+func (l *Ledger) lookupKvExists(rnd basics.Round, key string, e *ledgercore.Effort) ([]byte, bool, error) {
 	l.trackerMu.RLock()
 	defer l.trackerMu.RUnlock()
 
 	v, err := l.accts.LookupKv(rnd, key)
 	if h := l.historyFor(rnd, err, e); h != nil {
-		v, _, err = h.Get(timetravel.KvKey(key), uint64(rnd))
+		return h.Get(timetravel.KvKey(key), uint64(rnd))
 	}
-	return v, err
+	return v, v != nil, err
 }
 
 // LookupKeysByPrefix searches keys with specific prefix, up to `maxKeyNum`

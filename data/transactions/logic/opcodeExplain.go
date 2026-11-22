@@ -16,7 +16,11 @@
 
 package logic
 
-import "github.com/algorand/go-algorand/data/basics"
+import (
+	"fmt"
+
+	"github.com/algorand/go-algorand/data/basics"
+)
 
 // debugStackExplain explains the effect of an opcode over the stack
 // with 2 integers: deletions and additions, representing pops and inserts.
@@ -131,6 +135,9 @@ func opUncoverStackChange(cx *EvalContext) (deletions, additions int) {
 }
 
 func opRetSubStackChange(cx *EvalContext) (deletions, additions int) {
+	if len(cx.callstack) == 0 {
+		return // retsub fails
+	}
 	topFrame := cx.callstack[len(cx.callstack)-1]
 	// fast path, no proto case
 	if !topFrame.clear {
@@ -142,12 +149,16 @@ func opRetSubStackChange(cx *EvalContext) (deletions, additions int) {
 
 	diff := topStackIdx - argStart + 1
 
-	deletions = diff
+	// a stack below the frame fails retsub, which then pops nothing
+	deletions = max(diff, 0)
 	additions = topFrame.returns
 	return
 }
 
 func opFrameBuryStackChange(cx *EvalContext) (deletions, additions int) {
+	if len(cx.callstack) == 0 {
+		return // frame_bury fails
+	}
 	topFrame := cx.callstack[len(cx.callstack)-1]
 
 	immIndex := int8(cx.program[cx.pc+1])
@@ -156,8 +167,9 @@ func opFrameBuryStackChange(cx *EvalContext) (deletions, additions int) {
 
 	diff := topStackIdx - idx + 1
 
-	deletions = diff
-	additions = diff - 1
+	// an index at or above the value fails frame_bury, which then pops nothing
+	deletions = max(diff, 0)
+	additions = max(diff-1, 0)
 	return
 }
 
@@ -275,22 +287,32 @@ func AppStateQuerying(
 	cx *EvalContext,
 	appState AppStateEnum, stateOp AppStateOpEnum,
 	appID basics.AppIndex, account basics.Address, key string) basics.TealValue {
+	value, exists, err := AppStateValue(cx, appState, stateOp, appID, account, key)
+	if !exists || err != nil {
+		return basics.TealValue{}
+	}
+	return value
+}
+
+// AppStateValue reads an app state key from cx's ledger, as AppStateQuerying
+// does, but reports whether the key exists and any lookup error. A box is
+// returned as bytes.
+func AppStateValue(
+	cx *EvalContext,
+	appState AppStateEnum, stateOp AppStateOpEnum,
+	appID basics.AppIndex, account basics.Address, key string) (basics.TealValue, bool, error) {
 	switch appState {
 	case BoxState:
 		boxBytes, exists, err := cx.Ledger.GetBox(appID, key)
 		if !exists || err != nil {
-			return basics.TealValue{}
+			return basics.TealValue{}, false, err
 		}
 		return basics.TealValue{
 			Type:  basics.TealBytesType,
 			Bytes: string(boxBytes),
-		}
+		}, true, nil
 	case GlobalState:
-		globalValue, exists, err := cx.Ledger.GetGlobal(appID, key)
-		if !exists || err != nil {
-			return basics.TealValue{}
-		}
-		return globalValue
+		return cx.Ledger.GetGlobal(appID, key)
 	case LocalState:
 		var (
 			addr   basics.Address
@@ -304,14 +326,10 @@ func AppStateQuerying(
 			addr, _, acctID, err = cx.localsReference(stackValue{Bytes: account[:]}, uint64(appID))
 		}
 		if err != nil {
-			return basics.TealValue{}
+			return basics.TealValue{}, false, err
 		}
-		localValue, exists, err := cx.Ledger.GetLocal(addr, appID, key, acctID)
-		if !exists || err != nil {
-			return basics.TealValue{}
-		}
-		return localValue
+		return cx.Ledger.GetLocal(addr, appID, key, acctID)
 	default:
-		return basics.TealValue{}
+		return basics.TealValue{}, false, fmt.Errorf("unknown app state %d", appState)
 	}
 }
