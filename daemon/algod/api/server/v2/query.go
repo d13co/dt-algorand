@@ -357,7 +357,7 @@ func convertQueryRequest(r PreEncodedQueryRequest) (simulation.QueryRequest, err
 				}
 				if index > len(call.ForeignApps) {
 					// Don't append to the request's slice, which call.ForeignApps shares.
-					call.ForeignApps = append(call.ForeignApps[:len(call.ForeignApps):len(call.ForeignApps)], b.App)
+					call.ForeignApps = append(slices.Clip(call.ForeignApps), b.App)
 				}
 			}
 			call.Boxes = append(call.Boxes, transactions.BoxRef{Index: uint64(index), Name: b.Name})

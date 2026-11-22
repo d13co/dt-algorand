@@ -56,11 +56,11 @@ const sigPrefix = "falcon1024"
 type Key struct {
 	Name string
 	Role string
-	PK   crypto.FalconPublicKey
+	PK   crypto.Falcon1024PublicKey
 }
 
 // keyID names a public key: the first 8 bytes of its SHA-256, in hex.
-func keyID(pk crypto.FalconPublicKey) string {
+func keyID(pk crypto.Falcon1024PublicKey) string {
 	h := sha256.Sum256(pk[:])
 	return hex.EncodeToString(h[:8])
 }
@@ -69,7 +69,7 @@ func keyID(pk crypto.FalconPublicKey) string {
 func (k Key) ID() string { return keyID(k.PK) }
 
 // keyLine is a keys file line for a key.
-func keyLine(name, role string, pk crypto.FalconPublicKey) string {
+func keyLine(name, role string, pk crypto.Falcon1024PublicKey) string {
 	return fmt.Sprintf("%s %s %s", name, role, base64.StdEncoding.EncodeToString(pk[:]))
 }
 
@@ -118,7 +118,7 @@ func parseKeys(r io.Reader, path string) ([]Key, error) {
 }
 
 // readSigner reads a private key file that keygen wrote.
-func readSigner(path string) (*crypto.FalconSigner, error) {
+func readSigner(path string) (*crypto.Falcon1024Signer, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -130,7 +130,7 @@ func readSigner(path string) (*crypto.FalconSigner, error) {
 		return nil, fmt.Errorf("%s is not a ttsnap key (ttsnap keygen makes one)", path)
 	}
 	copy(seed[:], raw)
-	signer, err := crypto.GenerateFalconSigner(seed)
+	signer, err := crypto.GenerateFalcon1024Signer(seed)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func readSigner(path string) (*crypto.FalconSigner, error) {
 }
 
 // signFile is the content of a signature file: msg signed by signer.
-func signFile(signer *crypto.FalconSigner, msg []byte) ([]byte, error) {
+func signFile(signer *crypto.Falcon1024Signer, msg []byte) ([]byte, error) {
 	sig, err := signer.SignBytes(msg)
 	if err != nil {
 		return nil, err
@@ -147,13 +147,13 @@ func signFile(signer *crypto.FalconSigner, msg []byte) ([]byte, error) {
 }
 
 // parseSigFile returns the key ID and signature of a signature file.
-func parseSigFile(b []byte) (string, crypto.FalconSignature, error) {
+func parseSigFile(b []byte) (string, crypto.Falcon1024Signature, error) {
 	fields := strings.Fields(string(b))
 	if len(fields) != 3 || fields[0] != sigPrefix {
 		return "", nil, errors.New("not a falcon1024 signature file")
 	}
 	sig, err := base64.StdEncoding.DecodeString(fields[2])
-	if err != nil || len(sig) == 0 || len(sig) > crypto.FalconMaxSignatureSize {
+	if err != nil || len(sig) == 0 || len(sig) > crypto.Falcon1024MaxSignatureSize {
 		return "", nil, errors.New("bad signature encoding")
 	}
 	return fields[1], sig, nil
@@ -170,7 +170,7 @@ func verifySigFile(b, msg []byte, keys []Key, role string) (Key, error) {
 		if k.Role != role || k.ID() != id {
 			continue
 		}
-		v := crypto.FalconVerifier{PublicKey: k.PK}
+		v := crypto.Falcon1024Verifier{PublicKey: k.PK}
 		if err := v.VerifyBytes(msg, sig); err != nil {
 			return Key{}, fmt.Errorf("the signature by %s (%s) does not verify", k.Name, id)
 		}
@@ -206,7 +206,7 @@ func cmdKeygen(args []string) error {
 	if _, err := rand.Read(seed[:]); err != nil {
 		return err
 	}
-	signer, err := crypto.GenerateFalconSigner(seed)
+	signer, err := crypto.GenerateFalcon1024Signer(seed)
 	if err != nil {
 		return err
 	}
