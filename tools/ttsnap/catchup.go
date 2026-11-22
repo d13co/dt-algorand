@@ -34,7 +34,6 @@ import (
 	"github.com/algorand/go-algorand/data/basics"
 	"github.com/algorand/go-algorand/data/bookkeeping"
 	"github.com/algorand/go-algorand/ledger/ledgercore"
-	"github.com/algorand/go-algorand/nodecontrol"
 	"github.com/algorand/go-algorand/protocol"
 	"github.com/algorand/go-algorand/util/tokens"
 )
@@ -87,19 +86,16 @@ func catchup(dataDir, label string, useSnapshot bool, client *http.Client) error
 			return fmt.Errorf("%w: fetch a newer history snapshot, or pass an older -label", err)
 		}
 	}
-	nc := nodecontrol.MakeNodeController("", dataDir)
-	u, err := nc.ServerURL()
+	path := "/v2/catchup/" + url.PathEscape(label)
+	u, h, err := algodAPI(dataDir, path, tokens.AlgodAdminTokenFilename)
 	if err != nil {
 		return fmt.Errorf("finding the node's API (is algod running? It writes algod.net once its ledger is open, which can take a minute or more): %w", err)
 	}
-	u.Path = "/v2/catchup/" + url.PathEscape(label)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
 		return err
 	}
-	if token, terr := tokens.GetAndValidateAPIToken(dataDir, tokens.AlgodAdminTokenFilename); terr == nil {
-		req.Header.Set("X-Algo-API-Token", token)
-	}
+	req.Header = h
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -107,7 +103,7 @@ func catchup(dataDir, label string, useSnapshot bool, client *http.Client) error
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("POST %s: %s: %s", u.Path, resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("POST %s: %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
 	fmt.Printf("catching up to %s; follow it with: %s node status -d %s (done when the Catchpoint lines are gone)\n", label, goalCommand(), shellQuote(dataDir))
 	return nil

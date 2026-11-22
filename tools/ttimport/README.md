@@ -16,7 +16,7 @@ A time travel node's history comes from every round's state delta since genesis:
   - The archival node can keep running. Blocks it writes during the import are left for a rerun, which replays only the new rounds. This was tested with a writer appending blocks to the archive the way algod's block queue does.
 - **Write access to the archive's directory**, for SQLite's `-wal` and `-shm` files. Run `ttimport` as the user that owns the data directory: it refuses to run as root on a data directory that another user owns, whose node could not open the files root writes. On macOS, copy the archive to a disk you own if it belongs to another user.
 - **Disk for the new data directory:**
-  - the history: about 70 GB on mainnet (65.5 GiB in October 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
+  - the history: about 70 GB on mainnet (67.3 GiB in November 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
   - the account DB of a non-archival node;
   - about 1,000 blocks.
   
@@ -186,4 +186,4 @@ It scans the holding records once and writes an entry per holding that ever exis
 - a source from another network, judged by its last block header's genesis hash against `genesis.json`;
 - a data directory whose ledger directories resolve into the source's directory.
 
-The ledger refuses a data directory that is ahead of the source, with the message of an interrupted run ("rerun tools/ttimport"). If algod has already synced the directory past the archive's tip, there is nothing left to import: start the node. For an archival time travel node (`Archival: true`), sync from genesis over the network instead.
+The ledger refuses a data directory that is ahead of the source, with the message of an interrupted run ("rerun tools/ttimport"). If algod has already synced the directory past the archive's tip, there is nothing left to import: start the node. For an archival time travel node (`Archival: true`), import as usual, then hand the archive's block DB over to the node and turn `Archival` on while it is stopped: see [Making the node archival](../../installer/dtalgorand/README.md#making-the-node-archival).
