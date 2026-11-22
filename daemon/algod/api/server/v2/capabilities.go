@@ -71,7 +71,7 @@ func capabilities(cfg config.Local) model.CapabilitiesResponse {
 	}
 	var stateChanges *model.StateChangesLimits
 	if cfg.EnableTimeTravel {
-		include := StateChangesIncludeValues()
+		include := StateChangesIncludeValues(cfg.EnableDeveloperAPI)
 		stateChanges = &model.StateChangesLimits{MaxResponseBytes: cfg.MaxAPIStateChangesResponseBytes, Include: &include}
 	}
 	var execTraceOptions *[]string

@@ -196,9 +196,11 @@ func (client RestClient) TxnStateChanges(round basics.Round, app basics.AppIndex
 	return client.TxnStateChangesWithGroups(round, app, nil, txids...)
 }
 
-// TxnStateChangesWithGroups is TxnStateChanges that also gets, with a non-empty include (accounts,
-// assets, apps), what each group changed besides app state: of the groups of txids when there are
-// any, else of every group.
+// TxnStateChangesWithGroups is TxnStateChanges with include, which also gets what each group
+// changed besides app state (accounts, assets, apps), each program run's opcode budget (budget)
+// and the app state each transaction read (reads), for txids when there are any, else for every
+// transaction; and the execution traces of the group of the one txid (trace, which needs exactly
+// one txid and node config EnableDeveloperAPI).
 func (client RestClient) TxnStateChangesWithGroups(round basics.Round, app basics.AppIndex, include []string, txids ...string) (response model.TxnStateChangesResponse, err error) {
 	err = client.get(&response, fmt.Sprintf("/v2/deltas/%d/txn/state-changes", round), txnStateChangesParams{App: app, TxIDs: txids, Include: include})
 	return
