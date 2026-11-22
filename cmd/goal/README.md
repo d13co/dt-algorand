@@ -195,4 +195,4 @@ The holders of an asset as of round 1000: address, amount, "frozen" (needs `Time
 goal asset holders --assetid ${ASSETID} --round 1000 --all
 ```
 
-`--round 0` is the genesis round, except for `goal app box list`, where `--round 0` means the latest round. A node without time travel rejects `--round`. To explore the history of a stopped node offline, including the raw records, see `tools/ttdump`.
+`--round 0` is the genesis round, except for `goal app box list`, where `--round 0` means the latest round. On a node without time travel, goal refuses `--round`, except `goal app box list`, which reaches the rounds the node still holds in memory. To explore the history of a stopped node offline, including the raw records, see `tools/ttdump`.

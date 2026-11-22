@@ -4,7 +4,7 @@ The packages of this fork ([time travel](../../ledger/timetravel/README.md)): a 
 
 ## Requirements
 
-- **OS:** Linux on amd64 or arm64 (the .deb is for Debian and Ubuntu; elsewhere, build from source), or macOS 14 or later on Apple silicon.
+- **OS:** Linux on amd64 (the .deb is for Debian and Ubuntu; elsewhere, and on arm64, build from source), or macOS 14 or later on Apple silicon.
 - **Disk:** about 90 GB for a mainnet node today, growing. A synced mainnet node measured on 2026-10-30 held 65.5 GiB of history (3.6 GiB of it the asset holders index), an 11 GiB account DB and 0.7 GiB of recent blocks; a history installed from a snapshot is about the same size (older releases of `ttsnap fetch` left the snapshot's old box index on disk, about 1 GB, until Pebble compacted it away; with algod stopped, `ttimport -d <data dir> -index-boxes` reclaims it). Plan for 100 GB or more on an NVMe SSD: queries at past rounds read the history at random. Before it starts, `ttsnap fetch` checks that the history's disk has room for the download (about 70 GB, which becomes the history) plus 5% and 1 GiB.
 - **Memory:** what a stock node needs (Algorand recommends 8 GB or more), plus a few hundred MB for the history's cache and memtables.
 
@@ -12,7 +12,7 @@ The packages of this fork ([time travel](../../ledger/timetravel/README.md)): a 
 
 ### Debian and Ubuntu
 
-Add the apt.d13.co repository and install the package (amd64 or arm64):
+Add the apt.d13.co repository and install the package (amd64 only for now):
 
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
@@ -26,7 +26,7 @@ sudo apt install dtalgorand
 
 `gpg --show-keys` must list exactly one primary key, `F66E77133063650C159F405AC4D2171FB5B60471`: apt trusts every key in `d13co.asc`, hence the check before `apt update`.
 
-The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, the dtalgorand commands other than `ttsnap` and `ttimport` take the data directory from `$DTALGORAND_DATA` (see [Finishing the install](#finishing-the-install)) and ignore `$ALGORAND_DATA`, which may point at a stock node. Likewise, without `-k`, `dtgoal` takes kmd's data directory from `$DTALGORAND_KMD`, not `$ALGORAND_KMD`. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
+The commands have a `dt` prefix (`dtalgod`, `dtgoal`, `dtalgocfg`, ...) so that they don't clash with the stock package's; `ttsnap` and `ttimport` keep their names. Without `-d`, `dtgoal`, `dtalgocfg`, `dtalgod`, `dtalgoh` and `dtdiagcfg` take the data directory from `$DTALGORAND_DATA` (see [Finishing the install](#finishing-the-install)) and ignore `$ALGORAND_DATA`, which may point at a stock node. Likewise, without `-k`, `dtgoal` takes kmd's data directory from `$DTALGORAND_KMD`, not `$ALGORAND_KMD`. The node's data directory is `/var/lib/dtalgorand`, and the node runs as the `dtalgorand` user, whose home it is.
 
 The package does not enable or start `dtalgorand.service`. It turns on unattended upgrades from apt.d13.co (`/etc/apt/apt.conf.d/51dtalgorand-upgrades`), and an upgrade restarts the nodes that are running.
 
@@ -342,6 +342,11 @@ On Linux, the archive's disk must be outside `/home` (the unit's `ProtectHome` h
 ```sh
 sudo install -d -o dtalgorand -g dtalgorand /mnt/archive/dtalgorand/mainnet-v1.0
 sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p BlockDBDir -v /mnt/archive/dtalgorand
+```
+
+Only if you haven't set `TimeTravelDBDir` (`sudo -u dtalgorand dtalgocfg get -d /var/lib/dtalgorand -p TimeTravelDBDir` prints nothing), keep the history in the data directory:
+
+```sh
 sudo -u dtalgorand dtalgocfg set -d /var/lib/dtalgorand -p TimeTravelDBDir -v /var/lib/dtalgorand
 ```
 
@@ -358,6 +363,11 @@ On macOS, the commands below take the archive's disk at `/Volumes/Archive`, with
 ```sh
 mkdir -p /Volumes/Archive/dtalgorand/mainnet-v1.0
 dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p BlockDBDir -v /Volumes/Archive/dtalgorand
+```
+
+Only if you haven't set `TimeTravelDBDir` (`dtalgocfg get -d $(brew --prefix)/var/dtalgorand -p TimeTravelDBDir` prints nothing), keep the history in the data directory:
+
+```sh
 dtalgocfg set -d $(brew --prefix)/var/dtalgorand -p TimeTravelDBDir -v $(brew --prefix)/var/dtalgorand
 ```
 
@@ -434,10 +444,10 @@ This fork changes the ledger, evaluator and REST layers to serve historical quer
 
 While the flag is off on those networks:
 
-- The node won't start if it holds participation keys (a follower, `EnableFollowMode`, starts anyway: it can't use them): partkey files in the genesis directory, or keys in the participation registry (`partregistry.sqlite`, in `ColdDataDir` if set). algod exits with code 78 and names the keys it found; the systemd units don't restart it (`RestartPreventExitStatus=78`), while launchd starts it again about every 10 seconds (run `brew services stop dtalgorand` and read `D/node.log`). Under `goal node start` the message is in `algod-err.log` and `node.log`; goal only reports that algod exited early.
-- Installing keys (`POST /v2/participation`, `goal account addpartkey`, `installpartkey`, `renewpartkey`) fails. `POST /v2/participation/generate/{address}` is refused before it generates anything. `goal account addpartkey` and `renewpartkey` generate the keys locally, which takes minutes, so they check the data directory's `config.json` and the node's network first and stop before generating; if goal can't read the config, the node still refuses the keys when goal installs them.
+- The node won't start if it holds participation keys (a follower, `EnableFollowMode`, starts anyway: it can't use them): partkey files in the genesis directory, or keys in the participation registry (`partregistry.sqlite`, in `ColdDataDir` if set). algod exits with code 78 and names the keys it found; the systemd units don't restart it (`RestartPreventExitStatus=78`), while launchd starts it again about every 10 seconds (run `brew services stop dtalgorand` and read `D/node.log`). Under `dtgoal node start` the message is in `algod-err.log` and `node.log`; dtgoal only reports that algod exited early.
+- Installing keys (`POST /v2/participation`, `dtgoal account addpartkey`, `installpartkey`, `renewpartkey`) fails. `POST /v2/participation/generate/{address}` is refused before it generates anything. `dtgoal account addpartkey` and `renewpartkey` generate the keys locally, which takes minutes, so they check the data directory's `config.json` and the node's network first and stop before generating; if dtgoal can't read the config, the node still refuses the keys when dtgoal installs them.
 
-Don't point dtalgorand at a validator's data directory: give it its own, or run upstream algod on the validator's. Deleting the keys to get the node to start is irreversible: keys installed through the REST API (as goal installs them) exist only in the participation registry, and the account would need a new key registration. Once keys are installed with the flag on, turning it off stops the node from starting until they are moved away, and that includes expired `.partkey` files, which algod doesn't delete. To remove keys from the registry, start the node once with the flag on and run `goal account deletepartkey`, or move `partregistry.sqlite` (and its `-wal` and `-shm` files) aside while the node is stopped.
+Don't point dtalgorand at a validator's data directory: give it its own, or run upstream algod on the validator's. Deleting the keys to get the node to start is irreversible: keys installed through the REST API (as dtgoal installs them) exist only in the participation registry, and the account would need a new key registration. Once keys are installed with the flag on, turning it off stops the node from starting until they are moved away, and that includes expired `.partkey` files, which algod doesn't delete. To remove keys from the registry, start the node once with the flag on and run `dtgoal account deletepartkey`, or move `partregistry.sqlite` (and its `-wal` and `-shm` files) aside while the node is stopped.
 
 ## macOS notes
 

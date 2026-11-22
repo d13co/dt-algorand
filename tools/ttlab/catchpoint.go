@@ -38,7 +38,7 @@ import (
 func catchpoint(args []string) error {
 	fs := flag.NewFlagSet("catchpoint", flag.ExitOnError)
 	path := fs.String("file", "", "catchpoint tar (prefix ok)")
-	dbPath := fs.String("db", "", "if set, write the sampled state as one full checkpoint into this store")
+	dbPath := fs.String("db", "", "if set, write the sampled state into this store as the changes of one round")
 	fs.Parse(args)
 	var changes []timetravel.Change
 	f, err := os.Open(*path)

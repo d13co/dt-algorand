@@ -107,7 +107,7 @@ Copies every version in a store (made with `ingest -keep`) into SQLite (clustere
 python3 estimate.py stats.csv 2022=m2022.jsonl 2024=m2024.jsonl 2026=m2026.jsonl
 ```
 
-Scales the `ingest` results up to mainnet's whole history. Each era's run stands for a span of rounds (`ERAS`: 2022 for rounds below 35M, 2024 for 35M to 55M, 2026 above). For each configuration it takes the run's disk bytes per round relative to that era's `-comp none` run, and applies that ratio to the logical bytes `stats.csv` sampled for those rounds. It also prints the size of an archival block database from the sampled blocks.
+Scales the `ingest` results up to mainnet's whole history. Each era's run stands for a span of rounds (`ERAS`: 2022 for rounds below 35M, 2024 for 35M to 55M, 2026 above). For each configuration it takes the run's disk bytes per round relative to the logical bytes per round of that era's `-comp none` run, and applies that ratio to the logical bytes `stats.csv` sampled for those rounds. It also prints the size of an archival block database from the sampled blocks.
 
 - `stats.csv` must sample every 20,000 rounds (`SAMPLE`); any other spacing gives wrong totals.
 - Every era file needs a `-comp none` run (any `-block`), the baseline for the others.
@@ -131,7 +131,7 @@ curl -s http://<relay>:4160/v1/mainnet-v1.0/ledger/<round in base 36> | head -c 
 ./ttlab catchpoint -file cp.tar -db /tmp/cp
 ```
 
-Reads a catchpoint file as a relay streams it and prints its header and the number of accounts, resources and KVs read, with their average encoded size. A prefix of the file is enough, and relays do not support range requests, so cut the stream with `head -c`: 30 MB holds about 62k accounts. With `-db` it also writes the accounts it read into a store as one full checkpoint and reports its logical and on-disk bytes per account. That directory is deleted before and after.
+Reads a catchpoint file as a relay streams it and prints its header and the number of accounts, resources and KVs read, with their average encoded size. A prefix of the file is enough, and relays do not support range requests, so cut the stream with `head -c`: 30 MB holds about 62k accounts. With `-db` it also writes the accounts it read into a store as the changes of one round and reports its logical and on-disk bytes per account. That directory is deleted before and after.
 
 ## demo
 
