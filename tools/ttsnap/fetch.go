@@ -26,11 +26,13 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +59,26 @@ const installedFile = "ttsnap.json"
 // stageSuffix names where fetch downloads a target before it is complete.
 const stageSuffix = ".ttsnap-partial"
 
+// installLockSuffix names the file an install of the history locks, beside it.
+const installLockSuffix = ".ttsnap-lock"
+
+// snapshotURLs are the snapshot trees fetch and bootstrap use when -url is
+// not given, by genesis ID. The manifest's genesis hash and producer
+// signature are checked whatever the URL.
+var snapshotURLs = map[string]string{
+	"mainnet-v1.0": "https://tt-snapshots-mainnet.d13.co",
+	"testnet-v1.0": "https://tt-snapshots-testnet.d13.co",
+}
+
+// snapshotURL returns the default snapshot tree of the network of
+// genesisID, or an error asking for -url.
+func snapshotURL(genesisID string) (string, error) {
+	if u, ok := snapshotURLs[genesisID]; ok {
+		return u, nil
+	}
+	return "", fmt.Errorf("no default snapshot tree for %s (there are for %s): pass -url <base URL>", genesisID, strings.Join(slices.Sorted(maps.Keys(snapshotURLs)), " and "))
+}
+
 // emptySHA256 is the SHA-256 of no bytes.
 const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
@@ -79,7 +101,7 @@ type fetchOpts struct {
 func cmdFetch(args []string) error {
 	fs := flag.NewFlagSet("fetch", flag.ExitOnError)
 	o := fetchOpts{progressLog: os.Stderr}
-	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree")
+	fs.StringVar(&o.base, "url", "", "base URL of the snapshot tree (default: mainnet's or testnet's, by the data directory's genesis.json)")
 	fs.StringVar(&o.dataDir, "d", "", "data directory of the new node: genesis.json, and config.json with EnableTimeTravel")
 	fs.StringVar(&o.manifest, "manifest", "", "path of a manifest in the tree to install instead of the latest, e.g. snapshots/mainnet-v1.0/history-123.json")
 	fs.StringVar(&o.keys, "keys", "", "keys file with the producers' and attesters' public keys (default: the package's, "+keysPath+" beside ttsnap's directory, or "+debKeys+")")
@@ -90,11 +112,11 @@ func cmdFetch(args []string) error {
 	fs.IntVar(&o.parallel, "parallel", 4, "files downloaded at once")
 	fs.DurationVar(&o.maxAge, "max-age", 7*24*time.Hour, "refuse a latest snapshot older than this (a mirror can serve a stale latest pointer, which is not signed); 0: any age")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: ttsnap fetch -url <base URL> -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]")
+		fmt.Fprintln(fs.Output(), "usage: ttsnap fetch [-url <base URL>] -d <data dir> [-keys <keys file>] [-min-attest N] [-full -trust-producer]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args) // flag.ExitOnError
-	if o.base == "" || o.dataDir == "" || fs.NArg() != 0 || o.parallel < 1 || o.minAttest < 0 {
+	if o.dataDir == "" || fs.NArg() != 0 || o.parallel < 1 || o.minAttest < 0 {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -152,15 +174,18 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if o.base == "" {
+		if o.base, err = snapshotURL(genesis.ID()); err != nil {
+			return nil, "", err
+		}
+		fmt.Fprintf(o.progressLog, "snapshots: %s\n", o.base)
+	}
 	cfg, err := config.LoadConfigFromDisk(o.dataDir)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, "", err
 	}
-	if !cfg.EnableTimeTravel {
-		return nil, "", errors.New("the data directory's config.json must set EnableTimeTravel")
-	}
-	if cfg.Archival {
-		return nil, "", errors.New("the data directory's config.json must not set Archival: an archival node resets a block DB that does not start at genesis")
+	if err = checkNodeConfig(cfg); err != nil {
+		return nil, "", err
 	}
 	kind := kindHistory
 	if o.full {
@@ -265,6 +290,18 @@ func fetch(o fetchOpts) (*Manifest, string, error) {
 				}
 			}
 		}
+	}
+	// one install at a time: a bootstrap phase left running may download
+	// into the same files (only Linux stops it with bootstrap)
+	unlock, err := lockFile(histFinal + installLockSuffix)
+	if errors.Is(err, errLocked) {
+		return nil, "", fmt.Errorf("another ttsnap is installing a snapshot into %s: wait for it to finish, or stop it", dirs.TimeTravelGenesisDir)
+	} else if err != nil {
+		return nil, "", err
+	}
+	defer unlock.Close()
+	if _, err = os.Lstat(histFinal); err == nil {
+		return nil, "", fmt.Errorf("another ttsnap installed a snapshot into %s meanwhile: rerun", dirs.TimeTravelGenesisDir)
 	}
 	if err = ensureDir(histStage); err != nil {
 		return nil, "", err
@@ -706,10 +743,16 @@ func hashPrefix(path string, n int64, h hash.Hash) error {
 
 // getSmall GETs a document of at most limit bytes.
 func getSmall(ctx context.Context, client *http.Client, u string, limit int64) ([]byte, error) {
+	return getSmallHeader(ctx, client, u, limit, nil)
+}
+
+// getSmallHeader is getSmall with the request header h.
+func getSmallHeader(ctx context.Context, client *http.Client, u string, limit int64, h http.Header) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
+	maps.Copy(req.Header, h)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -732,6 +775,9 @@ func getSmall(ctx context.Context, client *http.Client, u string, limit int64) (
 }
 
 var errNotFound = errors.New("not found")
+
+// errLocked: another process holds the lock.
+var errLocked = errors.New("locked")
 
 // canonicalize makes the downloaded store answer like any other store with
 // the manifest's commitment, or fails: the strict commitment refuses records
@@ -890,6 +936,17 @@ func clearCatchpointState(path string) error {
 		if _, err := acc.Handle.Exec(s); err != nil && !strings.Contains(err.Error(), "no such table") {
 			return fmt.Errorf("%s: %s: %w", path, s, err)
 		}
+	}
+	return nil
+}
+
+// checkNodeConfig checks that a node with cfg can run on a snapshot.
+func checkNodeConfig(cfg config.Local) error {
+	if !cfg.EnableTimeTravel {
+		return errors.New("the data directory's config.json must set EnableTimeTravel")
+	}
+	if cfg.Archival {
+		return errors.New("the data directory's config.json must not set Archival: an archival node resets a block DB that does not start at genesis")
 	}
 	return nil
 }
