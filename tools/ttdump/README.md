@@ -4,6 +4,8 @@
 
 It opens the store read-only, but Pebble locks the store while it is open, so **algod must be stopped** (and algod cannot start while ttdump runs). On a running node, goal's `--round` flags and `versions` commands ask algod instead.
 
+ttdump is not in the dtalgorand packages. Build it from this repository: `make build` installs it in `$GOPATH/bin`, or, once `crypto/libs` is built, `go build -o . ./tools/ttdump` builds it into the current directory.
+
 On a data directory, ttdump finds the store as algod does:
 
 ```sh
@@ -44,7 +46,7 @@ Text by default. `-json` (before or after the command) prints what algod's REST 
 - `account`: `GET /v2/accounts/{addr}?round=R`;
 - `versions`: the items of the `/versions` endpoints with `include=values`.
 
-The totals, which `/v2/ledger/supply` cannot show in full, are `ledgercore.AccountTotals` in codec JSON, and headers are codec JSON as in `/v2/blocks/{R}?header-only=true`.
+The totals, which `/v2/ledger/supply` cannot show in full, are `ledgercore.AccountTotals` in codec JSON, `header R` prints `round`, `digest`, `expired-stake` and `header`, the header in codec JSON as in `/v2/blocks/{R}?header-only=true`; `header R R2` prints one row per round with the table's columns and no header.
 
 In text, values are flattened to paths: nested fields join with `.`, holdings and created assets or apps are keyed by id (`assets[31566704].amount`), and global and local state by key (`global-state[str:counter]`). Byte values print as `str:` when printable, `addr:` when 32 bytes, `b64:` otherwise, and as a length and hash prefix above 128 bytes.
 

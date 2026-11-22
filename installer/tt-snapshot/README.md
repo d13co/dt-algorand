@@ -28,9 +28,11 @@ Mainnet's bucket costs about $1 a month: about 70 GB stored, and the operations 
 
 ## Install
 
+`setup.sh` takes the `ttsnap` binary: `/usr/bin/ttsnap` from the package, or `"$(go env GOPATH)/bin/ttsnap"` after `make install`. In `/etc/tt-snapshot.env`, set the bucket, the domain, the R2 account ID and keys, and `KEY`, `OUT` and `ROOT`.
+
 ```sh
-sudo installer/tt-snapshot/setup.sh /usr/bin/ttsnap  # or "$(go env GOPATH)/bin/ttsnap" after make install
-sudoedit /etc/tt-snapshot.env                        # bucket, domain, R2 account ID and keys; KEY, OUT, ROOT
+sudo installer/tt-snapshot/setup.sh /usr/bin/ttsnap
+sudoedit /etc/tt-snapshot.env
 sudo /usr/local/lib/tt-snapshot/r2-check.sh
 sudo systemctl start --no-block tt-snapshot.service && journalctl -fu tt-snapshot
 sudo systemctl enable --now tt-snapshot-trigger.timer

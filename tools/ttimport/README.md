@@ -16,12 +16,12 @@ A time travel node's history comes from every round's state delta since genesis:
   - The archival node can keep running. Blocks it writes during the import are left for a rerun, which replays only the new rounds. This was tested with a writer appending blocks to the archive the way algod's block queue does.
 - **Write access to the archive's directory**, for SQLite's `-wal` and `-shm` files. Run `ttimport` as the user that owns the data directory: it refuses to run as root on a data directory that another user owns, whose node could not open the files root writes. On macOS, copy the archive to a disk you own if it belongs to another user.
 - **Disk for the new data directory:**
-  - the history: about 70 GB on mainnet (67.3 GiB in November 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GB for fnet's 25.3 M rounds;
+  - the history: about 70 GB on mainnet (67.3 GiB in November 2026 with both indexes, see [Mainnet estimates](../../ledger/timetravel/README.md#mainnet-estimates)), 3.2 GiB for fnet's 25.3 M rounds (2.9 GiB after `-dedup`);
   - the account DB of a non-archival node;
   - about 1,000 blocks.
   
   The history is read at random by queries at past rounds, so put it on a fast disk (`TimeTravelDBDir`).
-- **Binaries from this fork:** `ttimport`, and the `algod` and `goal` that run the node afterwards. `make build` installs all three in `$GOPATH/bin`. Once `crypto/libs` is built, `go build -o . ./tools/ttimport ./cmd/algod ./cmd/goal` builds them into the current directory.
+- **Binaries from this fork:** `ttimport`, and the `algod` and `goal` that run the node afterwards. `make build` installs all three in `$GOPATH/bin`. Once `crypto/libs` is built, `go build -o . ./tools/ttimport ./cmd/algod ./cmd/goal` builds them into the current directory. [ttdump](../ttdump/README.md), which some steps below use to inspect the store, is not in the dtalgorand packages: `make build` installs it too, or add `./tools/ttdump` to the `go build` command.
 
 ## Building a node
 
@@ -62,7 +62,7 @@ A time travel node's history comes from every round's state delta since genesis:
 
    Blocks are read on a goroutine a few blocks ahead, so a block-read share near 100% means the replay is waiting on the archive's disk. Commits run while the replay continues, and each writes the history alongside its account DB transaction, which waits for that write before committing. So the write shares overlap, the account-write share includes the history write, and an account-write share near 100% means the replay is waiting on commits. On an HDD archive this gets much worse once memory runs short. Early mainnet rounds replayed at ~5–7k rounds/s on HDDs.
 
-3. If the import is interrupted, rerun the same command. Ctrl-C kills the run (it cannot stop cleanly), and a rerun resumes from the account DB's last commit. A replay starts a commit every 10,000 rounds and keeps replaying while it runs, so a kill during a commit loses that one too: up to about 20,000 rounds are replayed again. Until a run completes, the data directory's block database is behind its account DB, and algod refuses to start:
+3. If the import is interrupted, rerun the same command. Ctrl-C kills the run (it cannot stop cleanly), and a rerun resumes from the account DB's last commit. A replay starts a commit every 10,000 rounds (sooner when rounds make many changes) and keeps replaying while it runs, so a kill during a commit loses that one too: up to about 20,000 rounds are replayed again. Until a run completes, the data directory's block database is behind its account DB, and algod refuses to start:
 
    ```
    couldn't initialize the node: the account DB is at round 19998 but the block DB ends at round 0: rerun tools/ttimport if it was interrupted, or delete the account DB to resync from genesis
@@ -119,7 +119,7 @@ compacted in 55m3s: 68.38 GiB -> 65.62 GiB
 
 That is 4% of the store: the records removed repeat the version before them, which compression already made cheap. On a store written by a build that skips no-op writes, `-dedup` is optional.
 
-The progress lines show no total. A line prints only after 65,536 more writes (removals and box index entries), so it goes quiet for a long stretch over the holding records, which repeat little.
+The progress lines show no total. A line prints at most every 10 seconds, and only after 65,536 more writes (one per run of removed records, one per box index entry), so it goes quiet for a long stretch over the holding records, which repeat little.
 
 Reads and `/versions` answer the same afterwards. The one difference: objects created and deleted within a single round (apps, assets, holdings, local states) no longer count toward `MaxAPIResourcesPerAccount` in `/v2/accounts/{address}/versions`. Ctrl-C is safe, and a rerun finishes the job. While algod runs on the directory, the store is locked and `-dedup` refuses it. The compaction at the end rewrites the store in consecutive key ranges, deleting each range's old files when it finishes, so it needs free disk on the store's partition for a range rather than for a second copy of the store: 1.9 GiB at the peak on an 8.7 GiB test store, where one compaction of the whole store took 6.8 GiB. On mainnet (about 70 GB) expect roughly 3–8 GiB per range, and up to ~15 GiB with Pebble's own compactions running alongside. `-dedup` also rebuilds the box index (next section), so a store that needs both needs only `-dedup`; after a Ctrl-C the index covers only the rounds added since, until a rerun.
 
